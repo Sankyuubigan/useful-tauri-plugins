@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-tts-delete-voice"
+description = "Enables the tts_delete_voice command without any pre-configured scope."
+commands.allow = ["tts_delete_voice"]
+
+[[permission]]
+identifier = "deny-tts-delete-voice"
+description = "Denies the tts_delete_voice command without any pre-configured scope."
+commands.deny = ["tts_delete_voice"]

@@ -1,0 +1,22 @@
+[package]
+name = "tauri-plugin-about-updates"
+version = "0.1.0"
+edition = "2021"
+links = "tauri-plugin-about-updates"
+description = "Reusable About/Updates panel (GitHub Releases history + rollback) as a Tauri plugin"
+license = "MIT"
+
+[dependencies]
+tauri = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+
+[lib]
+name = "tauri_plugin_about_updates"
+path = "src/lib.rs"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

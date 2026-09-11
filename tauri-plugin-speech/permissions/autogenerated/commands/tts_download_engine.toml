@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-tts-download-engine"
+description = "Enables the tts_download_engine command without any pre-configured scope."
+commands.allow = ["tts_download_engine"]
+
+[[permission]]
+identifier = "deny-tts-download-engine"
+description = "Denies the tts_download_engine command without any pre-configured scope."
+commands.deny = ["tts_download_engine"]

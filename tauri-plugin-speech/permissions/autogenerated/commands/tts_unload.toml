@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-tts-unload"
+description = "Enables the tts_unload command without any pre-configured scope."
+commands.allow = ["tts_unload"]
+
+[[permission]]
+identifier = "deny-tts-unload"
+description = "Denies the tts_unload command without any pre-configured scope."
+commands.deny = ["tts_unload"]

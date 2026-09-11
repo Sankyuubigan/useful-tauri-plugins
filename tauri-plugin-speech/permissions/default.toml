@@ -1,0 +1,162 @@
+"$schema" = "../gen/schemas/acl.json"
+
+[[permission]]
+identifier = "allow-tts-speak"
+description = "Allow text-to-speech synthesis via the CrispASR engine (returns WAV bytes)."
+commands.allow = ["tts_speak"]
+
+[[permission]]
+identifier = "allow-tts-presets"
+description = "Allow listing available TTS model presets."
+commands.allow = ["tts_presets"]
+
+[[permission]]
+identifier = "allow-tts-capabilities"
+description = "Allow reading current TTS engine capabilities (e.g. language support)."
+commands.allow = ["tts_capabilities"]
+
+[[permission]]
+identifier = "allow-tts-unload"
+description = "Allow unloading the TTS engine (frees VRAM)."
+commands.allow = ["tts_unload"]
+
+[[permission]]
+identifier = "allow-tts-save-wav"
+description = "Allow saving synthesized WAV bytes to a user-chosen path."
+commands.allow = ["tts_save_wav"]
+
+[[permission]]
+identifier = "allow-tts-download-engine"
+description = "Allow downloading the CrispASR engine binary."
+commands.allow = ["tts_download_engine"]
+
+[[permission]]
+identifier = "allow-tts-download-model"
+description = "Allow downloading TTS model GGUF files."
+commands.allow = ["tts_download_model"]
+
+[[permission]]
+identifier = "allow-tts-engine-backends"
+description = "Allow listing available engine backends (cpu/cuda/vulkan...)."
+commands.allow = ["tts_engine_backends"]
+
+[[permission]]
+identifier = "allow-tts-list-models"
+description = "Allow listing installed TTS models."
+commands.allow = ["tts_list_models"]
+
+[[permission]]
+identifier = "allow-tts-list-voices"
+description = "Allow listing saved voices from the voice storage."
+commands.allow = ["tts_list_voices"]
+
+[[permission]]
+identifier = "allow-tts-add-voice"
+description = "Allow adding a new voice to the voice storage."
+commands.allow = ["tts_add_voice"]
+
+[[permission]]
+identifier = "allow-tts-delete-voice"
+description = "Allow deleting a voice from the voice storage."
+commands.allow = ["tts_delete_voice"]
+
+[[permission]]
+identifier = "allow-tts-update-voice"
+description = "Allow updating an existing voice in the voice storage."
+commands.allow = ["tts_update_voice"]
+
+[[permission]]
+identifier = "allow-tts-voice-avatar"
+description = "Allow reading a voice avatar image."
+commands.allow = ["tts_voice_avatar"]
+
+[[permission]]
+identifier = "allow-tts-voice-audio"
+description = "Allow reading a stored voice audio file."
+commands.allow = ["tts_voice_audio"]
+
+[[permission]]
+identifier = "allow-tts-voice-trimmed-audio"
+description = "Allow reading a trimmed clone reference audio."
+commands.allow = ["tts_voice_trimmed_audio"]
+
+[[permission]]
+identifier = "allow-tts-check-update"
+description = "Allow checking the connected CrispASR engine version for updates."
+commands.allow = ["tts_check_update"]
+
+[[permission]]
+identifier = "allow-tts-default-dirs"
+description = "Allow reading default engine/models directories."
+commands.allow = ["tts_default_dirs"]
+
+[[permission]]
+identifier = "allow-tts-get-settings"
+description = "Allow reading TTS settings."
+commands.allow = ["tts_get_settings"]
+
+[[permission]]
+identifier = "allow-tts-save-settings"
+description = "Allow saving TTS settings."
+commands.allow = ["tts_save_settings"]
+
+[[permission]]
+identifier = "allow-stt-get-settings"
+description = "Allow reading STT engine settings."
+commands.allow = ["stt_get_settings"]
+
+[[permission]]
+identifier = "allow-stt-save-settings"
+description = "Allow saving STT engine settings."
+commands.allow = ["stt_save_settings"]
+
+[[permission]]
+identifier = "allow-stt-start"
+description = "Allow starting the STT engine (returns WebSocket port)."
+commands.allow = ["stt_start"]
+
+[[permission]]
+identifier = "allow-stt-stop"
+description = "Allow stopping the STT engine."
+commands.allow = ["stt_stop"]
+
+[[permission]]
+identifier = "allow-stt-get-status"
+description = "Allow reading the STT engine status."
+commands.allow = ["stt_get_status"]
+
+[[permission]]
+identifier = "allow-stt-inject-text"
+description = "Allow injecting transcribed text into the currently focused window (clipboard + Ctrl+V)."
+commands.allow = ["stt_inject_text"]
+
+[default]
+description = "Default permissions for the speech plugin (CrispASR TTS/STT engine)."
+permissions = [
+  "allow-tts-speak",
+  "allow-tts-presets",
+  "allow-tts-capabilities",
+  "allow-tts-unload",
+  "allow-tts-save-wav",
+  "allow-tts-download-engine",
+  "allow-tts-download-model",
+  "allow-tts-engine-backends",
+  "allow-tts-list-models",
+  "allow-tts-list-voices",
+  "allow-tts-add-voice",
+  "allow-tts-delete-voice",
+  "allow-tts-update-voice",
+  "allow-tts-voice-avatar",
+  "allow-tts-voice-audio",
+  "allow-tts-voice-trimmed-audio",
+  "allow-tts-check-update",
+  "allow-tts-default-dirs",
+  "allow-tts-get-settings",
+  "allow-tts-save-settings",
+  "allow-stt-get-settings",
+  "allow-stt-save-settings",
+  "allow-stt-start",
+  "allow-stt-stop",
+  "allow-stt-get-status",
+  "allow-stt-inject-text",
+]

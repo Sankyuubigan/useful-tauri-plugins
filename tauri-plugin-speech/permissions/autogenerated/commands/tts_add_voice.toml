@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-tts-add-voice"
+description = "Enables the tts_add_voice command without any pre-configured scope."
+commands.allow = ["tts_add_voice"]
+
+[[permission]]
+identifier = "deny-tts-add-voice"
+description = "Denies the tts_add_voice command without any pre-configured scope."
+commands.deny = ["tts_add_voice"]

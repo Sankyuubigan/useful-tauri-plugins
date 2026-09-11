@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-tts-presets"
+description = "Enables the tts_presets command without any pre-configured scope."
+commands.allow = ["tts_presets"]
+
+[[permission]]
+identifier = "deny-tts-presets"
+description = "Denies the tts_presets command without any pre-configured scope."
+commands.deny = ["tts_presets"]

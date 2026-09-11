@@ -1,0 +1,39 @@
+[package]
+name = "tauri-plugin-speech"
+version = "0.1.0"
+edition = "2021"
+links = "tauri-plugin-speech"
+description = "Reusable CrispASR TTS/STT engine (prebuilt subprocess + HTTP/WS) with settings panels for Tauri apps"
+license = "MIT"
+
+[dependencies]
+tauri = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+chrono = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+zip = { workspace = true }
+
+# Аудио: декод ogg/vorbis/wav/flac/mp3/opus, шумоподавление RNNoise, ресемплинг
+symphonia = { workspace = true }
+hound = { workspace = true }
+opus = { workspace = true }
+ogg = { workspace = true }
+nnnoiseless = { workspace = true }
+rubato = { workspace = true }
+audioadapter-buffers = { workspace = true }
+
+# STT WebSocket клиент + инжекция текста
+tungstenite = { workspace = true }
+arboard = { workspace = true }
+windows = { workspace = true }
+
+[lib]
+name = "tauri_plugin_speech"
+path = "src/lib.rs"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-tts-check-update"
+description = "Enables the tts_check_update command without any pre-configured scope."
+commands.allow = ["tts_check_update"]
+
+[[permission]]
+identifier = "deny-tts-check-update"
+description = "Denies the tts_check_update command without any pre-configured scope."
+commands.deny = ["tts_check_update"]

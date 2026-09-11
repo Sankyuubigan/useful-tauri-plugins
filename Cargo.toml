@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = ["tauri-plugin-about-updates", "tauri-plugin-speech"]
+
+[workspace.dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+
+# Аудио (декод + шумоподавление + ресемплинг для голосов TTS)
+symphonia = { version = "0.6", features = ["ogg", "vorbis", "wav", "pcm", "flac", "mp3"] }
+hound = "3"
+opus = "0.3"
+ogg = "0.9"
+nnnoiseless = "0.5"
+rubato = "5"
+audioadapter-buffers = "5"
+
+# Скачивание движка CrispASR (prebuilt-процесс, HTTP)
+futures = "0.3"
+zip = "2"
+
+# STT: WebSocket-клиент + инжекция текста (без нативного линкования CrispASR)
+tungstenite = { version = "0.24", features = ["native-tls"] }
+arboard = "3"
+windows = { version = "0.58", features = [
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_Foundation",
+] }
+
+# Будущие модули (llama-engine и т.п.) добавляются сюда как members:
+# members = ["tauri-plugin-about-updates", "tauri-plugin-speech", "tauri-plugin-llama-engine"]

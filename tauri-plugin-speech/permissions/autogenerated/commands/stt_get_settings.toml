@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-stt-get-settings"
+description = "Enables the stt_get_settings command without any pre-configured scope."
+commands.allow = ["stt_get_settings"]
+
+[[permission]]
+identifier = "deny-stt-get-settings"
+description = "Denies the stt_get_settings command without any pre-configured scope."
+commands.deny = ["stt_get_settings"]

@@ -1,0 +1,30 @@
+"$schema" = "../gen/schemas/acl.json"
+
+[[permission]]
+identifier = "allow-get-release-history"
+description = "Allow querying the GitHub release history for rollback."
+commands.allow = ["get_release_history"]
+
+[[permission]]
+identifier = "allow-install-release"
+description = "Allow installing/rolling back to a specific GitHub release."
+commands.allow = ["install_release"]
+
+[[permission]]
+identifier = "allow-get-app-version"
+description = "Allow reading the host application version."
+commands.allow = ["get_app_version"]
+
+[[permission]]
+identifier = "allow-get-support-url"
+description = "Allow reading the configured 'support the author' URL."
+commands.allow = ["get_support_url"]
+
+[default]
+description = "Default permissions for the about-updates plugin."
+permissions = [
+  "allow-get-release-history",
+  "allow-install-release",
+  "allow-get-app-version",
+  "allow-get-support-url"
+]

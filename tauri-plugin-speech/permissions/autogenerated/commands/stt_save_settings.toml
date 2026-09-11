@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-stt-save-settings"
+description = "Enables the stt_save_settings command without any pre-configured scope."
+commands.allow = ["stt_save_settings"]
+
+[[permission]]
+identifier = "deny-stt-save-settings"
+description = "Denies the stt_save_settings command without any pre-configured scope."
+commands.deny = ["stt_save_settings"]

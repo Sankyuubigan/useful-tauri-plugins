@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-tts-default-dirs"
+description = "Enables the tts_default_dirs command without any pre-configured scope."
+commands.allow = ["tts_default_dirs"]
+
+[[permission]]
+identifier = "deny-tts-default-dirs"
+description = "Denies the tts_default_dirs command without any pre-configured scope."
+commands.deny = ["tts_default_dirs"]

@@ -334,7 +334,11 @@ class SpeechModelsPanel extends HTMLElement {
         <div id="progress" class="progress" style="display:none"><div></div></div>
         <div id="models"></div>
         <div id="status" class="muted" style="margin-top:8px"></div>
+        <div class="row" style="margin-top:8px">
+          <button id="refresh" class="small">⟳ обновить</button>
+        </div>
       </div>`
+    this.root.getElementById('refresh')!.addEventListener('click', () => this.reload())
   }
 
   private async init() {
@@ -350,29 +354,46 @@ class SpeechModelsPanel extends HTMLElement {
       }
     }
     this.initialized = true
-    this.unlisteners.push(await listen<{ kind: string; name: string; downloaded: number; total: number }>('tts-download', (ev) => {
+    // Не блокируем init на listen: в некоторых сборках listen может кидать,
+    // но список моделей обязан грузиться независимо. Таймстемп/событие.
+    void listen<{ kind: string; name: string; downloaded: number; total: number }>('tts-download', (ev) => {
       const p = ev.payload
       if (p.kind !== 'model') return
       this.download = { current: p.downloaded, total: p.total }
       this.updateProgress()
-    }))
+    })
+      .then((u) => this.unlisteners.push(u))
+      .catch(() => {})
     void this.reload()
   }
 
   private async reload() {
-    this.models = await ttsListModels(this.modelsDir).catch(() => [])
+    this.setStatus('загружаю…')
+    const t = setTimeout(() => this.setStatus('таймаут ожидания ответа (сеть?)'), 10000)
+    try {
+      this.models = await ttsListModels(this.modelsDir)
+      if (this.models.length === 0) {
+        this.setStatus('список пуст (нет пресетов или пустой каталог моделей)')
+      } else {
+        this.setStatus(`найдено моделей: ${this.models.length}`)
+      }
+    } catch (e) {
+      this.setStatus('ошибка: ' + ((e as Error).message || String(e)))
+    } finally {
+      clearTimeout(t)
+    }
     this.renderList()
   }
 
   private renderList() {
     const box = this.root.getElementById('models')!
     if (this.models.length === 0) {
-      box.textContent = 'нет списка моделей (сеть?)'
+      box.textContent = ''
       return
     }
     box.innerHTML = '<ul>' + this.models.map(m => `
       <li>
-        <span class="mname">${m.label}${(m.voice_type === 'clone' || m.voice_type === 'clone_named') ? ' 🎭' : ''}</span>
+        <span class="mname">${this.escapeHtml(m.label)}${(m.voice_type === 'clone' || m.voice_type === 'clone_named') ? ' 🎭' : ''}</span>
         <span class="badges">
           <span class="badge">${m.size}</span>
           ${m.supports_russian ? '<span class="badge ru">RU</span>' : ''}
@@ -384,6 +405,10 @@ class SpeechModelsPanel extends HTMLElement {
     for (const btn of box.querySelectorAll<HTMLButtonElement>('button.install')) {
       btn.addEventListener('click', () => this.install(btn.dataset['id'] || ''))
     }
+  }
+
+  private escapeHtml(s: string): string {
+    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!))
   }
 
   private setStatus(s: string) {

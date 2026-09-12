@@ -22,12 +22,14 @@ pub struct VoiceInfo {
     pub created_at: String,
 }
 
-/// Максимальная длительность сохраняемого референса (секунды).
-const MAX_VOICE_REF_SEC: f32 = 10.0;
+/// ЕДИНЫЙ стандарт длительности голосового референса (секунды): хранимые голоса
+/// (`<id>/voice.wav`), клон-кэш (`.clone_cache/<id>.r2.wav`) и всё, что подаётся
+/// на модель, обязаны быть ДО 10 секунд. Менять только здесь.
+pub const MAX_REF_SEC: f32 = 10.0;
 
-/// Обрезает моно-сэмплы до первых `MAX_VOICE_REF_SEC` секунд (с начала).
+/// Обрезает моно-сэмплы до первых `MAX_REF_SEC` секунд (с начала).
 fn trim_to_max_sec(mono: &[f32], rate: u32) -> Vec<f32> {
-    let max_samples = (MAX_VOICE_REF_SEC * rate as f32) as usize;
+    let max_samples = (MAX_REF_SEC * rate as f32) as usize;
     if mono.len() > max_samples {
         mono[..max_samples].to_vec()
     } else {
@@ -87,7 +89,7 @@ fn sanitize_id(name: &str) -> String {
 }
 
 /// Читает манифест/файлы голоса `<id>/` либо собирает минимальный из наличия файлов.
-fn read_voice(root: &std::path::Path, id: &str) -> Option<VoiceInfo> {
+pub(crate) fn read_voice(root: &std::path::Path, id: &str) -> Option<VoiceInfo> {
     let folder = voice_folder(root, id);
     let wav = folder.join("voice.wav");
     if !wav.exists() {

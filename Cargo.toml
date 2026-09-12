@@ -35,3 +35,5 @@ windows = { version = "0.58", features = [
 
 # Будущие модули (llama-engine и т.п.) добавляются сюда как members:
 # members = ["tauri-plugin-about-updates", "tauri-plugin-speech", "tauri-plugin-llama-engine"]
+# Единый кастомный log::Log логгер хоста (core rules §2.5)
+log = "0.4"

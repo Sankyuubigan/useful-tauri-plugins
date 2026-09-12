@@ -35,6 +35,11 @@ pub struct TtsPreset {
 
 static PRESETS_CACHE: OnceLock<Vec<TtsPreset>> = OnceLock::new();
 
+/// Срезает UTF-8 BOM, который `serde_json::from_str` не переваривает.
+fn strip_bom(s: &str) -> &str {
+    s.strip_prefix('\u{feff}').unwrap_or(s)
+}
+
 /// Загружает пресеты из `tts_models.json`.
 ///
 /// Порядок резолва файла:
@@ -44,16 +49,47 @@ static PRESETS_CACHE: OnceLock<Vec<TtsPreset>> = OnceLock::new();
 pub fn presets() -> &'static [TtsPreset] {
     PRESETS_CACHE.get_or_init(|| {
         if let Some(path) = find_tts_models_json() {
-            if let Ok(text) = std::fs::read_to_string(&path) {
-                if let Ok(v) = serde_json::from_str::<Vec<TtsPreset>>(&text) {
-                    if !v.is_empty() {
-                        return v;
+            match std::fs::read_to_string(&path) {
+                Ok(text) => match serde_json::from_str::<Vec<TtsPreset>>(strip_bom(&text)) {
+                    Ok(v) if !v.is_empty() => return v,
+                    Ok(v) => {
+                        log::error!(
+                            "[tts] {} найден, но содержит {} пресет(ов) — пустой список, беру встроенную копию",
+                            path.display(),
+                            v.len()
+                        );
                     }
+                    Err(e) => {
+                        log::error!(
+                            "[tts] парсинг {} не удался: {e} — беру встроенную копию",
+                            path.display()
+                        );
+                    }
+                },
+                Err(e) => {
+                    log::error!(
+                        "[tts] не удалось прочитать {}: {e} — беру встроенную копию",
+                        path.display()
+                    );
                 }
             }
+        } else {
+            log::warn!("[tts] tts_models.json не найден рядом с exe — беру встроенную копию");
         }
-        serde_json::from_str(EMBEDDED_TTS_MODELS_JSON)
-            .expect("встроенный tts_models.json невалиден")
+        match serde_json::from_str::<Vec<TtsPreset>>(strip_bom(EMBEDDED_TTS_MODELS_JSON)) {
+            Ok(v) if !v.is_empty() => v,
+            Ok(v) => {
+                log::error!(
+                    "[tts] встроенная копия tts_models.json содержит {} пресетов — пусто!",
+                    v.len()
+                );
+                v
+            }
+            Err(e) => {
+                log::error!("[tts] встроенная копия tts_models.json битая: {e}");
+                Vec::new()
+            }
+        }
     })
 }
 

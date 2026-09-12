@@ -124,6 +124,44 @@ pub async fn tts_speak<R: Runtime>(
         backend_clone && clone_source.is_some()
     };
 
+    // Транскрипт референса обязателен для qwen3-tts/tada при клонировании:
+    // берём из манифеста голоса (stored) либо из файла `<референс>.txt`.
+    if needs_ref_text {
+        if let Some((src, id)) = &clone_source {
+            let ref_text = if is_stored_clone {
+                voices::read_voice(&voices::voices_root(&settings.models_dir), id)
+                    .map(|v| v.ref_text)
+                    .unwrap_or_default()
+            } else {
+                std::fs::read_to_string(format!("{src}.txt")).unwrap_or_default()
+            };
+            clone_ref_text = ref_text.trim().to_string();
+            if clone_ref_text.is_empty() {
+                let e = if is_stored_clone {
+                    format!(
+                        "для модели «{preset}» нужен транскрипт (ref-text) голоса «{id}»: укажите текст в разделе «Голоса»"
+                    )
+                } else {
+                    format!(
+                        "для модели «{preset}» нужен транскрипт (ref-text) референса: создайте файл {src}.txt рядом с записью"
+                    )
+                };
+                log::app_log(&app, &format!("ТТС ОШИБКА: {e}"));
+                return Err(e);
+            }
+            // Синхронизируем ref_text.txt, чтобы аплоад голоса (ensure_voice)
+            // тоже передал транскрипт (манифест мог обновиться без перезаписи txt).
+            if is_stored_clone {
+                let txt = voices::voices_root(&settings.models_dir)
+                    .join(id)
+                    .join("ref_text.txt");
+                if std::fs::read_to_string(&txt).unwrap_or_default().trim() != clone_ref_text {
+                    let _ = std::fs::write(txt, &clone_ref_text);
+                }
+            }
+        }
+    }
+
     let startup_voice = if use_clone {
         let (src, id) = clone_source.clone().unwrap();
         let cr = clone::prepare_clone_reference(
@@ -183,7 +221,7 @@ pub async fn tts_speak<R: Runtime>(
     // Голос для тела запроса — только для named (ggupack/WAV-clone уже загружены).
     let body_voice = if voice_type == "ggupack" {
         named_voice.clone()
-    } else if needs_ref_text && is_stored_clone {
+    } else if needs_ref_text {
         clone_source
             .as_ref()
             .map(|(_, id)| id.clone())
@@ -201,10 +239,37 @@ pub async fn tts_speak<R: Runtime>(
 
     let (server_voice, voice_uploaded) = if voice_type == "ggupack" || body_voice.is_empty() {
         (String::new(), false)
+    } else if needs_ref_text && !is_stored_clone {
+        // Произвольный WAV + бэкенд, требующий транскрипт (qwen/tada): канонизируем
+        // референс до voices::MAX_REF_SEC (кэш .clone_cache/*.r2.wav) и регистрируем
+        // обрезанный файл на сервере с force=true (сервер не хранит длинную копию).
+        let (src, id) = clone_source
+            .as_ref()
+            .map(|(s, id)| (s.clone(), id.clone()))
+            .unwrap_or_default();
+        let cr = clone::prepare_clone_reference(&s.models_dir, &src, &id, &backend)
+            .map_err(|e| {
+                log::app_log(&app, &format!("ТТС ОШИБКА: {e}"));
+                e
+            })?;
+        if !cr.ref_text.trim().is_empty() {
+            clone_ref_text = cr.ref_text.trim().to_string();
+        }
+        let name = state
+            .tts
+            .register_voice_file(&app, &cr.voice_path, &clone_ref_text, true)
+            .await
+            .map_err(|e| {
+                log::app_log(&app, &format!("ТТС ОШИБКА: {e}"));
+                e
+            })?;
+        (name, true)
     } else {
+        // Хранимый голос: ensure_voice канонизирует референс и загружает
+        // на сервер принудительно (?force=true).
         state
             .tts
-            .ensure_voice(&app, &s.models_dir, &body_voice)
+            .ensure_voice(&app, &s.models_dir, &body_voice, &backend)
             .await
             .map_err(|e| {
                 log::app_log(&app, &format!("ТТС ОШИБКА: {e}"));

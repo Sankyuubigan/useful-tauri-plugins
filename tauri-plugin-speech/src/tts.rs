@@ -1,6 +1,7 @@
 use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -15,6 +16,21 @@ use crate::process_util::{kill_process_tree, JobGuard};
 use crate::download::preset_by_id;
 
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Аттестация ответственности за маркировку ИИ-контента (поле `marking_attestation`
+/// в POST /v1/audio/speech). Требуется движком, чтобы уважать `spoken_disclaimer: false`.
+/// Приложение уже стартует сервер с `--accept-marking-responsibility`, поэтому этот
+/// текст — honest подстраховка, а не новый уровень ответственности.
+const MARKING_ATTESTATION: &str =
+    "The operator of this application accepts responsibility for AI-marking of the generated audio.";
+
+/// Возвращает true, если строка stderr движка — маркер runaway («модель не выдала
+/// EOS, результат должен быть отброшен»). Считаем по сигнатурам из qwen3_tts.cpp:
+/// `text-proportional frame cap ... without emitting EOS` и
+/// `ran to the KV ceiling without emitting EOS`, обе содержат "runaway".
+fn is_runaway_line(line: &str) -> bool {
+    line.contains("runaway") || line.contains("without emitting EOS")
+}
 
 /// Движок TTS на базе CrispASR.
 ///
@@ -36,16 +52,20 @@ pub struct TtsEngine {
     /// Определяется политикой `backend_supports_language_param`. `Arc`, чтобы
     /// делить флаг между потоком перехвата stderr и async-методами.
     language_supported: Arc<Mutex<bool>>,
+    /// Счётчик runaway-генераций движка (строки stderr вида «...runaway...»).
+    /// Монотонный `AtomicUsize`: speak() снимает снапшот ДО запроса и после —
+    /// если счётчик вырос, результат запроса это мусор и его нельзя отдавать
+    /// пользователю. Сбрасывается при перезапуске движка в `ensure()`.
+    runaways: Arc<AtomicUsize>,
 }
 
 /// Собирает аргументы командной строки запуска сервера CrispASR.
 ///
 /// **Архитектурная точка отключения watermark:** флаг `--no-watermark` добавляется
 /// сюда безусловно, поэтому применяется ко ВСЕМ моделям/бэкендам (ensure() — единственный
-/// spawn движка). `--no-spoken-disclaimer` добавлен для страховки. ВАЖНО: этот флаг
-/// недостаточен сам по себе, если в теле запроса `POST /v1/audio/speech` присутствует
-/// `consent_attestation` (оно заставляет движок вернуть слышимый дисклеймер) — поэтому
-/// поле consent_attestation убрано из `build_speech_body`.
+/// spawn движка). `--no-spoken-disclaimer` — страховка для версий движка, которые его
+/// понимают; надёжное отключение слышимого дисклеймера лежит в теле POST-запроса
+/// (`spoken_disclaimer: false` + `marking_attestation`, см. `build_speech_body`).
 fn engine_launch_args(
     backend: &str,
     model: &str,
@@ -75,6 +95,16 @@ fn engine_launch_args(
     // падает сразу ("Refusing to start").
     a.push("--accept-marking-responsibility".to_string());
     a.push("--no-spoken-disclaimer".to_string());
+    // qwen3-tts: на GPU talker склонен дивергировать и уходить в runaway (issue #337
+    // движка); CPU даёт детерминированную («эталонную») траекторию. ВАЖНО: runaway
+    // воспроизводится и на CPU (логи от 2026-09-12: дисклеймер 624 кадра, текст 1812 —
+    // оба без EOS), поэтому CPU не панацея, а default. Оставляем CPU осознанно:
+    // стабильно-медленно лучше, чем рандомно-быстро с гарантированным мусором.
+    // Хорошие результаты приходят из короткого референса (3–10 см) и выбором seed.
+    if backend.starts_with("qwen3-tts") {
+        a.push("--gpu-backend".to_string());
+        a.push("cpu".to_string());
+    }
     a.push("--voice-dir".to_string());
     a.push(voice_dir.to_string());
     if !startup_voice.is_empty() {
@@ -87,10 +117,13 @@ fn engine_launch_args(
 /// Строит JSON-тело запроса к `POST /v1/audio/speech`.
 ///
 /// `clone` — идёт ли синтез с клонированным голосом (референс из WAV/GGUF).
-/// В этом случае ОБЯЗАТЕЛЬНО добавляем `consent_attestation`: API движка
-/// требует это поле для клонирования (иначе 400 `consent_required`, см. логи
-/// chatterbox). Для обычных (не-clone) запросов поле НЕ добавляется — поведение
-/// полностью идентично прежнему, никаких водяных знаков/дисклеймеров не добавляется.
+/// Для clone-запросов движок ТРЕБУЕТ `consent_attestation` (иначе 400
+/// `consent_required`). Плюс, чтобы не слушать 40-50-секундный слышимый
+/// AI-дисклеймер перед каждым клоном, отправляем `spoken_disclaimer: false`
+/// с `marking_attestation` (оператор уже принял ответственность на уровне CLI
+/// флагом `--accept-marking-responsibility`). Для обычных (не-clone) запросов
+/// поля пакета не добавляются — поле `consent_attestation` не нужно, а
+/// `spoken_disclaimer` для них по умолчанию false в движке.
 fn build_speech_body(
     backend: &str,
     text: &str,
@@ -126,12 +159,26 @@ fn build_speech_body(
     if (speed - 1.0).abs() > f32::EPSILON {
         body.insert("speed".into(), serde_json::Value::from(speed));
     }
-    if clone {
-        body.insert(
-            "consent_attestation".into(),
-            serde_json::Value::String("I confirm I have the legal right to clone this voice.".into()),
-        );
-    }
+if clone {
+            body.insert(
+                "consent_attestation".into(),
+                serde_json::Value::String("I confirm I have the legal right to clone this voice.".into()),
+            );
+            // Подавляем слышимый AI-дисклеймер (движок читает его голосом по
+            // умолчанию для каждого клона перед синтезом — 40-50 c «болтовни»
+            // в начале каждого ответа). Opt-out уважается только при наличии
+            // marking_attestation; старые сборки движка могут его игнорировать —
+            // тогда runaway-дисклеймер словит счётчик runaways и запрос не
+            // дойдёт до пользователя (см. speak()).
+            body.insert(
+                "spoken_disclaimer".into(),
+                serde_json::Value::Bool(false),
+            );
+            body.insert(
+                "marking_attestation".into(),
+                serde_json::Value::String(MARKING_ATTESTATION.into()),
+            );
+        }
     if !language.is_empty() {
         body.insert("language".into(), serde_json::Value::String(language.to_string()));
     }
@@ -149,6 +196,7 @@ impl TtsEngine {
             loaded_voice: Mutex::new(String::new()),
             loaded_backend: Mutex::new(String::new()),
             language_supported: Arc::new(Mutex::new(true)),
+            runaways: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -293,6 +341,10 @@ impl TtsEngine {
 
         // Перенаправляем stderr движка в Логи + буфер (для понятных ошибок запуска).
         let err_log = Arc::new(Mutex::new(Vec::<String>::new()));
+        // Свежий процесс = свежий счётчик runaway. Обнуляем ДО старта потока,
+        // чтобы не "унаследовать" 0 из предыдущего процесса некорректно.
+        let runaways_counter = Arc::clone(&self.runaways);
+        runaways_counter.store(0, Ordering::SeqCst);
         if let Some(stderr) = child.stderr.take() {
             let app_clone = app.clone();
             let err_log_clone = Arc::clone(&err_log);
@@ -301,6 +353,9 @@ impl TtsEngine {
                 for line in reader.lines().flatten() {
                     let clean = sanitize_crispasr_line(&line);
                     crate::log::app_log(&app_clone, &format!("[crispasr] {clean}"));
+                    if is_runaway_line(&clean) {
+                        runaways_counter.fetch_add(1, Ordering::SeqCst);
+                    }
                     if let Ok(mut buf) = err_log_clone.lock() {
                         if buf.len() < 200 {
                             buf.push(clean.clone());
@@ -362,9 +417,22 @@ impl TtsEngine {
     /// Синтезирует текст в MP3 и возвращает сырые байты.
     ///
     /// `voice` — имя спикера или путь к WAV для клонирования (передаётся в теле запроса,
-    /// per-request; может быть пустым). Поле `consent_attestation` отправляется ТОЛЬКО
-    /// когда `clone == true` (клонирование голоса). `language` — язык синтеза ("ru"/"en");
-    /// пустая строка → авто-язык движка.
+    /// per-request; может быть пустым). При `clone == true` в тело добавляются
+    /// `consent_attestation` + `spoken_disclaimer:false` + `marking_attestation`
+    /// (см. `build_speech_body`). `language` — язык синтеза ("ru"/"en"); пустая
+    /// строка → авто-язык движка.
+    ///
+    /// Гарантия качества выхода: если движок в stderr пометил генерацию как runaway
+    /// («talker не выдал EOS, результат отброшен»), байты НЕ возвращаются — вместо
+    /// файла с «тишиной/мусором» приходит понятная ошибка.
+    ///
+    /// Повторный запрос с другим seed НЕ делается: траектория talker'а
+    /// детерминирована (декод acoustic-токенов greedy), смена seed не меняет
+    /// результат, а только тратит ещё ~40 с на разгон мусора. Runaway — это
+    /// дивергенция кондиционирования модели, а не случайный шум: его причина в
+    /// основном входе (слишком длинный/неподходящий референс-голос, неоднозначный
+    /// текст), и единственный путь к успеху — изменить вход (короткий референс
+    /// 3–10 с), а не повторять тот же.
     pub async fn speak(
         &self,
         text: &str,
@@ -389,6 +457,7 @@ impl TtsEngine {
         } else {
             String::new()
         };
+
         let body_value = build_speech_body(
             &backend,
             text,
@@ -399,6 +468,8 @@ impl TtsEngine {
             clone,
             &effective_language,
         );
+
+        let start_runaways = self.runaways.load(Ordering::SeqCst);
 
         let resp = client
             .post(&url)
@@ -418,18 +489,34 @@ impl TtsEngine {
             .bytes()
             .await
             .map_err(|e| format!("ошибка чтения ответа TTS: {e}"))?;
+
+        let runaways_now = self.runaways.load(Ordering::SeqCst);
+        if runaways_now > start_runaways {
+            // Движок сам пометил эту генерацию как runaway и просил отбросить.
+            // Отдавать пользователю этот «аудио» нельзя — это тишина/шум.
+            return Err(
+                "TTS: движок сгенерировал выброс (runaway: talker не выдал EOS, результат отброшен). \
+                 Чаще всего причину дивергенции создаёт сам вход — используйте короткий референс-голос \
+                 (3–10 секунд) и короткую однозначную фразу, затем попробуйте ещё раз."
+                    .to_string(),
+            );
+        }
+
         Ok(bytes.to_vec())
     }
 
-    /// Регистрирует кастомный голос в запущенном сервере CrispASR и возвращает
-    /// имя, под которым сервер его знает (ASCII, см. `ascii_voice_name`).
+    /// Регистрирует голос из хранилища (папка `<id>/voice.wav`) в запущенном
+    /// сервере CrispASR и возвращает имя, под которым сервер его знает (ASCII).
     ///
-    /// Возвращает кортеж `(имя_на_сервере, был_ли_загружен_клон)`.
+    /// Референс ОБЯЗАТЕЛЬНО проходит `prepare_clone_reference` (канон до
+    /// `voices::MAX_REF_SEC`), загрузка принудительная (`?force=true`), чтобы
+    /// сервер не держал старую длинную копию под тем же именем.
     pub async fn ensure_voice<R: Runtime>(
         &self,
         app: &AppHandle<R>,
         models_dir: &str,
         voice_id: &str,
+        backend: &str,
     ) -> Result<(String, bool), String> {
         if voice_id.is_empty() {
             return Ok((String::new(), false));
@@ -439,27 +526,53 @@ impl TtsEngine {
         if !wav.exists() {
             return Ok((voice_id.to_string(), false));
         }
+        let backend = if backend.is_empty() { "qwen3-tts" } else { backend };
+        let cr = crate::clone::prepare_clone_reference(
+            models_dir,
+            &wav.to_string_lossy(),
+            voice_id,
+            backend,
+        )?;
         let server_name = ascii_voice_name(voice_id);
-        if self.voice_registered(&server_name).await {
-            return Ok((server_name, true));
-        }
-        let txt = root.join(voice_id).join("ref_text.txt");
-        let transcript = if txt.exists() {
-            std::fs::read_to_string(&txt).unwrap_or_default()
-        } else {
-            String::new()
-        };
-        let (mono, rate) = crate::audio::decode_to_mono(&wav.to_string_lossy())
-            .map_err(|e| format!("не удалось декодировать голос {}: {e}", wav.display()))?;
-        let (mono, rate) = crate::voices::to_24k_mono(mono, rate);
-        let tmp = root.join(voice_id).join("voice_24k.wav");
-        crate::audio::wav::write_wav(&tmp.to_string_lossy(), &mono, rate)
-            .map_err(|e| format!("не удалось записать 24кГц референс {}: {e}", tmp.display()))?;
-        let bytes = std::fs::read(&tmp)
-            .map_err(|e| format!("не удалось прочитать файл голоса {}: {e}", tmp.display()))?;
-        let _ = std::fs::remove_file(&tmp);
-        self.upload_voice(app, &server_name, &bytes, &transcript).await?;
+        let bytes = std::fs::read(&cr.voice_path)
+            .map_err(|e| format!("не удалось прочитать файл голоса {}: {e}", cr.voice_path))?;
+        self.upload_voice(app, &server_name, &bytes, cr.ref_text.trim()).await?;
         Ok((server_name, true))
+    }
+
+    /// Регистрирует произвольный WAV-файл как голос сервера под ASCII-именем
+    /// (для бэкендов, требующих транскрипт референса: qwen3-tts/tada), без
+    /// копирования файла в хранилище голосов. `force = true` — всегда заново
+    /// загружать файл на сервер (даже если имя уже зарегистрировано), чтобы
+    /// гарантировать, что сервер отдаёт текущий (обрезанный) референс.
+    pub async fn register_voice_file<R: Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        src_wav: &str,
+        transcript: &str,
+        force: bool,
+    ) -> Result<String, String> {
+        if src_wav.is_empty() || !std::path::Path::new(src_wav).exists() {
+            return Err(format!("файл голоса не найден: {src_wav}"));
+        }
+        let name = ascii_voice_name(src_wav);
+        if !force && self.voice_registered(&name).await {
+            return Ok(name);
+        }
+        let (mono, rate) = crate::audio::decode_to_mono(src_wav)
+            .map_err(|e| format!("не удалось декодировать голос «{src_wav}»: {e}"))?;
+        if mono.is_empty() {
+            return Err(format!("голос «{src_wav}» пустой (тишина?)"));
+        }
+        let (mono, rate) = crate::voices::to_24k_mono(mono, rate);
+        let tmp = std::env::temp_dir().join(format!("crispasr_voice_{name}.wav"));
+        crate::audio::wav::write_wav(&tmp.to_string_lossy(), &mono, rate)
+            .map_err(|e| format!("не удалось записать 24кГц референс: {e}"))?;
+        let bytes = std::fs::read(&tmp)
+            .map_err(|e| format!("не удалось прочитать файл голоса: {e}"))?;
+        let _ = std::fs::remove_file(&tmp);
+        self.upload_voice(app, &name, &bytes, transcript).await?;
+        Ok(name)
     }
 
     /// Спрашивает сервер, зарегистрирован ли голос с именем `name` (GET /v1/voices).
@@ -693,6 +806,22 @@ mod tests {
     }
 
     #[test]
+    fn launch_args_qwen3_tts_use_cpu_backend() {
+        for backend in ["qwen3-tts", "qwen3-tts-customvoice", "qwen3-tts-1.7b-base"] {
+            let args = engine_launch_args(backend, "m.gguf", "c.gguf", 18001, "C:\\v", "ref.wav");
+            let i = args.iter().position(|a| a == "--gpu-backend").unwrap_or_else(|| {
+                panic!("нет --gpu-backend для {backend}");
+            });
+            assert_eq!(args[i + 1], "cpu", "ожидал cpu для {backend}");
+        }
+        let args = engine_launch_args("confucius4-tts", "m.gguf", "c.gguf", 18001, "C:\\v", "ref.wav");
+        assert!(
+            !args.iter().any(|a| a == "--gpu-backend"),
+            "--gpu-backend не должен попадать в не-qwen3-tts бэкенды"
+        );
+    }
+
+    #[test]
     fn speech_body_has_no_consent_attestation() {
         let body = build_speech_body("cosyvoice3-tts", "привет", "voice1", "", "транскрипт", 1.0, false, "");
         let obj = body.as_object().unwrap();
@@ -707,5 +836,47 @@ mod tests {
         assert!(!obj2.contains_key("consent_attestation"));
         assert!(!obj2.contains_key("voice"));
         assert!(obj2.contains_key("speed"));
+    }
+
+    #[test]
+    fn speech_body_clone_requests_opt_out_disclaimer() {
+        let body = build_speech_body("qwen3-tts", "Привет", "v123abc", "", "transcript text", 1.0, true, "ru");
+        let obj = body.as_object().unwrap();
+        // Клон без consent_attestation движок отклоняет (400 consent_required),
+        // поэтому поле обязано быть.
+        assert!(obj.contains_key("consent_attestation"));
+        // Слышимый AI-дисклеймер для клона выключаем явно + с аттестацией.
+        assert_eq!(
+            obj.get("spoken_disclaimer").unwrap(),
+            &serde_json::Value::Bool(false),
+            "clone request должен просить spoken_disclaimer:false"
+        );
+        let marking = obj
+            .get("marking_attestation")
+            .expect("marking_attestation обязателен для opt-out")
+            .as_str()
+            .unwrap();
+        assert!(!marking.is_empty());
+    }
+
+    #[test]
+    fn speech_body_non_clone_keeps_clean_payload() {
+        let body = build_speech_body("cosyvoice3-tts", "привет", "voice1", "", "", 1.0, false, "");
+        let obj = body.as_object().unwrap();
+        assert!(!obj.contains_key("consent_attestation"));
+        assert!(!obj.contains_key("spoken_disclaimer"));
+        assert!(!obj.contains_key("marking_attestation"));
+    }
+
+    #[test]
+    fn runaway_line_detection() {
+        assert!(is_runaway_line(
+            "qwen3_tts: ERROR: talker hit the text-proportional frame cap (624 frames for 52 input codepoints, 49.9 s of audio) without emitting EOS. The output is a runaway and should be discarded."
+        ));
+        assert!(is_runaway_line(
+            "qwen3_tts: ERROR: talker ran to the KV ceiling without emitting EOS — stopped at frame 4095 (n_past=4683, 327.6 s of audio). The output is a runaway and should be discarded."
+        ));
+        assert!(!is_runaway_line("qwen3_tts: produced 105 frames × 16 codebooks = 1680 codes"));
+        assert!(!is_runaway_line("crispasr-server: listening on 127.0.0.1:21644"));
     }
 }

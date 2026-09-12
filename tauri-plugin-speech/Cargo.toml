@@ -31,6 +31,9 @@ tungstenite = { workspace = true }
 arboard = { workspace = true }
 windows = { workspace = true }
 
+# Логи: через log! макросы в единый кастомный log::Log логгер хоста (core rules §2.5)
+log = { workspace = true }
+
 [lib]
 name = "tauri_plugin_speech"
 path = "src/lib.rs"

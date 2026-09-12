@@ -230,16 +230,28 @@ pub async fn engine_backends() -> Result<Vec<EngineBackendInfo>, String> {
     Ok(out)
 }
 
-/// Папка движка относительно exe: `<exe_dir>/crispasr`.
+/// Папка движка: значение `plugins.speech.default_engine_dir` из конфига хоста,
+/// иначе `<exe_dir>/crispasr`.
 pub fn default_engine_dir() -> PathBuf {
+    if let Some(v) = crate::config().default_engine_dir.as_ref() {
+        if !v.trim().is_empty() {
+            return PathBuf::from(v);
+        }
+    }
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     exe.parent()
         .map(|p| p.join("crispasr"))
         .unwrap_or_else(|| PathBuf::from("crispasr"))
 }
 
-/// Папка моделей относительно exe: `<exe_dir>/tts_models`.
+/// Папка моделей: значение `plugins.speech.default_models_dir` из конфига хоста,
+/// иначе `<exe_dir>/tts_models`.
 pub fn default_models_dir() -> PathBuf {
+    if let Some(v) = crate::config().default_models_dir.as_ref() {
+        if !v.trim().is_empty() {
+            return PathBuf::from(v);
+        }
+    }
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     exe.parent()
         .map(|p| p.join("tts_models"))

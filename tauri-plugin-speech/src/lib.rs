@@ -1,8 +1,28 @@
 use serde::Deserialize;
+use std::sync::OnceLock;
 use tauri::{
     plugin::{Builder, TauriPlugin},
     Manager, Runtime,
 };
+
+/// Глобальная копия конфига плагина — нужна свободным функциям
+/// (`default_models_dir`/`default_engine_dir` и т.п.), у которых нет доступа
+/// к `AppHandle`/`State`. Конфиг попадает сюда в `setup`.
+static CONFIG: OnceLock<Config> = OnceLock::new();
+
+const DEFAULT_CONFIG: Config = Config {
+    default_engine_dir: None,
+    default_models_dir: None,
+};
+
+pub(crate) fn set_config(c: Config) {
+    let _ = CONFIG.set(c);
+}
+
+/// Текущий конфиг плагина (или пустой по умолчанию до инициализации).
+pub(crate) fn config() -> &'static Config {
+    CONFIG.get().unwrap_or(&DEFAULT_CONFIG)
+}
 
 /// Конфиг плагина. Задаётся в `tauri.conf.json` хоста под ключом `plugins.speech`:
 /// ```json
@@ -61,6 +81,7 @@ pub use tts_settings::TtsSettings;
 pub fn init<R: Runtime>() -> TauriPlugin<R, Config> {
     Builder::<R, Config>::new("speech")
         .setup(|app, api| {
+            set_config(api.config().clone());
             let state = PluginState {
                 config: api.config().clone(),
                 tts: TtsEngine::new(),

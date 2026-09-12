@@ -140,7 +140,7 @@ export async function ttsDownloadEngine(
   dest: string,
 ): Promise<string> {
   return invoke<string>('plugin:speech|tts_download_engine', {
-    backend_id: backendId,
+    backendId,
     dest,
   })
 }
@@ -160,11 +160,11 @@ export async function ttsEngineBackends(): Promise<EngineBackendInfo[]> {
 }
 
 export async function ttsListModels(modelsDir: string): Promise<InstalledModel[]> {
-  return invoke<InstalledModel[]>('plugin:speech|tts_list_models', { models_dir: modelsDir })
+  return invoke<InstalledModel[]>('plugin:speech|tts_list_models', { modelsDir })
 }
 
 export async function ttsListVoices(modelsDir: string): Promise<VoiceInfo[]> {
-  return invoke<VoiceInfo[]>('plugin:speech|tts_list_voices', { models_dir: modelsDir })
+  return invoke<VoiceInfo[]>('plugin:speech|tts_list_voices', { modelsDir })
 }
 
 export async function ttsAddVoice(args: {
@@ -177,13 +177,13 @@ export async function ttsAddVoice(args: {
   denoiseStrength: number
 }): Promise<VoiceInfo> {
   return invoke<VoiceInfo>('plugin:speech|tts_add_voice', {
-    models_dir: args.modelsDir,
+    modelsDir: args.modelsDir,
     name: args.name,
-    src_audio: args.srcAudio,
-    ref_text: args.refText,
+    srcAudio: args.srcAudio,
+    refText: args.refText,
     avatar: args.avatar,
     denoise: args.denoise,
-    denoise_strength: args.denoiseStrength,
+    denoiseStrength: args.denoiseStrength,
   })
 }
 
@@ -191,7 +191,7 @@ export async function ttsDeleteVoice(
   modelsDir: string,
   id: string,
 ): Promise<void> {
-  return invoke('plugin:speech|tts_delete_voice', { models_dir: modelsDir, id })
+  return invoke('plugin:speech|tts_delete_voice', { modelsDir, id })
 }
 
 export async function ttsUpdateVoice(args: {
@@ -205,14 +205,14 @@ export async function ttsUpdateVoice(args: {
   denoiseStrength: number
 }): Promise<VoiceInfo> {
   return invoke<VoiceInfo>('plugin:speech|tts_update_voice', {
-    models_dir: args.modelsDir,
+    modelsDir: args.modelsDir,
     id: args.id,
     name: args.name,
-    ref_text: args.refText,
+    refText: args.refText,
     avatar: args.avatar,
-    src_audio: args.srcAudio,
+    srcAudio: args.srcAudio,
     denoise: args.denoise,
-    denoise_strength: args.denoiseStrength,
+    denoiseStrength: args.denoiseStrength,
   })
 }
 
@@ -221,7 +221,7 @@ export async function ttsVoiceAvatar(
   id: string,
 ): Promise<number[] | null> {
   return invoke<number[] | null>('plugin:speech|tts_voice_avatar', {
-    models_dir: modelsDir,
+    modelsDir,
     id,
   })
 }
@@ -230,7 +230,7 @@ export async function ttsVoiceAudio(
   modelsDir: string,
   id: string,
 ): Promise<number[]> {
-  return invoke<number[]>('plugin:speech|tts_voice_audio', { models_dir: modelsDir, id })
+  return invoke<number[]>('plugin:speech|tts_voice_audio', { modelsDir, id })
 }
 
 export async function ttsVoiceTrimmedAudio(
@@ -239,7 +239,7 @@ export async function ttsVoiceTrimmedAudio(
   backend: string,
 ): Promise<number[]> {
   return invoke<number[]>('plugin:speech|tts_voice_trimmed_audio', {
-    models_dir: modelsDir,
+    modelsDir,
     id,
     backend,
   })

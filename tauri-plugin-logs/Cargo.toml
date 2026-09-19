@@ -1,0 +1,28 @@
+[package]
+name = "tauri-plugin-logs"
+version = "0.1.0"
+edition = "2021"
+links = "tauri-plugin-logs"
+description = "Reusable logs tab (unified log::Log + exe-adjacent log file + dev mirror test/last_logs) and optional error/analytics reporting (Aptabase) as a Tauri plugin"
+license = "MIT"
+readme = "docs/README.md"
+
+[dependencies]
+tauri = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+reqwest = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lib]
+name = "tauri_plugin_logs"
+path = "src/lib.rs"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

@@ -27,6 +27,44 @@ pub fn kill_process_tree(child: &mut Child) {
     let _ = child.wait();
 }
 
+/// Проверяет, запущен ли в системе хотя бы один процесс движка (по имени образа).
+/// Нужна для внятной ошибки при установке поверх работающего движка.
+pub fn engine_running() -> bool {
+    #[cfg(windows)]
+    {
+        match std::process::Command::new("tasklist")
+            .args(["/NH", "/FI", "IMAGENAME eq crispasr.exe"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::null())
+            .output()
+        {
+            Ok(o) => {
+                let text = String::from_utf8_lossy(&o.stdout);
+                // В строке «INFO: No tasks...» тоже есть «crispasr.exe» (условие фильтра),
+                // поэтому проверяем именно имя образа в начале строки процесса.
+                text.lines().any(|line| {
+                    line.split_whitespace()
+                        .next()
+                        .map(|w| w.eq_ignore_ascii_case("crispasr.exe"))
+                        .unwrap_or(false)
+                })
+            }
+            Err(_) => false,
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        matches!(
+            std::process::Command::new("pgrep")
+                .args(["-f", "crispasr"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status(),
+            Ok(s) if s.success()
+        )
+    }
+}
+
 /// Глобальная зачистка всех запущенных движков (по имени образа).
 pub fn kill_active_engines() {
     #[cfg(windows)]

@@ -7,17 +7,20 @@
   "types": "dist-js/index.d.ts",
   "files": [
     "dist-js",
-    "guest-js"
+    "guest-js",
+    "api-iife.js"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "build:watch": "tsc -p tsconfig.json --watch"
+    "build:watch": "tsc -p tsconfig.json --watch",
+    "build:global": "node scripts/build-global.cjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2"
   },
   "devDependencies": {
+    "esbuild": "^0.28.2",
     "typescript": "^5.4.0"
   },
   "license": "MIT"

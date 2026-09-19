@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-set-reporting-enabled"
+description = "Enables the set_reporting_enabled command without any pre-configured scope."
+commands.allow = ["set_reporting_enabled"]
+
+[[permission]]
+identifier = "deny-set-reporting-enabled"
+description = "Denies the set_reporting_enabled command without any pre-configured scope."
+commands.deny = ["set_reporting_enabled"]

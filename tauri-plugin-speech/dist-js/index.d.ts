@@ -10,7 +10,7 @@ export interface TtsSettings {
     engine_backend?: string;
     preset?: string;
 }
-/** Пресет TTS-модели из tts_models.json. */
+/** Пресет модели (TTS или STT) из speech_models.json. */
 export interface TtsPreset {
     id: string;
     label: string;

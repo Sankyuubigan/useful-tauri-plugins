@@ -1,0 +1,152 @@
+"$schema" = "../gen/schemas/acl.json"
+
+# ── Движок llama.cpp ──
+
+[[permission]]
+identifier = "allow-get-engine-status"
+description = "Allow reading the llama.cpp engine status (installed variants, gpu, cuda)."
+commands.allow = ["get_engine_status"]
+
+[[permission]]
+identifier = "allow-install-llamacpp"
+description = "Allow installing/downloading a llama.cpp backend variant."
+commands.allow = ["install_llamacpp"]
+
+[[permission]]
+identifier = "allow-set-engine-variant"
+description = "Allow switching the engine backend variant (cuda/vulkan/cpu/hip-radeon/auto)."
+commands.allow = ["set_engine_variant"]
+
+[[permission]]
+identifier = "allow-check-engine-update"
+description = "Allow checking for a newer llama.cpp engine release."
+commands.allow = ["check_engine_update"]
+
+[[permission]]
+identifier = "allow-install-engine-update"
+description = "Allow re-installing (updating) the llama.cpp engine."
+commands.allow = ["install_engine_update"]
+
+[[permission]]
+identifier = "allow-remove-engine"
+description = "Allow removing the llama.cpp engine backend."
+commands.allow = ["remove_engine"]
+
+[[permission]]
+identifier = "allow-set-engine-dir"
+description = "Allow overriding the engine directory."
+commands.allow = ["set_engine_dir"]
+
+# ── Каталог и модели ──
+
+[[permission]]
+identifier = "allow-get-models-catalog"
+description = "Allow reading the embedded/override models catalog."
+commands.allow = ["get_models_catalog"]
+
+[[permission]]
+identifier = "allow-get-engine-config"
+description = "Allow reading the current engine config (model list, last_model, mmproj, meta)."
+commands.allow = ["get_engine_config"]
+
+[[permission]]
+identifier = "allow-get-auto-download-info"
+description = "Allow reading auto-download proposal for the default model."
+commands.allow = ["get_auto_download_info"]
+
+[[permission]]
+identifier = "allow-auto-download-default-model"
+description = "Allow auto-downloading the default model into a chosen folder."
+commands.allow = ["auto_download_default_model"]
+
+[[permission]]
+identifier = "allow-add-model"
+description = "Allow adding a model file to the model list."
+commands.allow = ["add_model"]
+
+[[permission]]
+identifier = "allow-remove-model"
+description = "Allow removing a model from the list (file stays)."
+commands.allow = ["remove_model"]
+
+[[permission]]
+identifier = "allow-delete-model-file"
+description = "Allow deleting a model file from disk."
+commands.allow = ["delete_model_file"]
+
+[[permission]]
+identifier = "allow-get-mmproj-path"
+description = "Allow reading the mmproj path for a model."
+commands.allow = ["get_mmproj_path"]
+
+[[permission]]
+identifier = "allow-ensure-mmproj"
+description = "Allow downloading the mmproj for a model when missing."
+commands.allow = ["ensure_mmproj"]
+
+[[permission]]
+identifier = "allow-get-model-capabilities"
+description = "Allow reading capabilities (vision/audio/uncen) for one model."
+commands.allow = ["get_model_capabilities"]
+
+[[permission]]
+identifier = "allow-get-all-capabilities"
+description = "Allow reading capabilities for all installed models."
+commands.allow = ["get_all_capabilities"]
+
+[[permission]]
+identifier = "allow-estimate-prompt-memory"
+description = "Allow estimating VRAM usage for a prompt (model + KV cache + NVML facts)."
+commands.allow = ["estimate_prompt_memory"]
+
+# ── Параметры сэмплинга ──
+
+[[permission]]
+identifier = "allow-get-model-params"
+description = "Allow reading sampling parameters for a model."
+commands.allow = ["get_model_params"]
+
+[[permission]]
+identifier = "allow-set-model-params"
+description = "Allow saving sampling parameters for a model."
+commands.allow = ["set_model_params"]
+
+[[permission]]
+identifier = "allow-reset-model-params"
+description = "Allow resetting sampling parameters (re-derived from gguf)."
+commands.allow = ["reset_model_params"]
+
+# ── Скачивание (инструмент) ──
+
+[[permission]]
+identifier = "allow-download-model"
+description = "Allow downloading a file (used internally for models/mmproj)."
+commands.allow = ["download_model"]
+
+[default]
+description = "Default permissions for the llama-engine plugin."
+permissions = [
+  "allow-get-engine-status",
+  "allow-install-llamacpp",
+  "allow-set-engine-variant",
+  "allow-check-engine-update",
+  "allow-install-engine-update",
+  "allow-remove-engine",
+  "allow-set-engine-dir",
+  "allow-get-models-catalog",
+  "allow-get-engine-config",
+  "allow-get-auto-download-info",
+  "allow-auto-download-default-model",
+  "allow-add-model",
+  "allow-remove-model",
+  "allow-delete-model-file",
+  "allow-get-mmproj-path",
+  "allow-ensure-mmproj",
+  "allow-get-model-capabilities",
+  "allow-get-all-capabilities",
+  "allow-estimate-prompt-memory",
+  "allow-get-model-params",
+  "allow-set-model-params",
+  "allow-reset-model-params",
+  "allow-download-model",
+]

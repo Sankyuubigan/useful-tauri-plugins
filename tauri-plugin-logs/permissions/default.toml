@@ -1,0 +1,48 @@
+"$schema" = "../gen/schemas/acl.json"
+
+[[permission]]
+identifier = "allow-get-last-logs-path"
+description = "Allow reading the resolved dev mirror path (test/last_logs.txt)."
+commands.allow = ["get_last_logs_path"]
+
+[[permission]]
+identifier = "allow-get-log-file-path"
+description = "Allow reading the resolved app log file path (king_orch.log)."
+commands.allow = ["get_log_file_path"]
+
+[[permission]]
+identifier = "allow-log-frontend-event"
+description = "Allow writing a frontend log line through the unified logger."
+commands.allow = ["log_frontend_event"]
+
+[[permission]]
+identifier = "allow-track-event"
+description = "Allow sending an anonymized analytics event to the reporting backend."
+commands.allow = ["track_event"]
+
+[[permission]]
+identifier = "allow-track-error"
+description = "Allow sending an error report to the reporting backend."
+commands.allow = ["track_error"]
+
+[[permission]]
+identifier = "allow-set-reporting-enabled"
+description = "Allow toggling cloud error/analytics reporting at runtime."
+commands.allow = ["set_reporting_enabled"]
+
+[[permission]]
+identifier = "allow-save-logs-file"
+description = "Allow writing the log text to a user-selected file path."
+commands.allow = ["save_logs_file"]
+
+[default]
+description = "Default permissions for the logs plugin."
+permissions = [
+  "allow-get-last-logs-path",
+  "allow-get-log-file-path",
+  "allow-log-frontend-event",
+  "allow-track-event",
+  "allow-track-error",
+  "allow-set-reporting-enabled",
+  "allow-save-logs-file",
+]

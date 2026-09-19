@@ -182,6 +182,8 @@ fn build_speech_body(
     speed: f32,
     clone: bool,
     language: &str,
+    source_lang: &str,
+    seed: Option<u64>,
 ) -> serde_json::Value {
     let mut body = serde_json::Map::new();
     body.insert("model".into(), serde_json::Value::String(backend.to_string()));
@@ -230,6 +232,21 @@ if clone {
         }
     if !language.is_empty() {
         body.insert("language".into(), serde_json::Value::String(language.to_string()));
+    }
+    if !source_lang.is_empty() {
+        // Язык, на котором говорит КЛОН-РЕФЕРЕНС (не выходной язык). cosyvoice3
+        // по нему решает, нужен ли cross-lingual синтез (EN-референс → RU-озвучка).
+        body.insert(
+            "source_lang".into(),
+            serde_json::Value::String(source_lang.to_string()),
+        );
+    }
+    if let Some(seed) = seed {
+        // Полный seed задаёт и RAS-семплер cosyvoice3, и talker-последовательность
+        // (см. tts_backend_cosyvoice3: cosyvoice3_tts_set_seed). Повтор с другим
+        // seed меняет генерацию; для cosyvoice3 это единственный способ повлиять
+        // на стохастику без смены входов (см. retry в PASS3).
+        body.insert("seed".into(), serde_json::Value::from(seed));
     }
     serde_json::Value::Object(body)
 }
@@ -472,25 +489,30 @@ impl TtsEngine {
         Ok(())
     }
 
-    /// Синтезирует текст в MP3 и возвращает сырые байты.
+    /// Синтезирует текст в WAV (24 кГц mono) и возвращает байты.
     ///
     /// `voice` — имя спикера или путь к WAV для клонирования (передаётся в теле запроса,
     /// per-request; может быть пустым). При `clone == true` в тело добавляются
     /// `consent_attestation` + `spoken_disclaimer:false` + `marking_attestation`
     /// (см. `build_speech_body`). `language` — язык синтеза ("ru"/"en"); пустая
-    /// строка → авто-язык движка.
+    /// строка → авто-язык движка. `source_lang` — язык, на котором говорит
+    /// клон-референс (для cross-lingual clone, напр. `en`); пустая строка → авто.
     ///
     /// Гарантия качества выхода: если движок в stderr пометил генерацию как runaway
     /// («talker не выдал EOS, результат отброшен»), байты НЕ возвращаются — вместо
     /// файла с «тишиной/мусором» приходит понятная ошибка.
     ///
-    /// Повторный запрос с другим seed НЕ делается: траектория talker'а
-    /// детерминирована (декод acoustic-токенов greedy), смена seed не меняет
-    /// результат, а только тратит ещё ~40 с на разгон мусора. Runaway — это
-    /// дивергенция кондиционирования модели, а не случайный шум: его причина в
-    /// основном входе (слишком длинный/неподходящий референс-голос, неоднозначный
-    /// текст), и единственный путь к успеху — изменить вход (короткий референс
-    /// 3–10 с), а не повторять тот же.
+/// Повторный запрос с другим seed здесь НЕ делается — решает вызывающая сторона
+    /// (PASS3 пайплайна озвучки) через параметр `seed`, т.к. для qwen3-tts декод
+    /// talker'а greedy (seed бесполезен), а для cosyvoice3 RAS-семплер seed-зависим
+    /// (см. retry-логику в dubbing пипeline). Runaway — это дивергенция
+    /// кондиционирования модели, а не случайный шум: его причина в основном входе
+    /// (слишком длинный/неподходящий референс-голос, неоднозначный текст), и
+    /// единственный путь к успеху — изменить вход (короткий референс 3–10 с),
+    /// а не повторять тот же.
+    ///
+    /// `seed` — опциональный seed генерации (см. `build_speech_body`); `None` —
+    /// движок использует свой дефолт.
     pub async fn speak(
         &self,
         text: &str,
@@ -500,6 +522,8 @@ impl TtsEngine {
         speed: f32,
         clone: bool,
         language: &str,
+        source_lang: &str,
+        seed: Option<u64>,
     ) -> Result<(Vec<u8>, Option<SynthTiming>), String> {
         let port = *self.port.lock().unwrap();
         let backend = self.loaded_backend.lock().unwrap().clone();
@@ -529,6 +553,8 @@ impl TtsEngine {
             speed,
             clone,
             &effective_language,
+            source_lang,
+            seed,
         );
 
         let start_runaways = self.runaways.load(Ordering::SeqCst);
@@ -899,7 +925,7 @@ mod tests {
 
     #[test]
     fn speech_body_has_no_consent_attestation() {
-        let body = build_speech_body("cosyvoice3-tts", "привет", "voice1", "", "транскрипт", 1.0, false, "");
+        let body = build_speech_body("cosyvoice3-tts", "привет", "voice1", "", "транскрипт", 1.0, false, "", "", None);
         let obj = body.as_object().unwrap();
         assert!(!obj.contains_key("consent_attestation"), "consent_attestation всё ещё в теле запроса — будет ватермарк");
         assert_eq!(obj.get("response_format").unwrap(), &serde_json::Value::String("wav".into()));
@@ -907,7 +933,7 @@ mod tests {
         assert!(!obj.contains_key("speed"));
         assert!(obj.contains_key("voice"));
 
-        let body2 = build_speech_body("qwen3-tts", "hi", "", "", "", 1.5, false, "");
+        let body2 = build_speech_body("qwen3-tts", "hi", "", "", "", 1.5, false, "", "", None);
         let obj2 = body2.as_object().unwrap();
         assert!(!obj2.contains_key("consent_attestation"));
         assert!(!obj2.contains_key("voice"));
@@ -916,7 +942,7 @@ mod tests {
 
     #[test]
     fn speech_body_clone_requests_opt_out_disclaimer() {
-        let body = build_speech_body("qwen3-tts", "Привет", "v123abc", "", "transcript text", 1.0, true, "ru");
+        let body = build_speech_body("qwen3-tts", "Привет", "v123abc", "", "transcript text", 1.0, true, "ru", "", None);
         let obj = body.as_object().unwrap();
         // Клон без consent_attestation движок отклоняет (400 consent_required),
         // поэтому поле обязано быть.
@@ -937,11 +963,25 @@ mod tests {
 
     #[test]
     fn speech_body_non_clone_keeps_clean_payload() {
-        let body = build_speech_body("cosyvoice3-tts", "привет", "voice1", "", "", 1.0, false, "");
+        let body = build_speech_body("cosyvoice3-tts", "привет", "voice1", "", "", 1.0, false, "", "", None);
         let obj = body.as_object().unwrap();
         assert!(!obj.contains_key("consent_attestation"));
         assert!(!obj.contains_key("spoken_disclaimer"));
         assert!(!obj.contains_key("marking_attestation"));
+    }
+
+    #[test]
+    fn speech_body_source_lang_for_cross_lingual_clone() {
+        // Cross-lingual clone: EN-референс → RU-озвучка. source_lang обязан попасть в тело.
+        let body = build_speech_body("cosyvoice3-tts", "Привет", "v123abc", "", "the reference transcript", 1.0, true, "ru", "en", None);
+        let obj = body.as_object().unwrap();
+        assert_eq!(obj.get("source_lang").unwrap(), &serde_json::Value::String("en".into()));
+        assert_eq!(obj.get("language").unwrap(), &serde_json::Value::String("ru".into()));
+
+        // Пустой source_lang не загрязняет тело.
+        let body2 = build_speech_body("cosyvoice3-tts", "hi", "voice1", "", "", 1.0, false, "", "", None);
+        let obj2 = body2.as_object().unwrap();
+        assert!(!obj2.contains_key("source_lang"));
     }
 
     #[test]

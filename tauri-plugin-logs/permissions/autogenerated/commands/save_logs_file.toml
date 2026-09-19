@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-save-logs-file"
+description = "Enables the save_logs_file command without any pre-configured scope."
+commands.allow = ["save_logs_file"]
+
+[[permission]]
+identifier = "deny-save-logs-file"
+description = "Denies the save_logs_file command without any pre-configured scope."
+commands.deny = ["save_logs_file"]

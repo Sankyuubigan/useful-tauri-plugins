@@ -1,0 +1,720 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PermissionFile",
+  "description": "Permission file that can define a default permission, a set of permissions or a list of inlined permissions.",
+  "type": "object",
+  "properties": {
+    "default": {
+      "description": "The default permission set for the plugin",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/DefaultPermission"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "set": {
+      "description": "A list of permissions sets defined",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PermissionSet"
+      }
+    },
+    "permission": {
+      "description": "A list of inlined permissions",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Permission"
+      }
+    }
+  },
+  "definitions": {
+    "DefaultPermission": {
+      "description": "The default permission set of the plugin.\n\nWorks similarly to a permission with the \"default\" identifier.",
+      "type": "object",
+      "required": [
+        "permissions"
+      ],
+      "properties": {
+        "version": {
+          "description": "The version of the permission.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 1.0
+        },
+        "description": {
+          "description": "Human-readable description of what the permission does. Tauri convention is to use `<h4>` headings in markdown content for Tauri documentation generation purposes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "permissions": {
+          "description": "All permissions this set contains.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "PermissionSet": {
+      "description": "A set of direct permissions grouped together under a new name.",
+      "type": "object",
+      "required": [
+        "description",
+        "identifier",
+        "permissions"
+      ],
+      "properties": {
+        "identifier": {
+          "description": "A unique identifier for the permission.",
+          "type": "string"
+        },
+        "description": {
+          "description": "Human-readable description of what the permission does.",
+          "type": "string"
+        },
+        "permissions": {
+          "description": "All permissions this set contains.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/PermissionKind"
+          }
+        }
+      }
+    },
+    "Permission": {
+      "description": "Descriptions of explicit privileges of commands.\n\nIt can enable commands to be accessible in the frontend of the application.\n\nIf the scope is defined it can be used to fine grain control the access of individual or multiple commands.",
+      "type": "object",
+      "required": [
+        "identifier"
+      ],
+      "properties": {
+        "version": {
+          "description": "The version of the permission.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 1.0
+        },
+        "identifier": {
+          "description": "A unique identifier for the permission.",
+          "type": "string"
+        },
+        "description": {
+          "description": "Human-readable description of what the permission does. Tauri internal convention is to use `<h4>` headings in markdown content for Tauri documentation generation purposes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commands": {
+          "description": "Allowed or denied commands when using this permission.",
+          "default": {
+            "allow": [],
+            "deny": []
+          },
+          "allOf": [
+            {
+              "$ref": "#/definitions/Commands"
+            }
+          ]
+        },
+        "scope": {
+          "description": "Allowed or denied scoped when using this permission.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Scopes"
+            }
+          ]
+        },
+        "platforms": {
+          "description": "Target platforms this permission applies. By default all platforms are affected by this permission.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/Target"
+          }
+        }
+      }
+    },
+    "Commands": {
+      "description": "Allowed and denied commands inside a permission.\n\nIf two commands clash inside of `allow` and `deny`, it should be denied by default.",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "description": "Allowed command.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "deny": {
+          "description": "Denied command, which takes priority.",
+          "default": [],
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "Scopes": {
+      "description": "An argument for fine grained behavior control of Tauri commands.\n\nIt can be of any serde serializable type and is used to allow or prevent certain actions inside a Tauri command. The configured scope is passed to the command and will be enforced by the command implementation.\n\n## Example\n\n```json { \"allow\": [{ \"path\": \"$HOME/**\" }], \"deny\": [{ \"path\": \"$HOME/secret.txt\" }] } ```",
+      "type": "object",
+      "properties": {
+        "allow": {
+          "description": "Data that defines what is allowed by the scope.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/Value"
+          }
+        },
+        "deny": {
+          "description": "Data that defines what is denied by the scope. This should be prioritized by validation logic.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/Value"
+          }
+        }
+      }
+    },
+    "Value": {
+      "description": "All supported ACL values.",
+      "anyOf": [
+        {
+          "description": "Represents a null JSON value.",
+          "type": "null"
+        },
+        {
+          "description": "Represents a [`bool`].",
+          "type": "boolean"
+        },
+        {
+          "description": "Represents a valid ACL [`Number`].",
+          "allOf": [
+            {
+              "$ref": "#/definitions/Number"
+            }
+          ]
+        },
+        {
+          "description": "Represents a [`String`].",
+          "type": "string"
+        },
+        {
+          "description": "Represents a list of other [`Value`]s.",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/Value"
+          }
+        },
+        {
+          "description": "Represents a map of [`String`] keys to [`Value`]s.",
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/definitions/Value"
+          }
+        }
+      ]
+    },
+    "Number": {
+      "description": "A valid ACL number.",
+      "anyOf": [
+        {
+          "description": "Represents an [`i64`].",
+          "type": "integer",
+          "format": "int64"
+        },
+        {
+          "description": "Represents a [`f64`].",
+          "type": "number",
+          "format": "double"
+        }
+      ]
+    },
+    "Target": {
+      "description": "Platform target.",
+      "oneOf": [
+        {
+          "description": "MacOS.",
+          "type": "string",
+          "enum": [
+            "macOS"
+          ]
+        },
+        {
+          "description": "Windows.",
+          "type": "string",
+          "enum": [
+            "windows"
+          ]
+        },
+        {
+          "description": "Linux.",
+          "type": "string",
+          "enum": [
+            "linux"
+          ]
+        },
+        {
+          "description": "Android.",
+          "type": "string",
+          "enum": [
+            "android"
+          ]
+        },
+        {
+          "description": "iOS.",
+          "type": "string",
+          "enum": [
+            "iOS"
+          ]
+        }
+      ]
+    },
+    "PermissionKind": {
+      "type": "string",
+      "oneOf": [
+        {
+          "description": "Enables the add_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-add-model",
+          "markdownDescription": "Enables the add_model command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the add_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-add-model",
+          "markdownDescription": "Denies the add_model command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the auto_download_default_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-auto-download-default-model",
+          "markdownDescription": "Enables the auto_download_default_model command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the auto_download_default_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-auto-download-default-model",
+          "markdownDescription": "Denies the auto_download_default_model command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the check_engine_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-check-engine-update",
+          "markdownDescription": "Enables the check_engine_update command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the check_engine_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-check-engine-update",
+          "markdownDescription": "Denies the check_engine_update command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the delete_model_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-delete-model-file",
+          "markdownDescription": "Enables the delete_model_file command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the delete_model_file command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-delete-model-file",
+          "markdownDescription": "Denies the delete_model_file command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the download_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-download-model",
+          "markdownDescription": "Enables the download_model command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the download_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-download-model",
+          "markdownDescription": "Denies the download_model command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the ensure_mmproj command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-ensure-mmproj",
+          "markdownDescription": "Enables the ensure_mmproj command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the ensure_mmproj command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-ensure-mmproj",
+          "markdownDescription": "Denies the ensure_mmproj command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the estimate_prompt_memory command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-estimate-prompt-memory",
+          "markdownDescription": "Enables the estimate_prompt_memory command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the estimate_prompt_memory command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-estimate-prompt-memory",
+          "markdownDescription": "Denies the estimate_prompt_memory command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_all_capabilities command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-all-capabilities",
+          "markdownDescription": "Enables the get_all_capabilities command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_all_capabilities command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-all-capabilities",
+          "markdownDescription": "Denies the get_all_capabilities command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_auto_download_info command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-auto-download-info",
+          "markdownDescription": "Enables the get_auto_download_info command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_auto_download_info command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-auto-download-info",
+          "markdownDescription": "Denies the get_auto_download_info command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_engine_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-engine-config",
+          "markdownDescription": "Enables the get_engine_config command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_engine_config command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-engine-config",
+          "markdownDescription": "Denies the get_engine_config command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_engine_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-engine-status",
+          "markdownDescription": "Enables the get_engine_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_engine_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-engine-status",
+          "markdownDescription": "Denies the get_engine_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_mmproj_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-mmproj-path",
+          "markdownDescription": "Enables the get_mmproj_path command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_mmproj_path command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-mmproj-path",
+          "markdownDescription": "Denies the get_mmproj_path command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_model_capabilities command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-model-capabilities",
+          "markdownDescription": "Enables the get_model_capabilities command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_model_capabilities command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-model-capabilities",
+          "markdownDescription": "Denies the get_model_capabilities command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_model_params command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-model-params",
+          "markdownDescription": "Enables the get_model_params command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_model_params command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-model-params",
+          "markdownDescription": "Denies the get_model_params command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_models_catalog command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-models-catalog",
+          "markdownDescription": "Enables the get_models_catalog command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_models_catalog command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-models-catalog",
+          "markdownDescription": "Denies the get_models_catalog command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the install_engine_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-install-engine-update",
+          "markdownDescription": "Enables the install_engine_update command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the install_engine_update command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-install-engine-update",
+          "markdownDescription": "Denies the install_engine_update command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the install_llamacpp command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-install-llamacpp",
+          "markdownDescription": "Enables the install_llamacpp command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the install_llamacpp command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-install-llamacpp",
+          "markdownDescription": "Denies the install_llamacpp command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the remove_engine command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-remove-engine",
+          "markdownDescription": "Enables the remove_engine command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_engine command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-remove-engine",
+          "markdownDescription": "Denies the remove_engine command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the remove_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-remove-model",
+          "markdownDescription": "Enables the remove_model command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_model command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-remove-model",
+          "markdownDescription": "Denies the remove_model command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the reset_model_params command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-reset-model-params",
+          "markdownDescription": "Enables the reset_model_params command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the reset_model_params command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-reset-model-params",
+          "markdownDescription": "Denies the reset_model_params command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_engine_dir command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-engine-dir",
+          "markdownDescription": "Enables the set_engine_dir command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_engine_dir command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-engine-dir",
+          "markdownDescription": "Denies the set_engine_dir command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_engine_variant command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-engine-variant",
+          "markdownDescription": "Enables the set_engine_variant command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_engine_variant command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-engine-variant",
+          "markdownDescription": "Denies the set_engine_variant command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_model_params command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-model-params",
+          "markdownDescription": "Enables the set_model_params command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_model_params command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-model-params",
+          "markdownDescription": "Denies the set_model_params command without any pre-configured scope."
+        },
+        {
+          "description": "Default permissions for the llama-engine plugin.\n#### This default permission set includes:\n\n- `allow-get-engine-status`\n- `allow-install-llamacpp`\n- `allow-set-engine-variant`\n- `allow-check-engine-update`\n- `allow-install-engine-update`\n- `allow-remove-engine`\n- `allow-set-engine-dir`\n- `allow-get-models-catalog`\n- `allow-get-engine-config`\n- `allow-get-auto-download-info`\n- `allow-auto-download-default-model`\n- `allow-add-model`\n- `allow-remove-model`\n- `allow-delete-model-file`\n- `allow-get-mmproj-path`\n- `allow-ensure-mmproj`\n- `allow-get-model-capabilities`\n- `allow-get-all-capabilities`\n- `allow-estimate-prompt-memory`\n- `allow-get-model-params`\n- `allow-set-model-params`\n- `allow-reset-model-params`\n- `allow-download-model`",
+          "type": "string",
+          "const": "default",
+          "markdownDescription": "Default permissions for the llama-engine plugin.\n#### This default permission set includes:\n\n- `allow-get-engine-status`\n- `allow-install-llamacpp`\n- `allow-set-engine-variant`\n- `allow-check-engine-update`\n- `allow-install-engine-update`\n- `allow-remove-engine`\n- `allow-set-engine-dir`\n- `allow-get-models-catalog`\n- `allow-get-engine-config`\n- `allow-get-auto-download-info`\n- `allow-auto-download-default-model`\n- `allow-add-model`\n- `allow-remove-model`\n- `allow-delete-model-file`\n- `allow-get-mmproj-path`\n- `allow-ensure-mmproj`\n- `allow-get-model-capabilities`\n- `allow-get-all-capabilities`\n- `allow-estimate-prompt-memory`\n- `allow-get-model-params`\n- `allow-set-model-params`\n- `allow-reset-model-params`\n- `allow-download-model`"
+        },
+        {
+          "description": "Allow reading the llama.cpp engine status (installed variants, gpu, cuda).",
+          "type": "string",
+          "const": "allow-get-engine-status",
+          "markdownDescription": "Allow reading the llama.cpp engine status (installed variants, gpu, cuda)."
+        },
+        {
+          "description": "Allow installing/downloading a llama.cpp backend variant.",
+          "type": "string",
+          "const": "allow-install-llamacpp",
+          "markdownDescription": "Allow installing/downloading a llama.cpp backend variant."
+        },
+        {
+          "description": "Allow switching the engine backend variant (cuda/vulkan/cpu/hip-radeon/auto).",
+          "type": "string",
+          "const": "allow-set-engine-variant",
+          "markdownDescription": "Allow switching the engine backend variant (cuda/vulkan/cpu/hip-radeon/auto)."
+        },
+        {
+          "description": "Allow checking for a newer llama.cpp engine release.",
+          "type": "string",
+          "const": "allow-check-engine-update",
+          "markdownDescription": "Allow checking for a newer llama.cpp engine release."
+        },
+        {
+          "description": "Allow re-installing (updating) the llama.cpp engine.",
+          "type": "string",
+          "const": "allow-install-engine-update",
+          "markdownDescription": "Allow re-installing (updating) the llama.cpp engine."
+        },
+        {
+          "description": "Allow removing the llama.cpp engine backend.",
+          "type": "string",
+          "const": "allow-remove-engine",
+          "markdownDescription": "Allow removing the llama.cpp engine backend."
+        },
+        {
+          "description": "Allow overriding the engine directory.",
+          "type": "string",
+          "const": "allow-set-engine-dir",
+          "markdownDescription": "Allow overriding the engine directory."
+        },
+        {
+          "description": "Allow reading the embedded/override models catalog.",
+          "type": "string",
+          "const": "allow-get-models-catalog",
+          "markdownDescription": "Allow reading the embedded/override models catalog."
+        },
+        {
+          "description": "Allow reading the current engine config (model list, last_model, mmproj, meta).",
+          "type": "string",
+          "const": "allow-get-engine-config",
+          "markdownDescription": "Allow reading the current engine config (model list, last_model, mmproj, meta)."
+        },
+        {
+          "description": "Allow reading auto-download proposal for the default model.",
+          "type": "string",
+          "const": "allow-get-auto-download-info",
+          "markdownDescription": "Allow reading auto-download proposal for the default model."
+        },
+        {
+          "description": "Allow auto-downloading the default model into a chosen folder.",
+          "type": "string",
+          "const": "allow-auto-download-default-model",
+          "markdownDescription": "Allow auto-downloading the default model into a chosen folder."
+        },
+        {
+          "description": "Allow adding a model file to the model list.",
+          "type": "string",
+          "const": "allow-add-model",
+          "markdownDescription": "Allow adding a model file to the model list."
+        },
+        {
+          "description": "Allow removing a model from the list (file stays).",
+          "type": "string",
+          "const": "allow-remove-model",
+          "markdownDescription": "Allow removing a model from the list (file stays)."
+        },
+        {
+          "description": "Allow deleting a model file from disk.",
+          "type": "string",
+          "const": "allow-delete-model-file",
+          "markdownDescription": "Allow deleting a model file from disk."
+        },
+        {
+          "description": "Allow reading the mmproj path for a model.",
+          "type": "string",
+          "const": "allow-get-mmproj-path",
+          "markdownDescription": "Allow reading the mmproj path for a model."
+        },
+        {
+          "description": "Allow downloading the mmproj for a model when missing.",
+          "type": "string",
+          "const": "allow-ensure-mmproj",
+          "markdownDescription": "Allow downloading the mmproj for a model when missing."
+        },
+        {
+          "description": "Allow reading capabilities (vision/audio/uncen) for one model.",
+          "type": "string",
+          "const": "allow-get-model-capabilities",
+          "markdownDescription": "Allow reading capabilities (vision/audio/uncen) for one model."
+        },
+        {
+          "description": "Allow reading capabilities for all installed models.",
+          "type": "string",
+          "const": "allow-get-all-capabilities",
+          "markdownDescription": "Allow reading capabilities for all installed models."
+        },
+        {
+          "description": "Allow estimating VRAM usage for a prompt (model + KV cache + NVML facts).",
+          "type": "string",
+          "const": "allow-estimate-prompt-memory",
+          "markdownDescription": "Allow estimating VRAM usage for a prompt (model + KV cache + NVML facts)."
+        },
+        {
+          "description": "Allow reading sampling parameters for a model.",
+          "type": "string",
+          "const": "allow-get-model-params",
+          "markdownDescription": "Allow reading sampling parameters for a model."
+        },
+        {
+          "description": "Allow saving sampling parameters for a model.",
+          "type": "string",
+          "const": "allow-set-model-params",
+          "markdownDescription": "Allow saving sampling parameters for a model."
+        },
+        {
+          "description": "Allow resetting sampling parameters (re-derived from gguf).",
+          "type": "string",
+          "const": "allow-reset-model-params",
+          "markdownDescription": "Allow resetting sampling parameters (re-derived from gguf)."
+        },
+        {
+          "description": "Allow downloading a file (used internally for models/mmproj).",
+          "type": "string",
+          "const": "allow-download-model",
+          "markdownDescription": "Allow downloading a file (used internally for models/mmproj)."
+        }
+      ]
+    }
+  }
+}

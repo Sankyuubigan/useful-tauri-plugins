@@ -59,15 +59,15 @@ pub struct PluginState {
 mod audio;
 mod clone;
 mod commands;
-mod download;
+pub mod download;
 mod inject;
 mod log;
 mod process_util;
 mod stt;
 mod stt_events;
-mod stt_settings;
+pub mod stt_settings;
 mod tts;
-mod tts_settings;
+pub mod tts_settings;
 mod voices;
 pub mod ws_client;
 

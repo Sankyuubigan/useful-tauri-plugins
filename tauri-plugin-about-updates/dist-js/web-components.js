@@ -14,6 +14,8 @@ class AboutUpdatesPanel extends HTMLElement {
         super(...arguments);
         this.repo = '';
         this.busy = false;
+        this.historyLoaded = false;
+        this.historyOpen = false;
     }
     static get observedAttributes() {
         return ['repo'];
@@ -57,7 +59,7 @@ class AboutUpdatesPanel extends HTMLElement {
           <button id="rollback">История / откат</button>
         </div>
         <div id="status" class="muted" style="margin-top:8px"></div>
-        <div id="history" style="margin-top:8px"></div>
+        <div id="history" style="margin-top:8px" hidden></div>
       </div>`;
         const ver = await getAppVersion().catch(() => '?');
         this.root.getElementById('ver').textContent = ver;
@@ -97,35 +99,72 @@ class AboutUpdatesPanel extends HTMLElement {
         }
     }
     async onRollback() {
-        if (this.busy)
+        const box = this.root.getElementById('history');
+        this.historyOpen = !this.historyOpen;
+        box.hidden = !this.historyOpen;
+        if (!this.historyOpen || this.historyLoaded)
             return;
+        this.historyLoaded = true;
         this.busy = true;
         this.setStatus('Загрузка истории релизов…');
         try {
             const history = await getReleaseHistory();
-            const box = this.root.getElementById('history');
             box.innerHTML = '';
             const title = document.createElement('div');
             title.className = 'muted';
             title.textContent = 'Доступные релизы:';
             box.appendChild(title);
+            const row = document.createElement('div');
+            row.className = 'row';
+            const select = document.createElement('select');
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = '— выберите версию —';
+            placeholder.disabled = true;
+            placeholder.selected = true;
+            select.appendChild(placeholder);
             for (const r of history) {
-                const row = document.createElement('div');
-                row.style.margin = '4px 0';
-                const btn = document.createElement('button');
-                btn.textContent = r.isCurrent ? `${r.version} (текущая)` : `Откатить на ${r.version}`;
-                btn.disabled = r.isCurrent;
-                btn.addEventListener('click', async () => {
-                    this.setStatus(`Откат на ${r.version}…`);
-                    try {
-                        await installRelease(r.downloadUrl);
-                    }
-                    catch (e) {
-                        this.setStatus('Ошибка отката: ' + e.message);
-                    }
-                });
-                row.appendChild(btn);
-                box.appendChild(row);
+                if (r.isCurrent)
+                    continue;
+                const opt = document.createElement('option');
+                opt.value = r.version;
+                opt.textContent = r.pubDate ? `v${r.version} — ${new Date(r.pubDate).toLocaleDateString()}` : `v${r.version}`;
+                opt.dataset.url = r.downloadUrl;
+                select.appendChild(opt);
+            }
+            row.appendChild(select);
+            const rollbackBtn = document.createElement('button');
+            rollbackBtn.className = 'primary';
+            rollbackBtn.textContent = 'Откатить';
+            rollbackBtn.disabled = true;
+            rollbackBtn.addEventListener('click', async () => {
+                const selected = select.selectedOptions[0];
+                const url = selected?.dataset.url;
+                if (!url || this.busy)
+                    return;
+                this.busy = true;
+                this.setStatus(`Откат на ${selected.value}…`);
+                try {
+                    await installRelease(url);
+                }
+                catch (e) {
+                    this.setStatus('Ошибка отката: ' + e.message);
+                }
+                finally {
+                    this.busy = false;
+                }
+            });
+            select.addEventListener('change', () => {
+                rollbackBtn.disabled = select.selectedOptions[0]?.dataset.url ? false : true;
+            });
+            row.appendChild(rollbackBtn);
+            box.appendChild(row);
+            if (select.options.length <= 1) {
+                const none = document.createElement('div');
+                none.className = 'muted';
+                none.style.marginTop = '8px';
+                none.textContent = 'Реестр более старых версий пуст.';
+                box.appendChild(none);
             }
             this.setStatus('');
         }

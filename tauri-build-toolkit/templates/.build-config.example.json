@@ -1,0 +1,25 @@
+{
+  "repo": "Owner/RepoName",
+  "branch": "main",
+  "appExe": "my_app",
+  "productName": "My App",
+  "npmInstallArgs": ["--legacy-peer-deps"],
+  "syncDirs": ["agents", "tasks_for_test_llm", "mcp_servers"],
+  "devWindow": {
+    "title": "My App - Dev Window",
+    "width": 1100,
+    "height": 850,
+    "resizable": true,
+    "fullscreen": false,
+    "additionalBrowserArgs": "--remote-debugging-port=9222 --remote-allow-origins=*"
+  },
+  "vcRedist": true,
+  "vcRedistDlls": ["vcruntime140.dll", "vcruntime140_1.dll", "msvcp140.dll", "msvcp140_1.dll", "concrt140.dll"],
+  "signing": {
+    "keyPath": "",
+    "passwordFile": "",
+    "password": ""
+  },
+  "syncPackageJsonVersion": false,
+  "releaseNotesTemplate": "Auto release ${product} ${tag}"
+}

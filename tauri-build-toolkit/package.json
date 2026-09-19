@@ -1,0 +1,19 @@
+{
+  "name": "@my-tauri-plugins/build-toolkit",
+  "version": "0.1.0",
+  "description": "Shared build/installer/release tooling and version sync (YY.M.P) for Tauri apps. Generalization of build.bat / generate_installer.bat / release.bat from the King Orch reference project.",
+  "type": "commonjs",
+  "main": "cli.cjs",
+  "bin": {
+    "tauri-build": "cli.cjs"
+  },
+  "scripts": {
+    "doctor": "node cli.cjs doctor",
+    "build": "node cli.cjs build",
+    "installer": "node cli.cjs installer",
+    "release": "node cli.cjs release",
+    "test": "node cli.cjs test",
+    "init": "node cli.cjs init"
+  },
+  "license": "MIT"
+}

@@ -121,11 +121,11 @@
     "size": "880 MB"
   },
   {
-    "id": "cosyvoice3-tts",
-    "label": "CosyVoice3 0.5B (клонирование WAV, RU)",
-    "backend": "cosyvoice3-tts",
-    "model_file": "cosyvoice3-llm-q4_k.gguf",
-    "model_url": "https://huggingface.co/cstr/cosyvoice3-0.5b-2512-GGUF/resolve/main/cosyvoice3-llm-q4_k.gguf",
+    "id": "cosyvoice3-tts-rl",
+    "label": "CosyVoice3 0.5B RL (клонирование WAV, RU, стабильнее)",
+    "backend": "cosyvoice3-tts-rl",
+    "model_file": "cosyvoice3-llm-rl-q4_k.gguf",
+    "model_url": "https://huggingface.co/cstr/cosyvoice3-0.5b-2512-GGUF/resolve/main/cosyvoice3-llm-rl-q4_k.gguf",
     "codec": [
       "cosyvoice3-flow-q8_0.gguf",
       "https://huggingface.co/cstr/cosyvoice3-0.5b-2512-GGUF/resolve/main/cosyvoice3-flow-q8_0.gguf"
@@ -162,7 +162,7 @@
     ],
     "supports_instruct": false,
     "supports_russian": true,
-    "size": "745 MB"
+    "size": "366 MB"
   },
   {
     "id": "voxcpm2-tts",

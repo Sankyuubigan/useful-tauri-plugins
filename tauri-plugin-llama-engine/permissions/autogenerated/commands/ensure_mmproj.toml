@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-ensure-mmproj"
+description = "Enables the ensure_mmproj command without any pre-configured scope."
+commands.allow = ["ensure_mmproj"]
+
+[[permission]]
+identifier = "deny-ensure-mmproj"
+description = "Denies the ensure_mmproj command without any pre-configured scope."
+commands.deny = ["ensure_mmproj"]

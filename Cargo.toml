@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["tauri-plugin-about-updates", "tauri-plugin-speech"]
+members = ["tauri-plugin-about-updates", "tauri-plugin-speech", "tauri-plugin-logs", "tauri-plugin-llama-engine"]
 
 [workspace.dependencies]
 tauri = { version = "2", features = [] }
@@ -33,10 +33,16 @@ windows = { version = "0.58", features = [
     "Win32_Foundation",
 ] }
 
-# Будущие модули (llama-engine и т.п.) добавляются сюда как members:
-# members = ["tauri-plugin-about-updates", "tauri-plugin-speech", "tauri-plugin-llama-engine"]
 # Единый кастомный log::Log логгер хоста (core rules §2.5)
 log = "0.4"
+
+# Движок llama.cpp (tauri-plugin-llama-engine): GPU-детект, VRAM, скачивание моделей.
+# reqwest в плагине объявлен отдельно (default-features=false + rustls, как в хосте).
+sysinfo = "0.30.0"
+nvml-wrapper = "0.10.0"
+sha2 = "0.10"
+futures-util = "0.3"
+minijinja = "1.0"
 
 # Сохранение озвучки в MP3 (кодек CrispStrobe glint — тот же, что энкодит
 # response_format=mp3 в CrispASR; чистый Rust-враппер, без системных либ)

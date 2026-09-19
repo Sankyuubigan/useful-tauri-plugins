@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-check-engine-update"
+description = "Enables the check_engine_update command without any pre-configured scope."
+commands.allow = ["check_engine_update"]
+
+[[permission]]
+identifier = "deny-check-engine-update"
+description = "Denies the check_engine_update command without any pre-configured scope."
+commands.deny = ["check_engine_update"]

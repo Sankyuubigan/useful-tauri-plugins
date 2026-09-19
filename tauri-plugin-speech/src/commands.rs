@@ -301,7 +301,7 @@ pub async fn tts_speak<R: Runtime>(
     let synth_start = Instant::now();
     let (wav, timing) = state
         .tts
-        .speak(&text, &server_voice, &body_instruct, &clone_ref_text, speed, clone, &language)
+        .speak(&text, &server_voice, &body_instruct, &clone_ref_text, speed, clone, &language, "", None)
         .await
         .map_err(|e| {
             log::app_log(&app, &format!("ТТС ОШИБКА: {e}"));

@@ -238,6 +238,74 @@ impl SttEngine {
         *self.status.lock().unwrap() = SttStatus::Stopped;
         crate::stt_events::emit_status(app, &self.status.lock().unwrap());
     }
+
+    /// Оффлайн batch-распознавание одного WAV-файла через HTTP
+    /// (`POST /v1/audio/transcriptions`, multipart). Работает с ЛЮБЫМ бэкендом
+    /// (не только whisper) — в отличие от WS-стриминга. Возвращает распознанный
+    /// текст (response_format=json, поле `text`).
+    ///
+    /// `language` — ISO-639-1 код (например "en"); пустая строка = язык сервера.
+    pub async fn transcribe(&self, wav_path: &str, language: &str) -> Result<String, String> {
+        let port = *self.ws_port.lock().unwrap();
+        if port == 0 {
+            return Err("STT движок не запущен (вызовите ensure перед transcribe)".into());
+        }
+        let wav_path = std::path::Path::new(wav_path);
+        if !wav_path.exists() {
+            return Err(format!("STT: файл не найден: {}", wav_path.display()));
+        }
+        let bytes = std::fs::read(wav_path)
+            .map_err(|e| format!("STT: не удалось прочитать {}: {e}", wav_path.display()))?;
+        if bytes.len() < 44 {
+            return Err("STT: файл слишком мал (не WAV?)".into());
+        }
+
+        let file_name = wav_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("segment.wav")
+            .to_string();
+        let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
+        let mut form = reqwest::multipart::Form::new()
+            .part("file", part)
+            .text("response_format", "json");
+        if !language.trim().is_empty() {
+            form = form.text("language", language.trim().to_string());
+        }
+
+        let url = format!("http://127.0.0.1:{port}/v1/audio/transcriptions");
+        let client = Client::new();
+        let resp = client
+            .post(&url)
+            .multipart(form)
+            .timeout(Duration::from_secs(180))
+            .send()
+            .await
+            .map_err(|e| format!("STT: ошибка запроса: {e}"))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let detail = resp.text().await.unwrap_or_default();
+            return Err(format!("STT: сервер вернул {status}: {detail}"));
+        }
+
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("STT: не удалось разобрать ответ: {e}"))?;
+        let text = json["text"]
+            .as_str()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        match text {
+            Some(t) => Ok(t),
+            None => Err(format!(
+                "STT: пустой текст в ответе сервера: {}",
+                json
+            )),
+        }
+    }
 }
 
 impl Default for SttEngine {

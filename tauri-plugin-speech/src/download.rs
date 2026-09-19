@@ -11,9 +11,9 @@ use tokio::io::AsyncWriteExt;
 /// Адрес GitHub API последнего релиза CrispASR (для списка бинарей движка и проверки обновлений).
 pub const RELEASE_API: &str = "https://api.github.com/repos/CrispStrobe/CrispASR/releases/latest";
 
-/// Описание пресета TTS-движка CrispASR.
+/// Описание пресета модели (TTS или STT) движка CrispASR.
 ///
-/// Пресеты грузятся из `tts_models.json` (встроенного в плагин + рядом с exe хоста).
+/// Пресеты грузятся из `speech_models.json` (встроенного в плагин + рядом с exe хоста).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TtsPreset {
     pub id: String,
@@ -40,15 +40,15 @@ fn strip_bom(s: &str) -> &str {
     s.strip_prefix('\u{feff}').unwrap_or(s)
 }
 
-/// Загружает пресеты из `tts_models.json`.
+/// Загружает пресеты из `speech_models.json`.
 ///
 /// Порядок резолва файла:
-/// 1) `tts_models.json` рядом с текущим exe;
+/// 1) `speech_models.json` рядом с текущим exe;
 /// 2) подъём вверх по каталогам от exe (ловит корень проекта в dev-сборке);
 /// 3) встроенная копия (`include_str!`), если файл не найден или невалиден.
 pub fn presets() -> &'static [TtsPreset] {
     PRESETS_CACHE.get_or_init(|| {
-        if let Some(path) = find_tts_models_json() {
+        if let Some(path) = find_speech_models_json() {
             match std::fs::read_to_string(&path) {
                 Ok(text) => match serde_json::from_str::<Vec<TtsPreset>>(strip_bom(&text)) {
                     Ok(v) if !v.is_empty() => return v,
@@ -74,35 +74,35 @@ pub fn presets() -> &'static [TtsPreset] {
                 }
             }
         } else {
-            log::warn!("[tts] tts_models.json не найден рядом с exe — беру встроенную копию");
+            log::warn!("[tts] speech_models.json не найден рядом с exe — беру встроенную копию");
         }
-        match serde_json::from_str::<Vec<TtsPreset>>(strip_bom(EMBEDDED_TTS_MODELS_JSON)) {
+        match serde_json::from_str::<Vec<TtsPreset>>(strip_bom(EMBEDDED_SPEECH_MODELS_JSON)) {
             Ok(v) if !v.is_empty() => v,
             Ok(v) => {
                 log::error!(
-                    "[tts] встроенная копия tts_models.json содержит {} пресетов — пусто!",
+                    "[tts] встроенная копия speech_models.json содержит {} пресетов — пусто!",
                     v.len()
                 );
                 v
             }
             Err(e) => {
-                log::error!("[tts] встроенная копия tts_models.json битая: {e}");
+                log::error!("[tts] встроенная копия speech_models.json битая: {e}");
                 Vec::new()
             }
         }
     })
 }
 
-/// Встроенная копия `tts_models.json` из корня плагина (на момент компиляции).
-const EMBEDDED_TTS_MODELS_JSON: &str =
-    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/tts_models.json"));
+/// Встроенная копия `speech_models.json` из корня плагина (на момент компиляции).
+const EMBEDDED_SPEECH_MODELS_JSON: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/speech_models.json"));
 
-/// Ищет `tts_models.json`, начиная от каталога текущего exe и поднимаясь вверх.
-fn find_tts_models_json() -> Option<PathBuf> {
+/// Ищет `speech_models.json`, начиная от каталога текущего exe и поднимаясь вверх.
+fn find_speech_models_json() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let mut dir = exe.parent()?;
     for _ in 0..12 {
-        let cand = dir.join("tts_models.json");
+        let cand = dir.join("speech_models.json");
         if cand.is_file() {
             return Some(cand);
         }

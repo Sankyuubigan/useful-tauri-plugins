@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-get-last-logs-path"
+description = "Enables the get_last_logs_path command without any pre-configured scope."
+commands.allow = ["get_last_logs_path"]
+
+[[permission]]
+identifier = "deny-get-last-logs-path"
+description = "Denies the get_last_logs_path command without any pre-configured scope."
+commands.deny = ["get_last_logs_path"]

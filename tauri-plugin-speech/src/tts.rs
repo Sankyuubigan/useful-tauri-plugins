@@ -32,6 +32,52 @@ fn is_runaway_line(line: &str) -> bool {
     line.contains("runaway") || line.contains("without emitting EOS")
 }
 
+/// Тайминг синтеза из лог-строки движка
+/// `crispasr-server: synthesized X.Xs audio in Y.YYs (RTF=Z.ZZ) ...`.
+///
+/// Это **чистая генерация** по докам CrispASR (docs/benchmarking.md): в замер движка
+/// не входят запуск процесса, загрузка GGUF, прогрев, post-обработка (ресемпл/
+/// вотермарк/энкодинг `response_format`) и HTTP. Холодный первый запрос после
+/// старта движка всё же включает ленивую загрузку сателлитов (campplus/s3tok
+/// у cosyvoice3), поэтому эталонный прогон отбрасывает первый (cold) запрос.
+#[derive(Clone, Copy, Debug)]
+pub struct SynthTiming {
+    /// Длительность синтезированного аудио в секундах (сообщает движок).
+    pub audio_secs: f64,
+    /// Время синтеза по самому движку (без холодного старта), секунд.
+    pub gen_secs: f64,
+}
+
+impl SynthTiming {
+    /// RTF = длительность аудио / время синтеза. `< 1.0` — быстрее реального времени.
+    pub fn rtf(&self) -> f64 {
+        if self.gen_secs <= 0.0 {
+            0.0
+        } else {
+            self.audio_secs / self.gen_secs
+        }
+    }
+}
+
+/// Парсит `SynthTiming` из строки сервера на обеих ветках:
+/// `synthesized 3.6s audio in 0.56s (RTF=0.16) voice='...'` (TTS-бэкенды).
+fn parse_synth_timing(line: &str) -> Option<SynthTiming> {
+    let rest = line.split_once("synthesized ")?.1;
+    let audio = rest.split_once("s audio in ")?.0.trim().parse::<f64>().ok()?;
+    let gen = rest
+        .split_once("s audio in ")?
+        .1
+        .split_once("s (")?
+        .0
+        .trim()
+        .parse::<f64>()
+        .ok()?;
+    Some(SynthTiming {
+        audio_secs: audio,
+        gen_secs: gen,
+    })
+}
+
 /// Движок TTS на базе CrispASR.
 ///
 /// CrispASR запускается как **отдельный prebuilt-процесс** (`crispasr.exe`) и общается
@@ -57,6 +103,9 @@ pub struct TtsEngine {
     /// если счётчик вырос, результат запроса это мусор и его нельзя отдавать
     /// пользователю. Сбрасывается при перезапуске движка в `ensure()`.
     runaways: Arc<AtomicUsize>,
+    /// Последний замер синтеза из строки движка `synthesized ...` (чистая
+    /// генерация). Обнуляется перед каждым запросом и при перезапуске.
+    synth_timing: Arc<Mutex<Option<SynthTiming>>>,
 }
 
 /// Собирает аргументы командной строки запуска сервера CrispASR.
@@ -139,7 +188,7 @@ fn build_speech_body(
     body.insert("input".into(), serde_json::Value::String(text.to_string()));
     body.insert(
         "response_format".into(),
-        serde_json::Value::String("mp3".into()),
+        serde_json::Value::String("wav".into()),
     );
     if !voice.is_empty() {
         body.insert("voice".into(), serde_json::Value::String(voice.to_string()));
@@ -197,6 +246,7 @@ impl TtsEngine {
             loaded_backend: Mutex::new(String::new()),
             language_supported: Arc::new(Mutex::new(true)),
             runaways: Arc::new(AtomicUsize::new(0)),
+            synth_timing: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -345,6 +395,9 @@ impl TtsEngine {
         // чтобы не "унаследовать" 0 из предыдущего процесса некорректно.
         let runaways_counter = Arc::clone(&self.runaways);
         runaways_counter.store(0, Ordering::SeqCst);
+        // Замер синтеза тоже живёт внутри конкретного процесса движка.
+        *self.synth_timing.lock().unwrap() = None;
+        let synth_timing_slot = Arc::clone(&self.synth_timing);
         if let Some(stderr) = child.stderr.take() {
             let app_clone = app.clone();
             let err_log_clone = Arc::clone(&err_log);
@@ -355,6 +408,11 @@ impl TtsEngine {
                     crate::log::app_log(&app_clone, &format!("[crispasr] {clean}"));
                     if is_runaway_line(&clean) {
                         runaways_counter.fetch_add(1, Ordering::SeqCst);
+                    }
+                    if let Some(t) = parse_synth_timing(&clean) {
+                        if let Ok(mut slot) = synth_timing_slot.lock() {
+                            *slot = Some(t);
+                        }
                     }
                     if let Ok(mut buf) = err_log_clone.lock() {
                         if buf.len() < 200 {
@@ -442,12 +500,16 @@ impl TtsEngine {
         speed: f32,
         clone: bool,
         language: &str,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<(Vec<u8>, Option<SynthTiming>), String> {
         let port = *self.port.lock().unwrap();
         let backend = self.loaded_backend.lock().unwrap().clone();
         if port == 0 {
             return Err("движок не запущен (вызовите ensure перед speak)".into());
         }
+
+        // Замер принадлежит ТОЛЬКО этому запросу: сбрасываем до отправки, чтобы
+        // не подхватить строку синтеза от предыдущего запроса, запоздавшую в stderr.
+        *self.synth_timing.lock().unwrap() = None;
 
         let client = Client::new();
         let url = format!("http://127.0.0.1:{port}/v1/audio/speech");
@@ -502,7 +564,20 @@ impl TtsEngine {
             );
         }
 
-        Ok(bytes.to_vec())
+        Ok((bytes.to_vec(), self.take_synth_timing().await))
+    }
+
+    /// Ждёт строку синтеза движка (обычно приходит одновременно с ответом;
+    /// stderr-поток может запаздывать на несколько мс). Возвращает и забирает замер.
+    async fn take_synth_timing(&self) -> Option<SynthTiming> {
+        for _ in 0..25 {
+            let got = self.synth_timing.lock().unwrap().take();
+            if got.is_some() {
+                return got;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        None
     }
 
     /// Регистрирует голос из хранилища (папка `<id>/voice.wav`) в запущенном
@@ -646,6 +721,7 @@ impl TtsEngine {
     /// Останавливает движок (выгрузка моделей из VRAM).
     pub async fn stop(&self) {
         self.reap();
+        *self.synth_timing.lock().unwrap() = None;
         *self.loaded_model.lock().unwrap() = String::new();
         *self.loaded_codec.lock().unwrap() = String::new();
         *self.loaded_voice.lock().unwrap() = String::new();
@@ -826,7 +902,7 @@ mod tests {
         let body = build_speech_body("cosyvoice3-tts", "привет", "voice1", "", "транскрипт", 1.0, false, "");
         let obj = body.as_object().unwrap();
         assert!(!obj.contains_key("consent_attestation"), "consent_attestation всё ещё в теле запроса — будет ватермарк");
-        assert_eq!(obj.get("response_format").unwrap(), &serde_json::Value::String("mp3".into()));
+        assert_eq!(obj.get("response_format").unwrap(), &serde_json::Value::String("wav".into()));
         assert_eq!(obj.get("input").unwrap(), &serde_json::Value::String("привет".into()));
         assert!(!obj.contains_key("speed"));
         assert!(obj.contains_key("voice"));
@@ -878,5 +954,21 @@ mod tests {
         ));
         assert!(!is_runaway_line("qwen3_tts: produced 105 frames × 16 codebooks = 1680 codes"));
         assert!(!is_runaway_line("crispasr-server: listening on 127.0.0.1:21644"));
+    }
+
+    #[test]
+    fn parses_synth_timing_line() {
+        let t = parse_synth_timing(
+            "crispasr-server: synthesized 3.6s audio in 0.56s (RTF=6.43) voice='vlad' speed=1.00 format=wav model='cosyvoice3-tts' chunks=1 sr=24000Hz",
+        )
+        .expect("строка синтеза не распознана");
+        assert!((t.audio_secs - 3.6).abs() < 1e-9, "audio={}", t.audio_secs);
+        assert!((t.gen_secs - 0.56).abs() < 1e-9, "gen={}", t.gen_secs);
+        assert!((t.rtf() - 6.428_57).abs() < 1e-3);
+
+        // Чужие строки (ASR-тайминг, ошибки, старт сервера) не парсим.
+        assert!(parse_synth_timing("crispasr-server: transcribed 11.0s audio in 0.42s (26.2x realtime)").is_none());
+        assert!(parse_synth_timing("crispasr-server: listening on 127.0.0.1:21644").is_none());
+        assert!(parse_synth_timing("qwen3_tts: ERROR: runaway").is_none());
     }
 }

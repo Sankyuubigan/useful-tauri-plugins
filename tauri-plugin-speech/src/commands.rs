@@ -16,6 +16,8 @@ use crate::PluginState;
 use tauri::{AppHandle, Manager, Runtime};
 
 /// Результат синтеза: WAV-байты + время генерации (сек) для отображения в UI.
+/// `seconds` — время чистой генерации по замеру движка (`synthesized ... in ...`),
+/// без холодного старта/подготовки движка.
 #[derive(serde::Serialize)]
 pub struct TtsSpeakResult {
     wav: Vec<u8>,
@@ -23,7 +25,8 @@ pub struct TtsSpeakResult {
 }
 
 /// Длительность WAV в секундах по заголовку (приблизительно, игнорируем вложенные
-/// чанки). Нужна для оценки скорости синтеза (RTF) в логах.
+/// чанки). Fallback для оценки скорости синтеза (RTF), когда движок не сообщил
+/// собственный замер (response_format=wav — заголовок RIFF корректен).
 fn wav_duration_secs(wav: &[u8]) -> Option<f64> {
     if wav.len() < 44 {
         return None;
@@ -48,6 +51,9 @@ pub async fn tts_speak<R: Runtime>(
     text: String,
     language: String,
 ) -> Result<TtsSpeakResult, String> {
+    // Таймер ДО подготовки движка: нужен, чтобы в лог уходила отдельная строка
+    // «подготовка движка» (холодный запуск/загрузка модели). Чистая генерация
+    // мерится движком (см. ниже) или wall-clock после ensure().
     let start = Instant::now();
     let state = app.state::<PluginState>();
     let settings = load_tts_settings(&app);
@@ -288,8 +294,12 @@ pub async fn tts_speak<R: Runtime>(
         language.clone()
     };
 
+    let prep_secs = start.elapsed().as_secs_f64();
+    log::app_log(&app, &format!("ТТС: подготовка движка: {prep_secs:.2} с"));
+
     log::app_log(&app, "ТТС: синтез речи...");
-    let wav = state
+    let synth_start = Instant::now();
+    let (wav, timing) = state
         .tts
         .speak(&text, &server_voice, &body_instruct, &clone_ref_text, speed, clone, &language)
         .await
@@ -298,20 +308,29 @@ pub async fn tts_speak<R: Runtime>(
             e
         })?;
 
-    let secs = start.elapsed().as_secs_f64();
-    let rtf = wav_duration_secs(&wav).map(|d| d / secs);
+    // Время генерации: приоритет — замер самого движка (чистая генерация, без
+    // холодного старта/энкодинга формата). Fallback — wall-clock без подготовки.
+    let (gen_secs, audio_secs) = match timing {
+        Some(t) => (t.gen_secs, t.audio_secs),
+        None => (
+            synth_start.elapsed().as_secs_f64(),
+            wav_duration_secs(&wav).unwrap_or(0.0),
+        ),
+    };
     let mut msg = format!(
-        "ТТС: синтез завершён за {:.2} с ({} байт WAV)",
-        secs,
+        "ТТС: синтез завершён: {gen_secs:.2} с ({} байт WAV)",
         wav.len()
     );
-    if let Some(r) = rtf {
-        msg.push_str(&format!(", скорость {:.2}x реального времени", r));
+    if audio_secs > 0.0 && gen_secs > 0.0 {
+        msg.push_str(&format!(
+            ", аудио {audio_secs:.2} с, скорость {:.2}x реального времени",
+            audio_secs / gen_secs
+        ));
     }
     log::app_log(&app, &msg);
     Ok(TtsSpeakResult {
         wav,
-        seconds: secs,
+        seconds: gen_secs,
     })
 }
 
@@ -337,11 +356,26 @@ pub async fn tts_unload<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     Ok(())
 }
 
-/// Сохраняет синтезированный WAV (байты из фронта) по выбранному пользователем пути.
+/// Сохраняет синтезированную озвучку (WAV-байты из фронта) как MP3 по выбранному
+/// пути. Движок по сети отвечает WAV (быстрее для прокачки), а на диск пишем
+/// компактный MP3: конверсия WAV→MP3 через кодек glint — тот же, что энкодит
+/// `response_format=mp3` в CrispASR.
 #[tauri::command]
-pub async fn tts_save_wav(path: String, data: Vec<u8>) -> Result<(), String> {
-    std::fs::write(&path, &data)
-        .map_err(|e| format!("не удалось сохранить WAV в {path}: {e}"))?;
+pub async fn tts_save_mp3(path: String, data: Vec<u8>) -> Result<(), String> {
+    let dec = glint::read_wav(&data)
+        .ok_or_else(|| "не удалось разобрать WAV озвучки (ожидается PCM)".to_string())?;
+    let mp3 = glint::encode_audio(
+        &dec.pcm,
+        dec.channels,
+        dec.sample_rate,
+        glint::Codec::Mp3,
+        128, // валиден при любой частоте движка (MPEG-2 @24кГц не держит 192)
+        None,
+        1, // quality: 1 = NORMAL (как в движке CrispASR)
+    )
+    .ok_or_else(|| "не удалось сжать озвучку в MP3".to_string())?;
+    std::fs::write(&path, &mp3)
+        .map_err(|e| format!("не удалось сохранить MP3 в {path}: {e}"))?;
     Ok(())
 }
 
@@ -591,4 +625,46 @@ pub async fn stt_get_status<R: Runtime>(app: AppHandle<R>) -> Result<String, Str
 #[tauri::command]
 pub async fn stt_inject_text(text: String) -> Result<(), String> {
     crate::inject::inject_text(&text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// WAV (24 кГц, как от cosyvoice3) → MP3 через glint: результирующий поток
+    /// должен декодироваться обратно с той же разрядностью и плавающей длительностью.
+    #[test]
+    fn wav_to_mp3_via_glint_roundtrips() {
+        let rate = 24000u32;
+        let n = rate as usize / 2; // ~0.5 с тона
+        let mut samples = Vec::with_capacity(n);
+        for i in 0..n {
+            samples.push(0.5 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate as f32).sin());
+        }
+        let mut wav_bytes = Vec::new();
+        {
+            use crate::audio::wav;
+            let tmp = std::env::temp_dir().join("glint_test.wav");
+            wav::write_wav(&tmp.to_string_lossy(), &samples, rate).unwrap();
+            wav_bytes = std::fs::read(&tmp).unwrap();
+        }
+        let dec = glint::read_wav(&wav_bytes).expect("wav разобран");
+        assert_eq!(dec.channels, 1);
+        let mp3 = glint::encode_audio(
+            &dec.pcm,
+            dec.channels,
+            dec.sample_rate,
+            glint::Codec::Mp3,
+            128,
+            None,
+            1,
+        )
+        .expect("mp3 закодировался");
+        assert!(mp3.len() > 1024, "mp3 подозрительно маленький: {} байт", mp3.len());
+
+        let back = glint::decode_audio(&mp3).expect("mp3 декодировался обратно");
+        assert_eq!(back.channels, 1);
+        let dur = back.pcm.len() as f64 / back.sample_rate as f64;
+        assert!(dur > 0.45 && dur < 0.55, "длительность после mp3: {dur:.3} с");
+    }
 }

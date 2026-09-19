@@ -37,3 +37,7 @@ windows = { version = "0.58", features = [
 # members = ["tauri-plugin-about-updates", "tauri-plugin-speech", "tauri-plugin-llama-engine"]
 # Единый кастомный log::Log логгер хоста (core rules §2.5)
 log = "0.4"
+
+# Сохранение озвучки в MP3 (кодек CrispStrobe glint — тот же, что энкодит
+# response_format=mp3 в CrispASR; чистый Rust-враппер, без системных либ)
+glint-audio = "0.11"

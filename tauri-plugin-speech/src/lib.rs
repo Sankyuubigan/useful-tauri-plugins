@@ -95,7 +95,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R, Config> {
             commands::tts_presets,
             commands::tts_capabilities,
             commands::tts_unload,
-            commands::tts_save_wav,
+            commands::tts_save_mp3,
             commands::tts_download_engine,
             commands::tts_download_model,
             commands::tts_engine_backends,

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-set-router-dir"
+description = "Enables the set_router_dir command without any pre-configured scope."
+commands.allow = ["set_router_dir"]
+
+[[permission]]
+identifier = "deny-set-router-dir"
+description = "Denies the set_router_dir command without any pre-configured scope."
+commands.deny = ["set_router_dir"]

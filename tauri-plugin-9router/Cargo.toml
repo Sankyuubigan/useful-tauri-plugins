@@ -1,0 +1,29 @@
+[package]
+name = "tauri-plugin-9router"
+version = "0.1.0"
+edition = "2021"
+links = "tauri-plugin-9router"
+description = "Reusable 9Router gateway: self-contained install (portable node.exe + npm tgz), lazy start with Windows Job Object (KILL_ON_JOB_CLOSE), combos list, web dashboard and OpenAI-compatible chat completion (SSOT for King Orch and other hosts)"
+license = "MIT"
+readme = "docs/README.md"
+
+[dependencies]
+tauri = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "rustls-tls-native-roots", "stream", "blocking"], default-features = false }
+zip = { workspace = true }
+flate2 = "1.0"
+tar = "0.4"
+
+[features]
+default = []
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[lib]
+name = "tauri_plugin_9router"
+path = "src/lib.rs"

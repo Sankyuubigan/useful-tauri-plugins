@@ -50,6 +50,16 @@
     "audio": false
   },
   {
+    "name": "bonsai-2-27b-crack",
+    "size_gb": "5.95",
+    "download_url": "https://huggingface.co/dealignai/Bonsai-2-27B-1bit-CRACK-GGUF/resolve/main/Bonsai-2-27B-PTQ1_0-CRACK.gguf?download=true",
+    "mmproj_url": "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/main/Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf?download=true",
+    "tokenizer_id": "Qwen/Qwen3.8-27B",
+    "uncen": true,
+    "vision": true,
+    "audio": false
+  },
+  {
     "name": "gemma-4-4b",
     "size_gb": "3.3",
     "download_url": "https://huggingface.co/mradermacher/gemma4-e2b-Snowfox-hf-GGUF/resolve/main/gemma4-e2b-Snowfox-hf.IQ4_XS.gguf?download=true",

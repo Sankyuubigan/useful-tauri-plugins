@@ -1,0 +1,266 @@
+//! Tauri-команды плагина 9router. Тонкий слой: вся логика — в `crate::router`.
+
+use serde::Serialize;
+use serde_json::json;
+use std::time::Duration;
+use tauri::{AppHandle, Emitter};
+
+use crate::router::{
+    client::{self, ChatMessage, ChatRequest},
+    config::{self, dist_dir, node_exe, router_dir, server_script},
+    installer, process,
+};
+
+/// Состояние шлюза 9router для UI (индикатор + кнопки).
+#[derive(Serialize, Clone)]
+pub struct NineRouterStatus {
+    /// Установлены и node.exe, и бандл 9router.
+    pub installed: bool,
+    /// Порт отвечает (сервер жив).
+    pub running: bool,
+    /// Версия 9router (из npm-тега, зафиксированная при установке).
+    pub version: Option<String>,
+    /// Версия портативного Node.js.
+    pub node_version: Option<String>,
+    pub port: u16,
+    pub base_url: String,
+    /// Папка установки (по умолчанию <exe>/9router).
+    pub path: String,
+    pub node_present: bool,
+    pub server_present: bool,
+    /// Человеко-читаемое сообщение для UI.
+    pub message: String,
+}
+
+fn build_status(app: &AppHandle) -> NineRouterStatus {
+    let cfg = config::load_config(app);
+    let dir = router_dir(app);
+    let node_present = node_exe(&dir).exists();
+    let server_present = server_script(&dist_dir(&dir)).exists();
+    let installed = node_present && server_present;
+    let port = cfg.port_or_default();
+    let running = process::port_open(port, Duration::from_millis(400));
+
+    let message = if !installed {
+        "9Router не установлен. Нажмите «Установить».".to_string()
+    } else if running {
+        format!(
+            "Активен на порту {}{}",
+            port,
+            cfg.installed_version
+                .as_deref()
+                .map(|v| format!(" (v{})", v))
+                .unwrap_or_default()
+        )
+    } else {
+        "Установлен, не запущен".to_string()
+    };
+
+    NineRouterStatus {
+        installed,
+        running,
+        version: cfg.installed_version.clone(),
+        node_version: cfg.node_version.clone(),
+        port,
+        base_url: cfg.base_url(),
+        path: dir.to_string_lossy().to_string(),
+        node_present,
+        server_present,
+        message,
+    }
+}
+
+/// Статус шлюза (для индикатора в UI). Не запускает сервер.
+#[tauri::command]
+pub fn get_status(app: AppHandle) -> NineRouterStatus {
+    build_status(&app)
+}
+
+/// Установить / обновить 9router (портативный Node.js + npm-бандл).
+/// `force=true` — переустановить, даже если версия совпадает.
+/// Прогресс шлётся событием `9router-progress` (`{stage, done, total, text}`).
+#[tauri::command]
+pub async fn install_or_update(app: AppHandle, force: Option<bool>) -> Result<NineRouterStatus, String> {
+    let app_evt = app.clone();
+    let force = force.unwrap_or(false);
+    let app_work = app.clone();
+    let info = tauri::async_runtime::spawn_blocking(move || {
+        let progress: installer::ProgressFn = Box::new(move |stage: &str, done: u64, total: u64, text: &str| {
+            let _ = app_evt.emit(
+                "9router-progress",
+                json!({ "stage": stage, "done": done, "total": total, "text": text }),
+            );
+        });
+        installer::install_or_update(&app_work, force, progress)
+    })
+    .await
+    .map_err(|e| format!("install task join error: {}", e))??;
+
+    log::info!("9router установлен: v{} (Node {})", info.version, info.node_version);
+    Ok(build_status(&app))
+}
+
+/// Ленивый автозапуск по требованию: если сервер не запущен и установлен —
+/// поднять; если уже жив — no-op. Ошибка, если не установлен.
+#[tauri::command]
+pub async fn ensure_started(app: AppHandle) -> Result<NineRouterStatus, String> {
+    let status = build_status(&app);
+    if !status.installed {
+        return Err("9Router не установлен. Откройте Настройки → 9Router и нажмите «Установить».".to_string());
+    }
+    if status.running {
+        return Ok(status);
+    }
+    let app_work = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let cfg = config::load_config(&app_work);
+        process::start_server(&app_work, &cfg)
+    })
+    .await
+    .map_err(|e| format!("start task join error: {}", e))??;
+
+    Ok(build_status(&app))
+}
+
+/// Остановить сервер 9router.
+#[tauri::command]
+pub fn stop(app: AppHandle) -> NineRouterStatus {
+    process::stop_server();
+    build_status(&app)
+}
+
+/// Сменить папку установки 9router (по умолчанию `<exe>/9router`).
+///
+/// Сохраняет путь в `nine_router.dir` и возвращает статус под новый путь:
+/// `installed` пересчитывается по фактическому наличию `node.exe` и серверного
+/// скрипта в выбранной папке (как `set_engine_dir` у llama-engine). Работающий
+/// из старой папки сервер останавливается, чтобы статус не показывал
+/// «running» по серверу, которого в новом пути нет.
+#[tauri::command]
+pub fn set_router_dir(app: AppHandle, path: String) -> Result<NineRouterStatus, String> {
+    if path.trim().is_empty() {
+        return Err("Путь установки не может быть пустым".to_string());
+    }
+    process::stop_server();
+    let mut cfg = config::load_config(&app);
+    cfg.dir = Some(path);
+    config::save_config(&app, &cfg);
+    log::info!(
+        "9router: папка установки изменена: {}",
+        cfg.dir.as_deref().unwrap_or("")
+    );
+    Ok(build_status(&app))
+}
+
+/// Список комбо 9router (только LLM). Если сервер не запущен и установлен —
+/// стартует лениво (открытие 9router-группы в дропдауне = спрос).
+#[tauri::command]
+pub async fn get_combos(app: AppHandle) -> Result<Vec<client::ComboInfo>, String> {
+    let status = build_status(&app);
+    if !status.installed {
+        return Err("9Router не установлен.".to_string());
+    }
+    if !status.running {
+        let app_work = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let cfg = config::load_config(&app_work);
+            process::start_server(&app_work, &cfg)
+        })
+        .await
+        .map_err(|e| format!("start task join error: {}", e))??;
+    }
+
+    let cfg = config::load_config(&app);
+    let base = cfg.base_url();
+    tauri::async_runtime::spawn_blocking(move || client::get_combos(&base))
+        .await
+        .map_err(|e| format!("combos task join error: {}", e))?
+}
+
+/// Открыть веб-дашборд 9router в браузере по умолчанию.
+#[tauri::command]
+pub async fn open_dashboard(app: AppHandle) -> Result<(), String> {
+    let status = build_status(&app);
+    if !status.installed {
+        return Err("9Router не установлен.".to_string());
+    }
+    if !status.running {
+        let app_work = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let cfg = config::load_config(&app_work);
+            process::start_server(&app_work, &cfg)
+        })
+        .await
+        .map_err(|e| format!("start task join error: {}", e))??;
+    }
+    let url = format!("{}/dashboard", build_status(&app).base_url);
+    open_in_browser(&url);
+    Ok(())
+}
+
+/// Чат через 9router (OpenAI-совместимый, стриминг).
+/// Каждая порция текста шлётся событием `9router-chunk` (`{text, author, kind}`),
+/// полный ответ также возвращается из команды.
+#[tauri::command]
+pub async fn chat_completion(
+    app: AppHandle,
+    model: String,
+    messages: Vec<ChatMessage>,
+    max_tokens: Option<u32>,
+    temperature: Option<f32>,
+    author: Option<String>,
+) -> Result<String, String> {
+    let cfg = config::load_config(&app);
+    if !build_status(&app).installed {
+        return Err("9Router не установлен.".to_string());
+    }
+    let app_work = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let cfg_inner = config::load_config(&app_work);
+        process::start_server(&app_work, &cfg_inner)
+    })
+    .await
+    .map_err(|e| format!("start task join error: {}", e))??;
+
+    let base = cfg.base_url();
+    let req = ChatRequest {
+        model,
+        messages,
+        max_tokens,
+        temperature,
+        stream: true,
+    };
+    let author = author.unwrap_or_default();
+    let full = tauri::async_runtime::spawn_blocking(move || {
+        client::chat_completion_stream(&base, &req, |delta| {
+            let _ = app.emit(
+                "9router-chunk",
+                json!({ "text": delta, "author": author, "kind": "message" }),
+            );
+        })
+    })
+    .await
+    .map_err(|e| format!("chat task join error: {}", e))??;
+
+    Ok(full)
+}
+
+/// Открыть URL в браузере по умолчанию (без лишних крейтов).
+fn open_in_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", "start", "", url]);
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        let _ = cmd.spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(url).spawn();
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+}

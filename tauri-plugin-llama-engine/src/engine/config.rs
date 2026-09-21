@@ -206,27 +206,9 @@ pub fn save_engine_config_file(path: &Path, config: &EngineConfig) {
 /// плагина и компилируется внутрь крейта).
 const EMBEDDED_CATALOG: &str = include_str!("../../models_catalog.json");
 
-/// Загружает каталог моделей: сначала внешние файлы (для правок без пересборки),
-/// затем — встроенный в плагин каталог.
-pub fn load_catalog(app: &AppHandle) -> Vec<CatalogEntry> {
-    let exe_dir = app.path().executable_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let resource_dir = app.path().resource_dir().unwrap_or_else(|_| PathBuf::from("."));
-
-    let possible_paths = vec![
-        exe_dir.join("models_catalog.json"),
-        resource_dir.join("models_catalog.json"),
-        PathBuf::from("models_catalog.json"),
-        exe_dir.join("..").join("..").join("models_catalog.json"),
-    ];
-
-    for path in possible_paths {
-        if let Ok(data) = fs::read_to_string(&path) {
-            if let Ok(catalog) = serde_json::from_str(&data) {
-                return catalog;
-            }
-        }
-    }
-
+/// Возвращает встроенный каталог моделей. Единый источник правды — файл
+/// `models_catalog.json` плагина; внешние файлы-оверайды не поддерживаются.
+pub fn load_catalog(_app: &AppHandle) -> Vec<CatalogEntry> {
     serde_json::from_str(EMBEDDED_CATALOG).unwrap_or_default()
 }
 

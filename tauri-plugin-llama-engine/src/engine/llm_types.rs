@@ -47,6 +47,8 @@ pub struct SubCall {
     pub response: String,
     pub time_sec: f32,
     pub tool_calls: Vec<ToolCallInfo>,
+    /// Размышления агента (Phase 1) — для отчёта сабагента. None у старых сессий.
+    pub thinking: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -530,6 +532,7 @@ mod tests {
                 response: "ответ".to_string(),
                 time_sec: 1.0,
                 tool_calls: vec![],
+                thinking: None,
             }]),
             time_sec: None,
             ..msg("msg_5", "message", "grounder", "содержимое")

@@ -1,0 +1,56 @@
+"$schema" = "../gen/schemas/acl.json"
+
+# ── 9Router gateway ──
+
+[[permission]]
+identifier = "allow-get-status"
+description = "Allow reading the 9Router gateway status (installed/running/version/port)."
+commands.allow = ["get_status"]
+
+[[permission]]
+identifier = "allow-install-or-update"
+description = "Allow installing/updating 9Router (portable node.exe + npm bundle)."
+commands.allow = ["install_or_update"]
+
+[[permission]]
+identifier = "allow-ensure-started"
+description = "Allow lazily starting the 9Router server on demand."
+commands.allow = ["ensure_started"]
+
+[[permission]]
+identifier = "allow-stop"
+description = "Allow stopping the 9Router server."
+commands.allow = ["stop"]
+
+[[permission]]
+identifier = "allow-set-router-dir"
+description = "Allow overriding the 9Router install directory and re-checking whether 9Router is present there."
+commands.allow = ["set_router_dir"]
+
+[[permission]]
+identifier = "allow-get-combos"
+description = "Allow listing 9Router LLM combos for the chat model picker."
+commands.allow = ["get_combos"]
+
+[[permission]]
+identifier = "allow-open-dashboard"
+description = "Allow opening the 9Router web dashboard in the default browser."
+commands.allow = ["open_dashboard"]
+
+[[permission]]
+identifier = "allow-chat-completion"
+description = "Allow running an OpenAI-compatible chat completion through 9Router."
+commands.allow = ["chat_completion"]
+
+[default]
+description = "Default permissions for the 9router plugin."
+permissions = [
+  "allow-get-status",
+  "allow-install-or-update",
+  "allow-ensure-started",
+  "allow-stop",
+  "allow-set-router-dir",
+  "allow-get-combos",
+  "allow-open-dashboard",
+  "allow-chat-completion",
+]

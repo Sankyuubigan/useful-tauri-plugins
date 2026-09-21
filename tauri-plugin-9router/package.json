@@ -1,0 +1,27 @@
+{
+  "name": "@my-tauri-plugins/plugin-9router",
+  "version": "0.1.0",
+  "description": "Reusable 9Router gateway for Tauri apps — self-contained install (portable node.exe + npm bundle), lazy on-demand start, combos list, web dashboard and OpenAI-compatible streaming chat. TS API + Web Components.",
+  "type": "module",
+  "main": "dist-js/index.js",
+  "types": "dist-js/index.d.ts",
+  "files": [
+    "dist-js",
+    "guest-js",
+    "api-iife.js"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:watch": "tsc -p tsconfig.json --watch",
+    "build:global": "node scripts/build-global.cjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^5.4.0"
+  },
+  "license": "MIT"
+}

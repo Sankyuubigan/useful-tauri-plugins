@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-check-router-update"
+description = "Enables the check_router_update command without any pre-configured scope."
+commands.allow = ["check_router_update"]
+
+[[permission]]
+identifier = "deny-check-router-update"
+description = "Denies the check_router_update command without any pre-configured scope."
+commands.deny = ["check_router_update"]

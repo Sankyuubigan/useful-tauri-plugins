@@ -197,22 +197,48 @@ pub async fn get_combos(app: AppHandle) -> Result<Vec<client::ComboInfo>, String
 /// Открыть веб-дашборд 9router в браузере по умолчанию.
 #[tauri::command]
 pub async fn open_dashboard(app: AppHandle) -> Result<(), String> {
-    let status = build_status(&app);
-    if !status.installed {
-        return Err("9Router не установлен.".to_string());
+    let cfg = config::load_config(&app);
+    let base_url = cfg.base_url();
+    if !client::is_healthy(&base_url) {
+        let status = build_status(&app);
+        if !status.installed {
+            return Err("9Router не установлен.".to_string());
+        }
+        if !status.running {
+            let app_work = app.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let cfg = config::load_config(&app_work);
+                process::start_server(&app_work, &cfg)
+            })
+            .await
+            .map_err(|e| format!("start task join error: {}", e))??;
+        }
     }
-    if !status.running {
-        let app_work = app.clone();
-        tauri::async_runtime::spawn_blocking(move || {
-            let cfg = config::load_config(&app_work);
-            process::start_server(&app_work, &cfg)
-        })
-        .await
-        .map_err(|e| format!("start task join error: {}", e))??;
-    }
-    let url = format!("{}/dashboard", build_status(&app).base_url);
+    let url = format!("{}/dashboard", base_url);
     open_in_browser(&url);
     Ok(())
+}
+
+/// Проверить наличие обновления 9router (версия npm latest).
+/// Возвращает Some(новая_версия) или None, если установленная версия актуальна.
+#[tauri::command]
+pub async fn check_router_update(app: AppHandle) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .map_err(|e| format!("HTTP client: {}", e))?;
+        let latest = installer::latest_npm_version(&client)?;
+        let cfg = config::load_config(&app);
+        if let Some(installed) = &cfg.installed_version {
+            if installed == &latest {
+                return Ok(None);
+            }
+        }
+        Ok(Some(latest))
+    })
+    .await
+    .map_err(|e| format!("check update task error: {}", e))?
 }
 
 /// Чат через 9router (OpenAI-совместимый, стриминг).

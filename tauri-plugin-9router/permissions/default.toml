@@ -42,6 +42,16 @@ identifier = "allow-chat-completion"
 description = "Allow running an OpenAI-compatible chat completion through 9Router."
 commands.allow = ["chat_completion"]
 
+[[permission]]
+identifier = "allow-set-api-key"
+description = "Allow setting the 9Router API key."
+commands.allow = ["set_api_key"]
+
+[[permission]]
+identifier = "allow-check-router-update"
+description = "Allow checking for 9Router updates from npm registry."
+commands.allow = ["check_router_update"]
+
 [default]
 description = "Default permissions for the 9router plugin."
 permissions = [
@@ -51,6 +61,8 @@ permissions = [
   "allow-stop",
   "allow-set-router-dir",
   "allow-get-combos",
+  "allow-set-api-key",
   "allow-open-dashboard",
   "allow-chat-completion",
+  "allow-check-router-update",
 ]

@@ -105,6 +105,7 @@ pub fn init() -> TauriPlugin<Wry, Config> {
             commands::set_api_key,
             commands::open_dashboard,
             commands::chat_completion,
+            commands::check_router_update,
         ])
         .build()
 }

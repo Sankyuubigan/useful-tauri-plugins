@@ -49,6 +49,10 @@ export function getCombos() {
 export function setApiKey(key) {
     return invoke('plugin:9router|set_api_key', { key });
 }
+/** Проверить наличие обновления 9router (npm registry). Возвращает версию или null. */
+export function checkRouterUpdate() {
+    return invoke('plugin:9router|check_router_update');
+}
 /** Открыть веб-дашборд 9router в браузере по умолчанию. */
 export function openDashboard() {
     return invoke('plugin:9router|open_dashboard');

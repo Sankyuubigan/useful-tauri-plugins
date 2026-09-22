@@ -55,6 +55,7 @@
   .progress-status { color: var(--text-muted, #999); font-size: 12px; margin-bottom: 5px; word-break: break-all; }
   .progress-track { height: 8px; border-radius: 6px; background: var(--border, #333); overflow: hidden; }
   .progress-bar { height: 100%; width: 0%; background: var(--primary, #4a90d9); transition: width .15s linear; }
+  .warn-hint { color: var(--warning, #d8a13a); margin-top: 6px; }
   .combos { margin-top: 10px; display: none; }
   .combos.on { display: block; }
   .combo { padding: 4px 0; border-bottom: 1px solid var(--border, #333); }
@@ -69,6 +70,8 @@
       this.combos = [];
       this.busy = false;
       this.offProgress = null;
+      this.visibilityObserver = null;
+      this.refreshTimer = null;
       this.root = this.attachShadow({ mode: "open" });
     }
     connectedCallback() {
@@ -77,10 +80,32 @@
       onProgress((p) => this.onProgress(p.text, p.done, p.total)).then((off) => {
         this.offProgress = off;
       });
+      this.observeVisibility();
+      this.refreshTimer = window.setInterval(() => void this.refresh(), 15e3);
     }
     disconnectedCallback() {
       this.offProgress?.();
       this.offProgress = null;
+      this.visibilityObserver?.disconnect();
+      this.visibilityObserver = null;
+      if (this.refreshTimer !== null) {
+        clearInterval(this.refreshTimer);
+        this.refreshTimer = null;
+      }
+    }
+    /** Панель в Settings монтируется один раз при старте приложения, а раздел
+     *  переключается классом `.active`. Перечитываем статус каждый раз, когда
+     *  раздел становится видимым, — чтобы панель не «врала» устаревшим статусом. */
+    observeVisibility() {
+      let host = this;
+      while (host && host !== document.body && !host.classList?.contains("view")) {
+        host = host.parentElement;
+      }
+      if (!host || host === document.body) return;
+      this.visibilityObserver = new MutationObserver(() => {
+        if (host.classList.contains("active")) void this.refresh();
+      });
+      this.visibilityObserver.observe(host, { attributes: true, attributeFilter: ["class"] });
     }
     async refresh() {
       try {
@@ -98,6 +123,7 @@
       if (box) box.classList.add("on");
       if (label) label.textContent = text;
       if (bar) bar.style.width = total > 0 ? `${Math.min(100, done / total * 100).toFixed(1)}%` : "100%";
+      if (total > 0 && done >= total) void this.refresh();
     }
     setBusy(v) {
       this.busy = v;
@@ -177,6 +203,35 @@
         if (label) label.textContent = `\u041E\u0448\u0438\u0431\u043A\u0430: ${String(e)}`;
       }
     }
+    async onCheckUpdate() {
+      const btn = this.root.querySelector(".check-update");
+      const updateBtn = this.root.querySelector(".install-update");
+      if (btn) btn.disabled = true;
+      if (updateBtn) updateBtn.style.display = "none";
+      const label = this.root.querySelector(".progress-status");
+      const box = this.root.querySelector(".progress-container");
+      try {
+        const newTag = await checkRouterUpdate();
+        if (newTag) {
+          if (box) box.classList.add("on");
+          if (label) label.textContent = `\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 9Router: v${newTag}`;
+          if (updateBtn) updateBtn.style.display = "inline-block";
+        } else {
+          if (box) box.classList.add("on");
+          if (label) label.textContent = `9Router \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D${this.status?.version ? ` (v${this.status.version})` : ""}`;
+        }
+      } catch (e) {
+        if (box) box.classList.add("on");
+        if (label) label.textContent = `\u041E\u0448\u0438\u0431\u043A\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0438 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F: ${String(e)}`;
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+    async onInstallUpdate() {
+      await this.onInstall();
+      const updateBtn = this.root.querySelector(".install-update");
+      if (updateBtn) updateBtn.style.display = "none";
+    }
     render() {
       const s = this.status;
       const installed = s?.installed ?? false;
@@ -199,16 +254,14 @@
         <span>\u043F\u043E\u0440\u0442 ${s?.port ?? "\u2014"}</span>
       </div>
       <div class="row">
-        <button class="primary install">${installed ? "\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u0432\u0435\u0440\u0441\u0438\u044E" : "\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C"}</button>
-        <button class="refresh" ${installed ? "" : "disabled"}>\u27F3 \u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043A\u043E\u043C\u0431\u043E</button>
+        <button class="primary install" style="${installed ? "display:none;" : ""}">\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C</button>
+        <button class="check-update" style="${installed ? "" : "display:none;"}">\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435</button>
+        <button class="primary install-update" style="display:none;">\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C</button>
         <button class="open" ${installed ? "" : "disabled"}>\u041E\u0442\u043A\u0440\u044B\u0442\u044C Web UI</button>
+        <button class="refresh" ${installed ? "" : "disabled"}>\u27F3 \u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043A\u043E\u043C\u0431\u043E</button>
         <button class="setdir">\u0418\u0437\u043C\u0435\u043D\u0438\u0442\u044C \u043F\u0443\u0442\u044C</button>
       </div>
-      <div class="row field">
-        <input class="api-key-input" type="password" placeholder="API-\u043A\u043B\u044E\u0447 9Router (\u0434\u043B\u044F \u0447\u0430\u0442\u0430 \u0447\u0435\u0440\u0435\u0437 \u043A\u043E\u043C\u0431\u043E)" autocomplete="off" />
-        <button class="savekey">\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u043A\u043B\u044E\u0447</button>
-        <span class="api-ok"></span><span class="api-err"></span>
-      </div>
+      ${!installed && (s?.node_present || s?.server_present) ? '<div class="muted warn-hint">\u0427\u0430\u0441\u0442\u0438\u0447\u043D\u0430\u044F \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0430: \u043D\u0430\u0439\u0434\u0435\u043D\u044B \u043D\u0435 \u0432\u0441\u0435 \u043A\u043E\u043C\u043F\u043E\u043D\u0435\u043D\u0442\u044B 9Router. \u041D\u0430\u0436\u043C\u0438\u0442\u0435 \xAB\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C\xBB, \u0447\u0442\u043E\u0431\u044B \u043F\u043E\u0447\u0438\u043D\u0438\u0442\u044C.</div>' : ""}
       <div class="progress-container">
         <div class="progress-status"></div>
         <div class="progress-track"><div class="progress-bar"></div></div>
@@ -221,9 +274,10 @@
       <div class="row path">${s?.path ? esc(s.path) : ""}</div>
     `;
       this.root.querySelector(".install")?.addEventListener("click", () => void this.onInstall());
+      this.root.querySelector(".check-update")?.addEventListener("click", () => void this.onCheckUpdate());
+      this.root.querySelector(".install-update")?.addEventListener("click", () => void this.onInstallUpdate());
       this.root.querySelector(".refresh")?.addEventListener("click", () => void this.onShowCombos());
       this.root.querySelector(".open")?.addEventListener("click", () => void this.onOpen());
-      this.root.querySelector(".savekey")?.addEventListener("click", () => void this.onSaveApiKey());
       this.root.querySelector(".setdir")?.addEventListener("click", () => void this.onSetDir());
     }
   };
@@ -257,6 +311,9 @@
   }
   function setApiKey(key) {
     return invoke("plugin:9router|set_api_key", { key });
+  }
+  function checkRouterUpdate() {
+    return invoke("plugin:9router|check_router_update");
   }
   function openDashboard() {
     return invoke("plugin:9router|open_dashboard");

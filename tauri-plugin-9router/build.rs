@@ -6,8 +6,10 @@ const COMMANDS: &[&str] = &[
     "stop",
     "set_router_dir",
     "get_combos",
+    "set_api_key",
     "open_dashboard",
     "chat_completion",
+    "check_router_update",
 ];
 
 fn main() {

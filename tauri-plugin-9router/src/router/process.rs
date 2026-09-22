@@ -93,11 +93,23 @@ pub fn gateway_state(port: u16, router_dir: &Path) -> GatewayState {
         Some(pid) if pid != 0 && process_exe_matches(pid, &node_exe(router_dir)) => {
             GatewayState::OursRunning
         }
-        Some(pid) if pid != 0 => GatewayState::ForeignOccupant(pid),
+        Some(pid) if pid != 0 => {
+            // Если порт отвечает 9router health-check и процесс — node.exe, считаем его нашим
+            if crate::router::client::is_healthy(&format!("http://127.0.0.1:{}", port)) {
+                if let Some(exe) = port_owner_exe_path(pid) {
+                    if exe.to_lowercase().ends_with("node.exe") {
+                        return GatewayState::OursRunning;
+                    }
+                }
+            }
+            GatewayState::ForeignOccupant(pid)
+        }
         _ => {
             // Владельца не определили (не-Windows / отказ API). Фолбэк: считаем
-            // своим, если сами подняли сервер в этой сессии.
-            if !ACTIVE_SERVER_PIDS.lock().unwrap().is_empty() {
+            // своим, если сами подняли сервер в этой сессии или шлюз отвечает по HTTP.
+            if !ACTIVE_SERVER_PIDS.lock().unwrap().is_empty()
+                || crate::router::client::is_healthy(&format!("http://127.0.0.1:{}", port))
+            {
                 GatewayState::OursRunning
             } else {
                 GatewayState::ForeignOccupant(0)
@@ -113,6 +125,16 @@ fn listener_pid(port: u16) -> Option<u32> {
 
 #[cfg(not(windows))]
 fn listener_pid(_port: u16) -> Option<u32> {
+    None
+}
+
+#[cfg(windows)]
+fn port_owner_exe_path(pid: u32) -> Option<String> {
+    port_owner::exe_path(pid)
+}
+
+#[cfg(not(windows))]
+fn port_owner_exe_path(_pid: u32) -> Option<String> {
     None
 }
 
@@ -285,9 +307,13 @@ pub fn kill_node_processes(target: &Path) {
             "Get-CimInstance Win32_Process | Where-Object {{ $_.Name -eq 'node.exe' -and $_.ExecutablePath -eq '{t}' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}",
             t = target_str
         );
-        let out = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &ps])
-            .output();
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &ps]);
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        let out = cmd.output();
         if let Ok(out) = out {
             if !out.status.success() {
                 log::warn!(
@@ -402,7 +428,7 @@ mod port_owner {
         }
         let rows = unsafe {
             std::slice::from_raw_parts(
-                (buf.as_ptr() as *const MibTcpRowOwnerPid).add(1),
+                table.table.as_ptr(),
                 table.num_entries as usize,
             )
         };

@@ -10,8 +10,10 @@ Default permissions for the 9router plugin.
 - `allow-stop`
 - `allow-set-router-dir`
 - `allow-get-combos`
+- `allow-set-api-key`
 - `allow-open-dashboard`
 - `allow-chat-completion`
+- `allow-check-router-update`
 
 ## Permission Table
 
@@ -44,6 +46,32 @@ Enables the chat_completion command without any pre-configured scope.
 <td>
 
 Denies the chat_completion command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`9router:allow-check-router-update`
+
+</td>
+<td>
+
+Enables the check_router_update command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`9router:deny-check-router-update`
+
+</td>
+<td>
+
+Denies the check_router_update command without any pre-configured scope.
 
 </td>
 </tr>
@@ -174,6 +202,32 @@ Enables the open_dashboard command without any pre-configured scope.
 <td>
 
 Denies the open_dashboard command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`9router:allow-set-api-key`
+
+</td>
+<td>
+
+Enables the set_api_key command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`9router:deny-set-api-key`
+
+</td>
+<td>
+
+Denies the set_api_key command without any pre-configured scope.
 
 </td>
 </tr>
@@ -330,6 +384,32 @@ Allow opening the 9Router web dashboard in the default browser.
 <td>
 
 Allow running an OpenAI-compatible chat completion through 9Router.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`9router:allow-set-api-key`
+
+</td>
+<td>
+
+Allow setting the 9Router API key.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`9router:allow-check-router-update`
+
+</td>
+<td>
+
+Allow checking for 9Router updates from npm registry.
 
 </td>
 </tr>

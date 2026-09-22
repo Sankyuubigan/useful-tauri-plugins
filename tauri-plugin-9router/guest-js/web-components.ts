@@ -1,4 +1,5 @@
 import {
+  checkRouterUpdate,
   getCombos,
   getStatus,
   installOrUpdate,
@@ -202,6 +203,37 @@ export class NineRouterPanel extends HTMLElement {
     }
   }
 
+  private async onCheckUpdate() {
+    const btn = this.root.querySelector<HTMLButtonElement>('.check-update')
+    const updateBtn = this.root.querySelector<HTMLButtonElement>('.install-update')
+    if (btn) btn.disabled = true
+    if (updateBtn) updateBtn.style.display = 'none'
+    const label = this.root.querySelector<HTMLElement>('.progress-status')
+    const box = this.root.querySelector<HTMLElement>('.progress-container')
+    try {
+      const newTag = await checkRouterUpdate()
+      if (newTag) {
+        if (box) box.classList.add('on')
+        if (label) label.textContent = `Доступно обновление 9Router: v${newTag}`
+        if (updateBtn) updateBtn.style.display = 'inline-block'
+      } else {
+        if (box) box.classList.add('on')
+        if (label) label.textContent = `9Router актуален${this.status?.version ? ` (v${this.status.version})` : ''}`
+      }
+    } catch (e) {
+      if (box) box.classList.add('on')
+      if (label) label.textContent = `Ошибка проверки обновления: ${String(e)}`
+    } finally {
+      if (btn) btn.disabled = false
+    }
+  }
+
+  private async onInstallUpdate() {
+    await this.onInstall()
+    const updateBtn = this.root.querySelector<HTMLButtonElement>('.install-update')
+    if (updateBtn) updateBtn.style.display = 'none'
+  }
+
   private render() {
     const s = this.status
     const installed = s?.installed ?? false
@@ -225,20 +257,16 @@ export class NineRouterPanel extends HTMLElement {
         <span>порт ${s?.port ?? '—'}</span>
       </div>
       <div class="row">
-        <button class="primary install">${installed ? 'Обновить версию' : 'Установить'}</button>
-        <button class="refresh" ${installed ? '' : 'disabled'}>⟳ Обновить комбо</button>
+        <button class="primary install" style="${installed ? 'display:none;' : ''}">Установить</button>
+        <button class="check-update" style="${installed ? '' : 'display:none;'}">Проверить обновление</button>
+        <button class="primary install-update" style="display:none;">Обновить</button>
         <button class="open" ${installed ? '' : 'disabled'}>Открыть Web UI</button>
+        <button class="refresh" ${installed ? '' : 'disabled'}>⟳ Обновить комбо</button>
         <button class="setdir">Изменить путь</button>
-        <button class="check">Проверить</button>
       </div>
       ${!installed && (s?.node_present || s?.server_present)
         ? '<div class="muted warn-hint">Частичная установка: найдены не все компоненты 9Router. Нажмите «Установить», чтобы починить.</div>'
         : ''}
-      <div class="row field">
-        <input class="api-key-input" type="password" placeholder="API-ключ 9Router (для чата через комбо)" autocomplete="off" />
-        <button class="savekey">Сохранить ключ</button>
-        <span class="api-ok"></span><span class="api-err"></span>
-      </div>
       <div class="progress-container">
         <div class="progress-status"></div>
         <div class="progress-track"><div class="progress-bar"></div></div>
@@ -256,11 +284,11 @@ export class NineRouterPanel extends HTMLElement {
     `
 
     this.root.querySelector('.install')?.addEventListener('click', () => void this.onInstall())
+    this.root.querySelector('.check-update')?.addEventListener('click', () => void this.onCheckUpdate())
+    this.root.querySelector('.install-update')?.addEventListener('click', () => void this.onInstallUpdate())
     this.root.querySelector('.refresh')?.addEventListener('click', () => void this.onShowCombos())
     this.root.querySelector('.open')?.addEventListener('click', () => void this.onOpen())
-    this.root.querySelector('.savekey')?.addEventListener('click', () => void this.onSaveApiKey())
     this.root.querySelector('.setdir')?.addEventListener('click', () => void this.onSetDir())
-    this.root.querySelector('.check')?.addEventListener('click', () => void this.refresh())
   }
 }
 

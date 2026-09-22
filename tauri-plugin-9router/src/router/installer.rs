@@ -299,9 +299,14 @@ fn download_via_powershell(url: &str) -> Result<Vec<u8>, String> {
         url = url.replace('\'', "''"),
         dest = dest_str.replace('\'', "''"),
     );
-    let output = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &ps_script])
-        .output()
+    let mut cmd = std::process::Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &ps_script]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let output = cmd.output()
         .map_err(|e| format!("PowerShell не найден: {}", e))?;
     if output.status.success() {
         let bytes = fs::read(&tmp).map_err(|e| format!("Не прочитать temp: {}", e))?;

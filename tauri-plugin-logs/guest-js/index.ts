@@ -79,10 +79,18 @@ export async function trackError(report: ErrorReportInput): Promise<void> {
   }
 }
 
+function defaultLogFilename(): string {
+  const d = new Date()
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const ts = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`
+  return `logs_${ts}.txt`
+}
+
 /** Диалог «Сохранить как» + запись текста лога в выбранный файл. Возвращает путь. */
 export async function saveLogsToFile(content: string): Promise<string | null> {
   const path = await save({
     title: 'Сохранить логи',
+    defaultPath: defaultLogFilename(),
     filters: [{ name: 'Текст', extensions: ['log', 'txt'] }],
   })
   if (!path) return null

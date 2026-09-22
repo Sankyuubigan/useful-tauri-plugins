@@ -112,6 +112,11 @@ export function setApiKey(key: string): Promise<NineRouterStatus> {
   return invoke<NineRouterStatus>('plugin:9router|set_api_key', { key })
 }
 
+/** Проверить наличие обновления 9router (npm registry). Возвращает версию или null. */
+export function checkRouterUpdate(): Promise<string | null> {
+  return invoke<string | null>('plugin:9router|check_router_update')
+}
+
 /** Открыть веб-дашборд 9router в браузере по умолчанию. */
 export function openDashboard(): Promise<void> {
   return invoke<void>('plugin:9router|open_dashboard')

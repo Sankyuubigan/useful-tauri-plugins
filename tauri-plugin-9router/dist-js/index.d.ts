@@ -78,6 +78,8 @@ export declare function getCombos(): Promise<ComboInfo[]>;
  * Пустая строка — очистить сохранённый ключ. Возвращает статус шлюза.
  */
 export declare function setApiKey(key: string): Promise<NineRouterStatus>;
+/** Проверить наличие обновления 9router (npm registry). Возвращает версию или null. */
+export declare function checkRouterUpdate(): Promise<string | null>;
 /** Открыть веб-дашборд 9router в браузере по умолчанию. */
 export declare function openDashboard(): Promise<void>;
 /**

@@ -187,9 +187,16 @@
     } catch {
     }
   }
+  function defaultLogFilename() {
+    const d = /* @__PURE__ */ new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    const ts = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    return `logs_${ts}.txt`;
+  }
   async function saveLogsToFile(content) {
     const path = await save({
       title: "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u043B\u043E\u0433\u0438",
+      defaultPath: defaultLogFilename(),
       filters: [{ name: "\u0422\u0435\u043A\u0441\u0442", extensions: ["log", "txt"] }]
     });
     if (!path) return null;

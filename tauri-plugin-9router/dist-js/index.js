@@ -42,6 +42,13 @@ export function setRouterDir(path) {
 export function getCombos() {
     return invoke('plugin:9router|get_combos');
 }
+/**
+ * Сохранить API-ключ 9router (нужен для `/v1/chat/completions` через комбо).
+ * Пустая строка — очистить сохранённый ключ. Возвращает статус шлюза.
+ */
+export function setApiKey(key) {
+    return invoke('plugin:9router|set_api_key', { key });
+}
 /** Открыть веб-дашборд 9router в браузере по умолчанию. */
 export function openDashboard() {
     return invoke('plugin:9router|open_dashboard');

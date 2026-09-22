@@ -32,6 +32,10 @@ pub struct NineRouterConfig {
     /// Ленивый автозапуск: поднимать сервер, когда хост выбирает комбо 9router.
     #[serde(default = "default_true")]
     pub auto_start: bool,
+    /// API-ключ 9router (для `/v1/chat/completions`). Опционально: для чтения
+    /// комбо через `/v1/models` ключ не требуется.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key: Option<String>,
 }
 
 fn default_port() -> u16 { 20128 }

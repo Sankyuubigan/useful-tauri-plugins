@@ -75,25 +75,53 @@ pub fn is_healthy(base_url: &str) -> bool {
 }
 
 /// Список комбо из `/api/combos` (только LLM).
-pub fn get_combos(base_url: &str) -> Result<Vec<ComboInfo>, String> {
+///
+/// Есть ключевой нюанс: `/api/combos` — внутренний роут дашборда и на
+/// локальном сервере отвечает `401 Unauthorized` без куки-сессии дашборда
+/// (Bearer не помогает). Поэтому при неуспехе пробуем fallback-источник —
+/// OpenAI-совместимый `/v1/models` (`owned_by: "combo"`), который отдан
+/// без авторизации. `api_key` отправляем, только если он задан.
+pub fn get_combos(base_url: &str, api_key: Option<&str>) -> Result<Vec<ComboInfo>, String> {
     let url = format!("{}/api/combos", base_url.trim_end_matches('/'));
-    let resp = client()?
-        .get(&url)
-        .timeout(Duration::from_secs(8))
+    let mut req = client()?.get(&url).timeout(Duration::from_secs(8));
+    if let Some(key) = api_key.filter(|k| !k.is_empty()) {
+        req = req.header("Authorization", format!("Bearer {}", key));
+    }
+    let resp = req
         .send()
         .map_err(|e| format!("Не удалось получить комбо 9router: {}", e))?;
-    if !resp.status().is_success() {
-        return Err(format!("/api/combos: HTTP {}", resp.status()));
+    if resp.status().is_success() {
+        let v: serde_json::Value = resp.json().ok().unwrap_or_default();
+        let combos: Vec<ComboInfo> = v
+            .get("combos")
+            .and_then(|c| serde_json::from_value(c.clone()).ok())
+            .unwrap_or_default();
+        let llm: Vec<ComboInfo> = combos.into_iter().filter(|c| c.is_llm()).collect();
+        if !llm.is_empty() {
+            return Ok(llm);
+        }
     }
-    let v: serde_json::Value = resp.json().map_err(|e| format!("Bad JSON комбо: {}", e))?;
-    let combos: Vec<ComboInfo> = v
-        .get("combos")
-        .and_then(|c| serde_json::from_value(c.clone()).ok())
-        .unwrap_or_default();
-    Ok(combos.into_iter().filter(|c| c.is_llm()).collect())
+    get_combos_from_models(base_url)
 }
 
-/// Список моделей из OpenAI-совместимого `/v1/models` (fallback к комбо).
+/// Fallback к списку комбо через `/v1/models` (`owned_by: "combo"`).
+/// Эндпоинт открыт на localhost без авторизации; отдаёт только имена комбо.
+fn get_combos_from_models(base_url: &str) -> Result<Vec<ComboInfo>, String> {
+    let ids = get_models(base_url)?;
+    if ids.is_empty() {
+        return Err("9router не отдал комбо (добавьте их в дашборде 9Router).".to_string());
+    }
+    Ok(ids
+        .into_iter()
+        .map(|name| ComboInfo {
+            name,
+            kind: Some("llm".to_string()),
+            models: Vec::new(),
+        })
+        .collect())
+}
+
+/// Список моделей из OpenAI-совместимого `/v1/models` (только комбо).
 pub fn get_models(base_url: &str) -> Result<Vec<String>, String> {
     let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
     let resp = client()?
@@ -122,15 +150,20 @@ pub fn get_models(base_url: &str) -> Result<Vec<String>, String> {
 /// Полный (не-стриминговый) ответ чата: `choices[0].message.content`.
 pub fn chat_completion_nonstream(
     base_url: &str,
+    api_key: Option<&str>,
     req: &ChatRequest,
 ) -> Result<String, String> {
     let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
     let mut body = req.clone();
     body.stream = false;
-    let resp = client()?
+    let mut post = client()?
         .post(&url)
         .json(&body)
-        .timeout(Duration::from_secs(300))
+        .timeout(Duration::from_secs(300));
+    if let Some(key) = api_key.filter(|k| !k.is_empty()) {
+        post = post.header("Authorization", format!("Bearer {}", key));
+    }
+    let resp = post
         .send()
         .map_err(|e| format!("9router /v1/chat/completions: {}", e))?;
     if !resp.status().is_success() {
@@ -149,6 +182,7 @@ pub fn chat_completion_nonstream(
 /// текста; возвращает полный накопленный текст (включая reasoning_content).
 pub fn chat_completion_stream(
     base_url: &str,
+    api_key: Option<&str>,
     req: &ChatRequest,
     mut on_delta: impl FnMut(&str),
 ) -> Result<String, String> {
@@ -156,10 +190,14 @@ pub fn chat_completion_stream(
     let mut body = req.clone();
     body.stream = true;
 
-    let resp = client()?
+    let mut post = client()?
         .post(&url)
         .json(&body)
-        .timeout(Duration::from_secs(300))
+        .timeout(Duration::from_secs(300));
+    if let Some(key) = api_key.filter(|k| !k.is_empty()) {
+        post = post.header("Authorization", format!("Bearer {}", key));
+    }
+    let resp = post
         .send()
         .map_err(|e| format!("9router /v1/chat/completions: {}", e))?;
     if !resp.status().is_success() {

@@ -102,6 +102,7 @@ pub fn init() -> TauriPlugin<Wry, Config> {
             commands::stop,
             commands::set_router_dir,
             commands::get_combos,
+            commands::set_api_key,
             commands::open_dashboard,
             commands::chat_completion,
         ])

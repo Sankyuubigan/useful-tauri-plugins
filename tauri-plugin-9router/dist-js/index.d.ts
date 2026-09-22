@@ -73,6 +73,11 @@ export declare function stop(): Promise<NineRouterStatus>;
 export declare function setRouterDir(path: string): Promise<NineRouterStatus>;
 /** Список LLM-комбо (лениво стартует сервер, если нужно). */
 export declare function getCombos(): Promise<ComboInfo[]>;
+/**
+ * Сохранить API-ключ 9router (нужен для `/v1/chat/completions` через комбо).
+ * Пустая строка — очистить сохранённый ключ. Возвращает статус шлюза.
+ */
+export declare function setApiKey(key: string): Promise<NineRouterStatus>;
 /** Открыть веб-дашборд 9router в браузере по умолчанию. */
 export declare function openDashboard(): Promise<void>;
 /**

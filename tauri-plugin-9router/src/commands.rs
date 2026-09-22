@@ -2,7 +2,6 @@
 
 use serde::Serialize;
 use serde_json::json;
-use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use crate::router::{
@@ -39,7 +38,12 @@ fn build_status(app: &AppHandle) -> NineRouterStatus {
     let server_present = server_script(&dist_dir(&dir)).exists();
     let installed = node_present && server_present;
     let port = cfg.port_or_default();
-    let running = process::port_open(port, Duration::from_millis(400));
+    // «Запущен» — только если порт держит НАШ портативный node.exe. Чужой
+    // процесс на порту (глобальный npm 9Router и т.п.) сервером приложения НЕ
+    // является: иначе панель врут (инцидент: внешний 9Router на порту 20128
+    // выглядел «работающим» при ненастроенном бандле).
+    let gw = process::gateway_state(port, &dir);
+    let running = gw == process::GatewayState::OursRunning;
 
     let message = if !installed {
         "9Router не установлен. Нажмите «Установить».".to_string()
@@ -52,6 +56,18 @@ fn build_status(app: &AppHandle) -> NineRouterStatus {
                 .map(|v| format!(" (v{})", v))
                 .unwrap_or_default()
         )
+    } else if let process::GatewayState::ForeignOccupant(pid) = gw {
+        if pid != 0 {
+            format!(
+                "Порт {} занят чужим процессом (pid {}). Остановите внешний 9Router или смените порт.",
+                port, pid
+            )
+        } else {
+            format!(
+                "Порт {} занят чужим процессом. Остановите внешний 9Router или смените порт.",
+                port
+            )
+        }
     } else {
         "Установлен, не запущен".to_string()
     };
@@ -172,7 +188,8 @@ pub async fn get_combos(app: AppHandle) -> Result<Vec<client::ComboInfo>, String
 
     let cfg = config::load_config(&app);
     let base = cfg.base_url();
-    tauri::async_runtime::spawn_blocking(move || client::get_combos(&base))
+    let api_key = cfg.api_key.clone();
+    tauri::async_runtime::spawn_blocking(move || client::get_combos(&base, api_key.as_deref()))
         .await
         .map_err(|e| format!("combos task join error: {}", e))?
 }
@@ -214,6 +231,7 @@ pub async fn chat_completion(
     if !build_status(&app).installed {
         return Err("9Router не установлен.".to_string());
     }
+    let api_key = cfg.api_key.clone();
     let app_work = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let cfg_inner = config::load_config(&app_work);
@@ -232,7 +250,7 @@ pub async fn chat_completion(
     };
     let author = author.unwrap_or_default();
     let full = tauri::async_runtime::spawn_blocking(move || {
-        client::chat_completion_stream(&base, &req, |delta| {
+        client::chat_completion_stream(&base, api_key.as_deref(), &req, |delta| {
             let _ = app.emit(
                 "9router-chunk",
                 json!({ "text": delta, "author": author, "kind": "message" }),
@@ -243,6 +261,21 @@ pub async fn chat_completion(
     .map_err(|e| format!("chat task join error: {}", e))??;
 
     Ok(full)
+}
+
+/// Сохранить API-ключ 9router (для `/v1/chat/completions`). Пустая строка —
+/// очистить сохранённый ключ. Возвращает статус шлюза.
+#[tauri::command]
+pub fn set_api_key(app: AppHandle, key: Option<String>) -> NineRouterStatus {
+    let mut cfg = config::load_config(&app);
+    cfg.api_key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
+    config::save_config(&app, &cfg);
+    if cfg.api_key.is_some() {
+        log::info!("9router: API-ключ сохранён");
+    } else {
+        log::info!("9router: API-ключ очищен");
+    }
+    build_status(&app)
 }
 
 /// Открыть URL в браузере по умолчанию (без лишних крейтов).

@@ -39,6 +39,11 @@
            background: var(--session-hover, #2a2a2a); color: var(--text, #e6e6e6); font: inherit; font-size: 13px; }
   button.primary { background: var(--primary, #4a90d9); color: #fff; border-color: var(--primary, #4a90d9); }
   button:disabled { opacity: .5; cursor: default; }
+  .field { margin-top: 8px; }
+  .field input { flex: 1; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--border, #333);
+                background: var(--session-hover, #2a2a2a); color: var(--text, #e6e6e6); font: inherit; font-size: 13px; }
+  .api-ok { color: var(--success, #3fa45b); font-size: 12px; margin-left: 4px; }
+  .api-err { color: var(--warning, #d8a13a); font-size: 12px; margin-left: 4px; }
   .status { display: flex; gap: 8px; align-items: center; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-muted, #777); flex: 0 0 auto; }
   .dot.on { background: var(--success, #3fa45b); }
@@ -98,6 +103,9 @@
       this.busy = v;
       this.root.querySelectorAll("button").forEach((b) => b.disabled = v);
     }
+    notifyCombosChanged() {
+      window.dispatchEvent(new CustomEvent("9router:combos-changed", { detail: { combos: this.combos } }));
+    }
     async onInstall() {
       this.setBusy(true);
       try {
@@ -113,6 +121,7 @@
       } finally {
         this.setBusy(false);
       }
+      this.notifyCombosChanged();
       this.render();
     }
     async onOpen() {
@@ -131,6 +140,23 @@
       } catch (e) {
         console.error("[9router] getCombos failed", e);
       }
+      this.notifyCombosChanged();
+      this.render();
+    }
+    async onSaveApiKey() {
+      const input = this.root.querySelector(".api-key-input");
+      const ok = this.root.querySelector(".api-ok");
+      const err = this.root.querySelector(".api-err");
+      if (!input) return;
+      ok && (ok.textContent = "");
+      err && (err.textContent = "");
+      try {
+        this.status = await setApiKey(input.value.trim());
+        ok && (ok.textContent = "\u2713 \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D");
+      } catch (e) {
+        console.error("[9router] setApiKey failed", e);
+        if (err) err.textContent = `\u041E\u0448\u0438\u0431\u043A\u0430: ${String(e)}`;
+      }
       this.render();
     }
     async onSetDir() {
@@ -141,6 +167,7 @@
         if (!path) return;
         this.status = await setRouterDir(path);
         this.combos = [];
+        this.notifyCombosChanged();
         this.render();
       } catch (e) {
         console.error("[9router] set dir failed", e);
@@ -172,10 +199,15 @@
         <span>\u043F\u043E\u0440\u0442 ${s?.port ?? "\u2014"}</span>
       </div>
       <div class="row">
-        <button class="primary install">${installed ? "\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C" : "\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C"}</button>
+        <button class="primary install">${installed ? "\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u0432\u0435\u0440\u0441\u0438\u044E" : "\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C"}</button>
+        <button class="refresh" ${installed ? "" : "disabled"}>\u27F3 \u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043A\u043E\u043C\u0431\u043E</button>
         <button class="open" ${installed ? "" : "disabled"}>\u041E\u0442\u043A\u0440\u044B\u0442\u044C Web UI</button>
-        <button class="combos" ${installed ? "" : "disabled"}>\u041A\u043E\u043C\u0431\u043E</button>
         <button class="setdir">\u0418\u0437\u043C\u0435\u043D\u0438\u0442\u044C \u043F\u0443\u0442\u044C</button>
+      </div>
+      <div class="row field">
+        <input class="api-key-input" type="password" placeholder="API-\u043A\u043B\u044E\u0447 9Router (\u0434\u043B\u044F \u0447\u0430\u0442\u0430 \u0447\u0435\u0440\u0435\u0437 \u043A\u043E\u043C\u0431\u043E)" autocomplete="off" />
+        <button class="savekey">\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u043A\u043B\u044E\u0447</button>
+        <span class="api-ok"></span><span class="api-err"></span>
       </div>
       <div class="progress-container">
         <div class="progress-status"></div>
@@ -189,8 +221,9 @@
       <div class="row path">${s?.path ? esc(s.path) : ""}</div>
     `;
       this.root.querySelector(".install")?.addEventListener("click", () => void this.onInstall());
+      this.root.querySelector(".refresh")?.addEventListener("click", () => void this.onShowCombos());
       this.root.querySelector(".open")?.addEventListener("click", () => void this.onOpen());
-      this.root.querySelector(".combos")?.addEventListener("click", () => void this.onShowCombos());
+      this.root.querySelector(".savekey")?.addEventListener("click", () => void this.onSaveApiKey());
       this.root.querySelector(".setdir")?.addEventListener("click", () => void this.onSetDir());
     }
   };
@@ -221,6 +254,9 @@
   }
   function getCombos() {
     return invoke("plugin:9router|get_combos");
+  }
+  function setApiKey(key) {
+    return invoke("plugin:9router|set_api_key", { key });
   }
   function openDashboard() {
     return invoke("plugin:9router|open_dashboard");

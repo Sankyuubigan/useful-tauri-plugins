@@ -69,6 +69,69 @@ pub fn port_open(port: u16, timeout: Duration) -> bool {
     TcpStream::connect_timeout(&addr, timeout).is_ok()
 }
 
+// ───────────────────────── Владелец порта (правда о статусе) ─────────────────────────
+
+/// Состояние порта 9router с точки зрения НАШЕЙ установки.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum GatewayState {
+    /// Порт закрыт — сервера нет.
+    NotListening,
+    /// Порт держит наш портативный node.exe — наш шлюз жив.
+    OursRunning,
+    /// Порт держит чужой процесс (внешний 9Router из npm и т.п.), pid владельца.
+    ForeignOccupant(u32),
+}
+
+/// Фактическое состояние шлюза. Чужой процесс на порту НЕ выдаётся за наш
+/// запущенный сервер: иначе панель и логи врут (инцидент: внешний npm 9router
+/// на порту 20128 выглядел как «работающий» шлюз при ненастроенном бандле).
+pub fn gateway_state(port: u16, router_dir: &Path) -> GatewayState {
+    if !port_open(port, Duration::from_millis(400)) {
+        return GatewayState::NotListening;
+    }
+    match listener_pid(port) {
+        Some(pid) if pid != 0 && process_exe_matches(pid, &node_exe(router_dir)) => {
+            GatewayState::OursRunning
+        }
+        Some(pid) if pid != 0 => GatewayState::ForeignOccupant(pid),
+        _ => {
+            // Владельца не определили (не-Windows / отказ API). Фолбэк: считаем
+            // своим, если сами подняли сервер в этой сессии.
+            if !ACTIVE_SERVER_PIDS.lock().unwrap().is_empty() {
+                GatewayState::OursRunning
+            } else {
+                GatewayState::ForeignOccupant(0)
+            }
+        }
+    }
+}
+
+#[cfg(windows)]
+fn listener_pid(port: u16) -> Option<u32> {
+    port_owner::listening_pid(port)
+}
+
+#[cfg(not(windows))]
+fn listener_pid(_port: u16) -> Option<u32> {
+    None
+}
+
+#[cfg(windows)]
+fn process_exe_matches(pid: u32, ours: &Path) -> bool {
+    let Some(p) = port_owner::exe_path(pid) else {
+        return false;
+    };
+    let ours_norm = port_owner::normalize(ours.to_string_lossy().as_ref());
+    port_owner::normalize(&p).eq_ignore_ascii_case(&ours_norm)
+}
+
+#[cfg(not(windows))]
+fn process_exe_matches(_pid: u32, _ours: &Path) -> bool {
+    // Best-effort: на не-Windows владельца порта не опросить — полагаемся на
+    // реестр поднятых PID (fallback в gateway_state).
+    false
+}
+
 /// Дождаться готовности порта (фоновый сервер стартует ~1-2 сек).
 pub fn wait_port(port: u16, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
@@ -86,10 +149,27 @@ pub fn wait_port(port: u16, timeout: Duration) -> bool {
 pub fn start_server(app: &AppHandle, cfg: &NineRouterConfig) -> Result<u32, String> {
     let port = cfg.port_or_default();
 
-    // Уже запущен — ничего не делаем.
-    if port_open(port, Duration::from_millis(400)) {
-        log::info!("🟢 9router уже запущен на порту {}", port);
-        return Ok(0);
+    // Уже жив НАШ сервер — ничего не делаем. Чужой процесс на порту (внешний
+    // 9Router из npm и т.п.) за «запущенный» не выдаём: приложение свой сервер
+    // не подняло, а писать «работает» про чужой — ложь (инцидент на порту 20128).
+    let dir_early = crate::router::config::router_dir(app);
+    match gateway_state(port, &dir_early) {
+        GatewayState::OursRunning => {
+            log::info!("🟢 9router уже запущен на порту {} (наш сервер)", port);
+            return Ok(0);
+        }
+        GatewayState::ForeignOccupant(pid) => {
+            let who = if pid != 0 {
+                format!("чужим процессом (pid {})", pid)
+            } else {
+                "чужим процессом".to_string()
+            };
+            return Err(format!(
+                "Порт {} занят {}, не нашим 9router. Остановите внешний 9Router или смените порт (nine_router.port), затем повторите.",
+                port, who
+            ));
+        }
+        GatewayState::NotListening => {}
     }
 
     let dir = crate::router::config::router_dir(app);
@@ -229,6 +309,134 @@ pub fn kill_node_processes(target: &Path) {
 ///
 /// Здесь мы НЕ убиваем поверх уже живого (job-объект сам займётся при выходе),
 /// дублирующий килл — на `kill_active_servers`.
+
+// ══════════════════ Windows: владелец LISTEN-порта (правда о статусе) ══════════════════
+
+#[cfg(windows)]
+mod port_owner {
+    //! Определение реального владельца порта: `GetExtendedTcpTable` (LISTEN →
+    //! owning PID) + `QueryFullProcessImageNameW` (путь процесса). Без новых
+    //! крейтов, raw FFI как в `kill_job`.
+    #![allow(non_camel_case_types, dead_code)]
+
+    use std::ffi::c_void;
+
+    type DWORD = u32;
+    type HANDLE = *mut c_void;
+
+    const AF_INET: u32 = 2;
+    const TCP_TABLE_OWNER_PID_LISTENER: u32 = 4;
+    const NO_ERROR: u32 = 0;
+    const MIB_TCP_STATE_LISTEN: u32 = 2;
+    const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    struct MibTcpRowOwnerPid {
+        state: u32,
+        local_addr: u32,
+        local_port: u32, // network byte order
+        remote_addr: u32,
+        remote_port: u32,
+        owning_pid: u32,
+    }
+
+    #[repr(C)]
+    struct MibTcpTableOwnerPid {
+        num_entries: u32,
+        table: [MibTcpRowOwnerPid; 1],
+    }
+
+    extern "system" {
+        fn GetExtendedTcpTable(
+            p_tcp_table: *mut c_void,
+            pdw_size: *mut DWORD,
+            b_order: i32,
+            ul_af: u32,
+            table_class: u32,
+            reserved: u32,
+        ) -> u32;
+        fn OpenProcess(dw_desired_access: u32, b_inherit_handle: i32, dw_process_id: u32) -> HANDLE;
+        fn QueryFullProcessImageNameW(
+            h_process: HANDLE,
+            dw_flags: u32,
+            lp_exe_name: *mut u16,
+            lpdw_size: *mut u32,
+        ) -> i32;
+        fn CloseHandle(h_object: HANDLE) -> i32;
+    }
+
+    /// PID процесса, владеющего LISTEN-сокетом на заданном порту (или None).
+    pub fn listening_pid(port: u16) -> Option<u32> {
+        let mut size: u32 = 0;
+        let _ = unsafe {
+            GetExtendedTcpTable(
+                std::ptr::null_mut(),
+                &mut size,
+                0,
+                AF_INET,
+                TCP_TABLE_OWNER_PID_LISTENER,
+                0,
+            )
+        };
+        if size == 0 {
+            return None;
+        }
+        let mut buf = vec![0u8; size as usize];
+        let rc = unsafe {
+            GetExtendedTcpTable(
+                buf.as_mut_ptr() as *mut c_void,
+                &mut size,
+                0,
+                AF_INET,
+                TCP_TABLE_OWNER_PID_LISTENER,
+                0,
+            )
+        };
+        if rc != NO_ERROR {
+            return None;
+        }
+        let table = unsafe { &*(buf.as_ptr() as *const MibTcpTableOwnerPid) };
+        if table.num_entries == 0 {
+            return None;
+        }
+        let rows = unsafe {
+            std::slice::from_raw_parts(
+                (buf.as_ptr() as *const MibTcpRowOwnerPid).add(1),
+                table.num_entries as usize,
+            )
+        };
+        for row in rows {
+            if row.state == MIB_TCP_STATE_LISTEN
+                && u16::from_be((row.local_port & 0xffff) as u16) == port
+            {
+                return Some(row.owning_pid);
+            }
+        }
+        None
+    }
+
+    /// Полный путь к исполняемому файлу процесса.
+    pub fn exe_path(pid: u32) -> Option<String> {
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+        if handle.is_null() {
+            return None;
+        }
+        let mut buf = [0u16; 32768];
+        let mut size = buf.len() as u32;
+        let ok = unsafe { QueryFullProcessImageNameW(handle, 0, buf.as_mut_ptr(), &mut size) };
+        unsafe { CloseHandle(handle) };
+        if ok == 0 || size == 0 {
+            return None;
+        }
+        Some(String::from_utf16_lossy(&buf[..size as usize]))
+    }
+
+    /// Нормализация пути для сравнения (разделители, хвостовой NUL).
+    pub fn normalize(p: &str) -> String {
+        p.replace('/', "\\").trim_end_matches('\0').to_string()
+    }
+}
 
 // ═══════════════════════ Windows Job Object (KILL_ON_JOB_CLOSE) ═══════════════════════
 

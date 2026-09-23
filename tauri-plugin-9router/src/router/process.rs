@@ -366,7 +366,10 @@ mod port_owner {
     type HANDLE = *mut c_void;
 
     const AF_INET: u32 = 2;
-    const TCP_TABLE_OWNER_PID_LISTENER: u32 = 4;
+    // TCP_TABLE_OWNER_PID_LISTENER = 3 (Windows SDK TCP_TABLE_CLASS).
+    // 4 = TCP_TABLE_OWNER_PID_CONNECTIONS — отдаёт established-соединения,
+    // LISTEN-строк там нет → listening_pid всегда None → ForeignOccupant(0).
+    const TCP_TABLE_OWNER_PID_LISTENER: u32 = 3;
     const NO_ERROR: u32 = 0;
     const MIB_TCP_STATE_LISTEN: u32 = 2;
     const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;

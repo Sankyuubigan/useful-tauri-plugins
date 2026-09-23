@@ -83,6 +83,8 @@ pub fn init() -> TauriPlugin<Wry, Config> {
             commands::get_engine_status,
             commands::install_llamacpp,
             commands::set_engine_variant,
+            commands::list_engine_sources,
+            commands::set_engine_source,
             commands::check_engine_update,
             commands::install_engine_update,
             commands::remove_engine,

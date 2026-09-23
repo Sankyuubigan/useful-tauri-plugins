@@ -76,6 +76,10 @@ pub struct EngineConfig {
     pub model_meta: HashMap<String, ModelMeta>,
     #[serde(default)]
     pub llamacpp_dir: Option<String>,
+    /// Источник бинарей движка: "ggml-org" (дефолт) / "beellama" (KVarN).
+    /// None = дефолт (ggml-org).
+    #[serde(default)]
+    pub engine_source: Option<String>,
     /// Предпочтение юзера: "auto" / "cpu" / "cuda-12.4" / "cuda-13.3" / "vulkan" /
     /// "hip-radeon". None = авто.
     #[serde(default)]

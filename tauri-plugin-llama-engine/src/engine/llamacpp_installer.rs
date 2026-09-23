@@ -1,17 +1,21 @@
-//! Установка движка llamacpp: скачивание полного релиза llama.cpp
-//! (архив `llama-<tag>-bin-win-<variant>-x64.zip`) с GitHub.
+//! Установка движка llamacpp: скачивание полного релиза из GitHub-источника
+//! (multi-repo: ggml-org/llama.cpp или форк BeeLlama).
 //!
 //! ВАЖНО (новая архитектура): движок — это ОТДЕЛЬНЫЙ ПРОЦЕСС `llama-server.exe`,
-//! который приложение запускает по HTTP (см. infra::llm). Приложение больше
+//! который приложение запускает по HTTP (см. engine::llm). Приложение больше
 //! НЕ линкует llama.cpp (нет PE-импортов, нет DLL рядом с exe) — поэтому нужен
 //! полный архив движка, а не только CUDA runtime.
 //!
-//! Несколько бекендов могут быть установлены ОДНОВРЕМЕННО (как в Jan):
-//! `backends/<variant>/` — каждый вариант живёт в своей подпапке со своим
-//! `engine_meta.json`. Переключение между ними мгновенное, без перекачивания.
-//! Выбор юзера хранится в app_config.json (`engine_variant`), "auto" = подбор
-//! по GPU (см. gpu_detector::required_cuda_gen).
+//! Несколько источников и бекендов могут быть установлены ОДНОВРЕМЕННО:
+//! `backends/<source>/<variant>/` — side-by-side без перекачивания. Выбор
+//! источника в app_config.json (`engine_source`), вариант — `engine_variant`
+//! ("auto" = подбор по GPU). Реестр источников: `engine_sources.json` (SSOT).
+//!
+//! Миграции (плавные, no-op после первого прогона):
+//! 1) корень `<llamacpp_dir>/llama-server.exe` → `backends/ggml-org/<variant>/`;
+//! 2) старый плоский формат `backends/<variant>/` → `backends/ggml-org/<variant>/`.
 
+use crate::engine::sources::{self, SourceSpec};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{Cursor, Read};
@@ -30,12 +34,6 @@ pub const VARIANT_HIP: &str = "hip-radeon";
 /// Значение конфига «подобрать автоматически по видеокарте».
 pub const VARIANT_AUTO: &str = "auto";
 
-/// Список релизов (новые сначала). НЕ используем /releases/latest: с недавних пор
-/// "последний" релиз llama.cpp — это source-only стабильный тег (напр. v0.3.0), в
-/// котором НЕТ готовых бинарников. Сами билды (llama-server.exe) публикуются в
-/// nightly-пре-релизах bXXXX. Поэтому сканируем список и берём первый релиз, где
-/// реально есть нужный бинарник (см. first_release_with_engine).
-const LLAMA_CPP_RELEASES: &str = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30";
 const METADATA_FILE: &str = "engine_meta.json";
 
 /// Семейство варианта движка — по нему проверяется совместимость с GPU.
@@ -86,12 +84,17 @@ pub struct EngineMeta {
     /// Вариант движка: "cpu", "cuda-12.4" или "cuda-13.x" (фактический, из имени ассета)
     #[serde(default)]
     pub variant: String,
+    /// Источник бинарей ("ggml-org" / "beellama"); пусто/None у старых meta → ggml-org.
+    #[serde(default)]
+    pub source: String,
     pub installed_at: String,
 }
 
 #[derive(Deserialize, Clone)]
 struct GitHubRelease {
     tag_name: String,
+    #[serde(default)]
+    prerelease: bool,
     assets: Vec<GitHubAsset>,
 }
 
@@ -113,8 +116,20 @@ pub fn backends_dir(dir: &Path) -> PathBuf {
     dir.join("backends")
 }
 
-/// Папка конкретного варианта бекенда: `<llamacpp_dir>/backends/<variant>`
-pub fn variant_dir(dir: &Path, variant: &str) -> PathBuf {
+/// Папка источника: `<llamacpp_dir>/backends/<source>`
+pub fn source_dir(dir: &Path, source: &str) -> PathBuf {
+    backends_dir(dir).join(source)
+}
+
+/// Папка конкретного варианта бекенда: `<llamacpp_dir>/backends/<source>/<variant>`
+pub fn variant_dir(dir: &Path, source: &str, variant: &str) -> PathBuf {
+    source_dir(dir, source).join(variant)
+}
+
+/// Старый плоский путь (до multi-source): `<llamacpp_dir>/backends/<variant>` —
+/// только для миграции, в рантайме не использовать.
+#[allow(dead_code)]
+fn flat_variant_dir(dir: &Path, variant: &str) -> PathBuf {
     backends_dir(dir).join(variant)
 }
 
@@ -180,10 +195,10 @@ pub struct VariantInfo {
     pub installed: bool,
 }
 
-/// Список вариантов для дропдауна + установлен ли каждый на диске
-pub fn available_variants(dir: &Path) -> Vec<VariantInfo> {
+/// Список вариантов для дропдауна + установлен ли каждый на диске (для источника).
+pub fn available_variants(dir: &Path, source: &str) -> Vec<VariantInfo> {
     let auto = select_variant();
-    let installed = list_installed_variants(dir);
+    let installed = list_installed_variants(dir, source);
     all_variants()
         .into_iter()
         .map(|id| VariantInfo {
@@ -208,25 +223,24 @@ pub fn variant_label(variant: &str) -> &'static str {
     }
 }
 
-/// Имена ассетов движка в релизах llama.cpp менялись:
-/// - llama-<tag>-bin-win-<variant>-x64.zip — движок (llama-server.exe + ggml-бэкенды).
+/// Имена ассетов движка в релизах зависят от источника (asset_prefix):
+/// - `{prefix}{tag}-bin-win-{variant}-x64.zip` — движок (llama-server.exe + ggml-бэкенды).
 ///   В релизах b10275+ НЕ содержит CUDA-рантайм (cublas64_*.dll): его нужно
-///   докачать отдельным архивом cudart-llama-bin (см. find_cudart_asset).
-/// - cudart-llama-bin-win-<variant>-x64.zip — CUDA-рантайм (cublas64_13.dll,
-///   cublasLt64_13.dll, cudart64_13.dll). В старых релизах (эпоха b10275) —
-///   полный движок со всеми бэкендами (вложенная структура backends/<tag>/...).
-/// ВАЖНО: cudart-архив НЕ кандидат в движок — в новых релизах (b10275+)
-/// он содержит только DLL и не включает llama-server.exe.
-fn asset_name_candidates(tag: &str, variant: &str) -> Vec<String> {
-    vec![
-        format!("llama-{}-bin-win-{}-x64.zip", tag, variant),
-    ]
+///   докачать отдельным архивом (см. find_cudart_asset).
+/// - cudart-архив (cudart_pattern) — CUDA-рантайм (cublas64_*.dll и др.).
+/// ВАЖНО: cudart-архив НЕ кандидат в движок — поиск движка исключает всё,
+/// содержащее "cudart".
+fn asset_name_candidates(spec: &SourceSpec, tag: &str, variant: &str) -> Vec<String> {
+    vec![format!(
+        "{}{}-bin-win-{}-x64.zip",
+        spec.asset_prefix, tag, variant
+    )]
 }
 
 /// Фактический вариант из имени ассета:
 /// "llama-b10278-bin-win-cuda-13.3-x64.zip" → "cuda-13.3",
-/// "cudart-llama-bin-win-cuda-12.4-x64.zip" → "cuda-12.4",
-/// "llama-b10278-bin-win-cpu-x64.zip" → "cpu"
+/// "beellama-v0.4.6-bin-win-cuda-12.4-x64.zip" → "cuda-12.4",
+/// "cudart-llama-bin-win-cuda-12.4-x64.zip" → "cuda-12.4"
 fn variant_from_asset_name(name: &str) -> Option<String> {
     let stem = name.strip_suffix("-x64.zip")?;
     let idx = stem.rfind("-win-")?;
@@ -239,7 +253,10 @@ fn variant_from_asset_name(name: &str) -> Option<String> {
 
 /// Поиск ассета по семейству (cuda-12 / cuda-13 / vulkan / hip): мажорная версия
 /// CUDA в имени может отличаться от ожидаемой (например cuda-13.4 вместо cuda-13.3).
-fn find_asset_by_family<'a>(release: &'a GitHubRelease, family: EngineFamily) -> Option<(&'a GitHubAsset, String)> {
+fn find_asset_by_family<'a>(
+    release: &'a GitHubRelease,
+    family: EngineFamily,
+) -> Option<(&'a GitHubAsset, String)> {
     // needle-ы семейства. Для HIP поддерживаем оба имени: старое -win-hip и новое
     // -win-rocm (реальный ассет теперь llama-<tag>-bin-win-rocm-*.zip).
     let (needles, fallback): (&[&str], &str) = match family {
@@ -250,8 +267,9 @@ fn find_asset_by_family<'a>(release: &'a GitHubRelease, family: EngineFamily) ->
         EngineFamily::Cpu => (&["-win-cpu"], "cpu"),
     };
     for asset in &release.assets {
-        if asset.name.starts_with("cudart-llama-bin") {
-            continue; // cudart-архив — только CUDA DLL, это не движок
+        // cudart-архив — только CUDA DLL, это не движок (общий фильтр для всех источников)
+        if asset.name.contains("cudart") {
+            continue;
         }
         if !asset.name.ends_with("-x64.zip") {
             continue;
@@ -271,18 +289,24 @@ fn find_asset_by_family<'a>(release: &'a GitHubRelease, family: EngineFamily) ->
     None
 }
 
-fn find_engine_asset<'a>(release: &'a GitHubRelease, variant: &str) -> Option<(&'a GitHubAsset, String)> {
+fn find_engine_asset<'a>(
+    release: &'a GitHubRelease,
+    spec: &SourceSpec,
+    variant: &str,
+) -> Option<(&'a GitHubAsset, String)> {
     let tag = &release.tag_name;
-    let candidates = asset_name_candidates(tag, variant);
+    let candidates = asset_name_candidates(spec, tag, variant);
     for name in &candidates {
         if let Some(asset) = release.assets.iter().find(|a| a.name == *name) {
             return Some((asset, variant.to_string()));
         }
     }
     // Фолбэк по маске: могло измениться форматирование имени
+    let prefix = &spec.asset_prefix;
     if let Some(asset) = release.assets.iter().find(|a| {
-        a.name.starts_with(&format!("llama-{}-bin-win-{}", tag, variant))
+        a.name.starts_with(&format!("{}{}-bin-win-{}", prefix, tag, variant))
             && a.name.ends_with("-x64.zip")
+            && !a.name.contains("cudart")
     }) {
         return Some((asset, variant.to_string()));
     }
@@ -290,66 +314,68 @@ fn find_engine_asset<'a>(release: &'a GitHubRelease, variant: &str) -> Option<(&
     if let Some(hit) = find_asset_by_family(release, EngineFamily::from_variant(variant)) {
         return Some(hit);
     }
-    // CPU-ассет (llama-<tag>-bin-win-cpu-x64.zip) публикуется в каждом релизе,
-    // включая новые (проверено на b10331), поэтому точное имя/маска выше
-    // находят его. Фолбэк на cudart-архив здесь невозможен: в релизах b10275+
-    // он содержит только CUDA DLL и не включает llama-server.exe — установка
-    // «движка» из него сломана.
     None
 }
 
-/// Ищет отдельный архив CUDA-рантайма (cudart-llama-bin-win-<variant>-x64.zip).
-/// В новых релизах (b10275+) CUDA-библиотеки (cublas64_*.dll, cublasLt64_*.dll,
-/// cudart64_*.dll) вынесены из основного архива движка в этот. Без них
-/// ggml-cuda.dll не грузится и llama-server тихо работает на CPU.
-/// Архив содержит ТОЛЬКО DLL (без llama-server.exe) — качается дополнением.
-fn find_cudart_asset<'a>(release: &'a GitHubRelease, variant: &str) -> Option<(&'a GitHubAsset, String)> {
-    // Точное имя
-    let exact = format!("cudart-llama-bin-win-{}-x64.zip", variant);
-    if let Some(asset) = release.assets.iter().find(|a| a.name == exact) {
-        return Some((asset, variant.to_string()));
-    }
-    // Фолбэк по семейству: минорная версия CUDA могла смениться (13.3 → 13.7)
+/// Ищет отдельный архив CUDA-рантайма (паттерн из SourceSpec.cudart_pattern).
+/// В новых релизах ggml-org (b10275+) CUDA-библиотеки вынесены из основного
+/// архива в cudart-llama-bin; у BeeLlama паттерн просто "cudart"
+/// (`beellama-{tag}-cudart-win-{variant}-x64.zip`).
+/// Без них ggml-cuda.dll не грузится и llama-server тихо работает на CPU.
+/// ВАЖНО: НИКОГДА не возвращать main-bin ассет (`-bin-`) — это движок, не cudart.
+fn find_cudart_asset<'a>(
+    release: &'a GitHubRelease,
+    spec: &SourceSpec,
+    variant: &str,
+) -> Option<(&'a GitHubAsset, String)> {
     let family = EngineFamily::from_variant(variant);
     let needle = match family {
         EngineFamily::Cuda13 => "-win-cuda-13",
         EngineFamily::Cuda12 => "-win-cuda-12",
         _ => return None,
     };
+    // cudart-архив обязан содержать cudart_pattern и НЕ быть main-bin движком
     for asset in &release.assets {
-        if asset.name.starts_with("cudart-llama-bin")
-            && asset.name.ends_with("-x64.zip")
-            && asset.name.contains(needle)
-        {
-            let actual = variant_from_asset_name(&asset.name).unwrap_or_else(|| variant.to_string());
-            return Some((asset, actual));
+        if !asset.name.contains(&spec.cudart_pattern) {
+            continue;
         }
+        if !asset.name.ends_with("-x64.zip") || !asset.name.contains(needle) {
+            continue;
+        }
+        // Guard: main движок — "{prefix}{tag}-bin-win-…" и cudart_pattern в нём
+        // не должен совпадать по определению; доп. исключение на всякий случай.
+        if asset.name.contains("-bin-win-") && !asset.name.contains("cudart-") {
+            continue;
+        }
+        let actual =
+            variant_from_asset_name(&asset.name).unwrap_or_else(|| variant.to_string());
+        return Some((asset, actual));
     }
     None
 }
 
-pub fn meta_path(dir: &Path, variant: &str) -> PathBuf {
-    variant_dir(dir, variant).join(METADATA_FILE)
+pub fn meta_path(dir: &Path, source: &str, variant: &str) -> PathBuf {
+    variant_dir(dir, source, variant).join(METADATA_FILE)
 }
 
 /// Установлен ли конкретный вариант бекенда: главный бинарь на месте
-pub fn is_installed(dir: &Path, variant: &str) -> bool {
-    variant_dir(dir, variant).join("llama-server.exe").exists()
+pub fn is_installed(dir: &Path, source: &str, variant: &str) -> bool {
+    variant_dir(dir, source, variant).join("llama-server.exe").exists()
 }
 
 /// Метаданные установленного варианта (None если не установлен)
-pub fn installed_meta(dir: &Path, variant: &str) -> Option<EngineMeta> {
-    if !is_installed(dir, variant) {
+pub fn installed_meta(dir: &Path, source: &str, variant: &str) -> Option<EngineMeta> {
+    if !is_installed(dir, source, variant) {
         return None;
     }
-    let data = fs::read_to_string(meta_path(dir, variant)).ok()?;
+    let data = fs::read_to_string(meta_path(dir, source, variant)).ok()?;
     serde_json::from_str(&data).ok()
 }
 
-/// Какие варианты бекенда реально установлены на диске
-pub fn list_installed_variants(dir: &Path) -> Vec<String> {
+/// Какие варианты бекенда реально установлены для источника
+pub fn list_installed_variants(dir: &Path, source: &str) -> Vec<String> {
     let mut out = Vec::new();
-    let Ok(entries) = fs::read_dir(backends_dir(dir)) else {
+    let Ok(entries) = fs::read_dir(source_dir(dir, source)) else {
         return out;
     };
     for entry in entries.flatten() {
@@ -367,13 +393,25 @@ pub fn list_installed_variants(dir: &Path) -> Vec<String> {
     out
 }
 
-/// Установлен ли ХОТЯ БЫ один вариант бекенда
+/// Какие источники имеют хотя бы один установленный вариант.
+pub fn list_installed_sources(dir: &Path) -> Vec<String> {
+    let mut out = Vec::new();
+    for spec in sources::all_sources() {
+        if !list_installed_variants(dir, &spec.id).is_empty() {
+            out.push(spec.id);
+        }
+    }
+    out
+}
+
+/// Установлен ли ХОТЯ БЫ один вариант бекенда (любой источник)
 pub fn has_any_installed(dir: &Path) -> bool {
-    !list_installed_variants(dir).is_empty()
+    !list_installed_sources(dir).is_empty()
 }
 
 /// Миграция старого формата (бинарь лежал в корне <llamacpp_dir>, meta в корне)
-/// → новый: backends/<variant>/. Возвращает вариант, в который перенесён движок.
+/// → новый: backends/ggml-org/<variant>/. Возвращает вариант, в который
+/// перенесён движок.
 pub fn migrate_legacy_layout(dir: &Path) -> Result<Option<String>, String> {
     let root_exe = dir.join("llama-server.exe");
     if !root_exe.exists() {
@@ -388,8 +426,8 @@ pub fn migrate_legacy_layout(dir: &Path) -> Result<Option<String>, String> {
         .unwrap_or_else(|| VARIANT_CPU.to_string());
 
     // Уже перенесено ранее — просто убираем дубль из корня
-    let target = variant_dir(dir, &variant);
-    if is_installed(dir, &variant) {
+    let target = variant_dir(dir, sources::default_source_id().as_str(), &variant);
+    if is_installed(dir, sources::default_source_id().as_str(), &variant) {
         let _ = fs::remove_file(&root_exe);
         let _ = fs::remove_file(&root_meta_path);
         return Ok(Some(variant));
@@ -417,6 +455,45 @@ pub fn migrate_legacy_layout(dir: &Path) -> Result<Option<String>, String> {
         return Err("Не удалось перенести файлы движка в новый формат.".to_string());
     }
     Ok(Some(variant))
+}
+
+/// Миграция плоского multi-source-формата: `backends/<variant>/` →
+/// `backends/ggml-org/<variant>/` (старые установки без уровня source).
+/// No-op, если level source уже есть или variant не установлен плоско.
+/// Возвращает количество перенесённых вариантов.
+pub fn migrate_sources_layout(dir: &Path) -> u32 {
+    let default_src = sources::default_source_id();
+    let mut moved = 0u32;
+    let Ok(entries) = fs::read_dir(backends_dir(dir)) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        // Уже на уровне source — пропускаем
+        if sources::is_known_source(&name) {
+            continue;
+        }
+        // Плоский вариант (cpu / cuda-12.4 / …) — переносим в default source
+        if !is_known_variant(&name) {
+            continue;
+        }
+        let target = variant_dir(dir, &default_src, &name);
+        if target.join(METADATA_FILE).exists() {
+            continue; // уже есть в новом месте — не трогаем старую копию
+        }
+        if fs::create_dir_all(&target).is_err() {
+            continue;
+        }
+        // path уже = flat_variant_dir(dir, name) — переносим whole dir
+        if fs::rename(&path, &target).is_ok() {
+            moved += 1;
+        }
+    }
+    moved
 }
 
 /// VC++ 2015-2022 x64 runtime DLL, которые требуются MSVC-сборке llama-server.exe.
@@ -484,19 +561,39 @@ fn http_client() -> Result<reqwest::Client, String> {
 /// возвращает первый, в котором есть готовый бинарник движка для данного варианта.
 /// Так мы не зависим от того, является ли "последний" релиз source-only (v0.3.0) или
 /// содержит бинарники, и не привязаны к конкретному формату тега/имени файла.
-fn first_release_with_engine(releases: &[GitHubRelease], variant: &str) -> Option<GitHubRelease> {
+/// Если source.prefer_stable — сначала ищем среди stable (не prerelease, тег без
+/// "preview"), затем fallback на любой с бинарником.
+fn first_release_with_engine(
+    releases: &[GitHubRelease],
+    spec: &SourceSpec,
+    variant: &str,
+) -> Option<GitHubRelease> {
+    if spec.prefer_stable {
+        if let Some(rel) = releases.iter().find(|r| {
+            !r.prerelease
+                && !r.tag_name.to_lowercase().contains("preview")
+                && find_engine_asset(r, spec, variant).is_some()
+        }) {
+            return Some(rel.clone());
+        }
+    }
     releases
         .iter()
-        .find(|r| find_engine_asset(r, variant).is_some())
+        .find(|r| find_engine_asset(r, spec, variant).is_some())
         .cloned()
 }
 
-/// Получить с GitHub самый свежий релиз llama.cpp, содержащий готовый бинарник
+/// Получить с GitHub самый свежий релиз источника, содержащий готовый бинарник
 /// движка для запрошенного варианта (платформа Windows x64).
-async fn fetch_release_with_engine(client: &reqwest::Client, variant: &str) -> Result<GitHubRelease, String> {
+async fn fetch_release_with_engine(
+    client: &reqwest::Client,
+    spec: &SourceSpec,
+    variant: &str,
+) -> Result<GitHubRelease, String> {
     // 1) Основной путь: сканируем список релизов (новые сначала).
+    let releases_url = sources::releases_url(spec);
     let resp = client
-        .get(LLAMA_CPP_RELEASES)
+        .get(&releases_url)
         .send()
         .await
         .map_err(|e| format!("Ошибка запроса GitHub API: {}", crate::engine::llm::chain_err(&e, 3)))?;
@@ -515,7 +612,7 @@ async fn fetch_release_with_engine(client: &reqwest::Client, variant: &str) -> R
         .await
         .map_err(|e| format!("Ошибка парсинга ответа GitHub: {}", e))?;
 
-    if let Some(rel) = first_release_with_engine(&releases, variant) {
+    if let Some(rel) = first_release_with_engine(&releases, spec, variant) {
         return Ok(rel);
     }
 
@@ -533,14 +630,11 @@ async fn fetch_release_with_engine(client: &reqwest::Client, variant: &str) -> R
                     if tag.is_empty() {
                         continue;
                     }
-                    let url = format!(
-                        "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{}",
-                        tag
-                    );
+                    let url = sources::release_by_tag_url(spec, tag);
                     if let Ok(resp2) = client.get(&url).send().await {
                         if resp2.status().is_success() {
                             if let Ok(rel2) = resp2.json::<GitHubRelease>().await {
-                                if find_engine_asset(&rel2, variant).is_some() {
+                                if find_engine_asset(&rel2, spec, variant).is_some() {
                                     return Ok(rel2);
                                 }
                             }
@@ -552,8 +646,8 @@ async fn fetch_release_with_engine(client: &reqwest::Client, variant: &str) -> R
     }
 
     Err(format!(
-        "Не найден релиз llama.cpp с готовым движком для варианта «{}». Проверьте доступ к GitHub (api.github.com) и повторите позже.",
-        variant
+        "Не найден релиз «{}» с готовым движком для варианта «{}». Проверьте доступ к GitHub (api.github.com) и повторите позже.",
+        spec.id, variant
     ))
 }
 
@@ -676,29 +770,36 @@ fn lift_server_files(variant_root: &Path, on_log: &dyn Fn(String)) -> Result<(),
     Ok(())
 }
 
-/// Установка (или обновление) варианта бекенда llamacpp: полный архив llama-server.
-/// Ставится в `backends/<variant>/`, остальные установленные варианты не трогаются.
+/// Установка (или обновление) варианта бекенда из указанного источника.
+/// Ставится в `backends/<source>/<variant>/`, остальные установленные варианты/источники
+/// не трогаются (side-by-side).
 /// Прогресс скачивания идёт через единый tauri-plugin-downloader (`downloader:progress`),
 /// поэтому отдельный `on_progress` не нужен.
 pub async fn install<L: Fn(String) + Send + Sync>(
     dir: &Path,
+    source: &str,
     variant: &str,
     on_log: L,
 ) -> Result<EngineMeta, String> {
-    let target = variant_dir(dir, variant);
+    let spec = sources::source_spec(source)
+        .ok_or_else(|| format!("Неизвестный источник движка: {}", source))?;
+    let target = variant_dir(dir, source, variant);
     fs::create_dir_all(&target).map_err(|e| format!("Не удалось создать папку {}: {}", target.display(), e))?;
 
     // Удаляем старые файлы варианта ДО скачивания (в середине нельзя: clear_dir
     // удалил бы сам скачанный engine.zip, лежащий внутри target).
     clear_dir(&target);
 
-    on_log(format!("🔄 Вариант «{}»: поиск актуального релиза llama.cpp с готовым движком...", variant));
+    on_log(format!(
+        "🔄 Источник «{}», вариант «{}»: поиск актуального релиза с готовым движком…",
+        spec.label, variant
+    ));
     let client = http_client()?;
-    let release = fetch_release_with_engine(&client, variant).await?;
+    let release = fetch_release_with_engine(&client, &spec, variant).await?;
 
-    let asset = find_engine_asset(&release, variant).ok_or_else(|| {
+    let asset = find_engine_asset(&release, &spec, variant).ok_or_else(|| {
         format!(
-            "В релизе {} не найден ассет движка для варианта «{}». Возможно, формат релизов llama.cpp изменился — сообщите разработчику.",
+            "В релизе {} не найден ассет движка для варианта «{}». Возможно, формат релизов изменился — сообщите разработчику.",
             release.tag_name, variant
         )
     })?;
@@ -740,7 +841,7 @@ pub async fn install<L: Fn(String) + Send + Sync>(
     let file_count = extract_all(&zip_path, &target, &on_log)?;
     let _ = fs::remove_file(&zip_path);
 
-    // Jan-архивы и cudart-архивы имеют вложенную структуру — поднимаем бинарь наверх
+    // Архивы с вложенной структурой (Jan-формат, cudart и др.) — поднимаем бинарь наверх
     lift_server_files(&target, &on_log)?;
 
     // Рантайм VC++ рядом с движком (чтобы работало без ручной установки
@@ -748,13 +849,13 @@ pub async fn install<L: Fn(String) + Send + Sync>(
     ensure_vc_redist(&target, &on_log);
 
     // ── CUDA-рантайм (дополнение) ──
-    // В релизах b10275+ CUDA-библиотеки вынесены в отдельный архив cudart-llama-bin.
-    // Основной архив llama-<tag>-bin-win-cuda-* содержит только llama-server.exe:
-    // без cublas64_*.dll рядом ggml-cuda.dll не грузится и движок тихо уходит в CPU.
-    let main_asset_is_cudart = asset.0.name.starts_with("cudart-llama-bin");
+    // В релизах ggml-org b10275+ CUDA-библиотеки вынесены в отдельный архив
+    // (cudart-llama-bin). У BeeLlama — свой cudart-архив (паттерн "cudart").
+    // Без cublas64_*.dll рядом ggml-cuda.dll не грузится и движок тихо уходит в CPU.
+    let main_asset_is_cudart = asset.0.name.contains("cudart");
     let family = EngineFamily::from_variant(&actual_variant);
     if !main_asset_is_cudart && matches!(family, EngineFamily::Cuda12 | EngineFamily::Cuda13) {
-        if let Some(cudart) = find_cudart_asset(&release, &actual_variant) {
+        if let Some(cudart) = find_cudart_asset(&release, &spec, &actual_variant) {
             on_log(format!("⬇️ Дополнение CUDA-рантайма: {}", cudart.0.name));
             let cudart_zip = target.join("cudart.zip");
             tauri_plugin_downloader::download(
@@ -785,8 +886,27 @@ pub async fn install<L: Fn(String) + Send + Sync>(
             on_log(format!("✅ CUDA-рантайм распакован: {} файлов", cudart_count));
         } else {
             on_log(format!(
-                "⚠️ В релизе {} не найден архив CUDA-рантайма (cudart-llama-bin-win-*-x64.zip) — GPU-режим может не работать.",
+                "⚠️ В релизе {} не найден архив CUDA-рантайма — GPU-режим может не работать.",
                 release.tag_name
+            ));
+        }
+        // ── Guard: cublas*_*.dll ОБЯЗАН быть после установки CUDA-варианта ──
+        // Без него ggml-cuda.dll не грузится → llama-server тихо уходит в CPU
+        // или LlamaEngine::new падает предлётной проверкой. Ошибка установки,
+        // а не warning: юзер не должен получить «неготовый» бекенд.
+        let required_dll = match family {
+            EngineFamily::Cuda13 => "cublas64_13.dll",
+            EngineFamily::Cuda12 => "cublas64_12.dll",
+            _ => "",
+        };
+        if !required_dll.is_empty() && !target.join(required_dll).exists() {
+            let _ = clear_dir(&target);
+            let _ = fs::remove_dir_all(&target);
+            return Err(format!(
+                "После установки CUDA-рантайма не найден {} в {}.\n\
+                 Без него GPU-режим не работает (ggml-cuda.dll не загрузится).\n\
+                 Возможно, формат релизов источника «{}» изменился — сообщите разработчику.",
+                required_dll, target.display(), source
             ));
         }
     }
@@ -794,29 +914,38 @@ pub async fn install<L: Fn(String) + Send + Sync>(
     let meta = EngineMeta {
         tag: release.tag_name.clone(),
         variant: actual_variant.clone(),
+        source: source.to_string(),
         installed_at: chrono_now(),
     };
     let data = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
-    fs::write(meta_path(dir, variant), data).map_err(|e| format!("Ошибка записи метаданных: {}", e))?;
+    fs::write(meta_path(dir, source, variant), data)
+        .map_err(|e| format!("Ошибка записи метаданных: {}", e))?;
 
     on_log(format!(
-        "✅ Бекенд llama.cpp установлен: {} (вариант {}). Распаковано файлов: {}.",
-        release.tag_name, actual_variant, file_count
+        "✅ Бекенд установлен: {} (источник {}, вариант {}). Распаковано файлов: {}.",
+        release.tag_name, source, actual_variant, file_count
     ));
     Ok(meta)
 }
 
 /// Проверка наличия обновления конкретного варианта (только проверка, не установка)
-pub async fn check_update<L: Fn(String)>(dir: &Path, variant: &str, on_log: L) -> Result<Option<String>, String> {
-    let meta = match installed_meta(dir, variant) {
+pub async fn check_update<L: Fn(String)>(
+    dir: &Path,
+    source: &str,
+    variant: &str,
+    on_log: L,
+) -> Result<Option<String>, String> {
+    let meta = match installed_meta(dir, source, variant) {
         Some(m) => m,
         None => return Ok(None),
     };
+    let spec = sources::source_spec(source)
+        .ok_or_else(|| format!("Неизвестный источник движка: {}", source))?;
     let client = http_client()?;
-    let release = fetch_release_with_engine(&client, variant).await?;
+    let release = fetch_release_with_engine(&client, &spec, variant).await?;
     if release.tag_name != meta.tag {
         on_log(format!(
-            "🔄 Доступно обновление бекенда llama.cpp ({}): {} → {}",
+            "🔄 Доступно обновление бекенда ({}): {} → {}",
             variant, meta.tag, release.tag_name
         ));
         Ok(Some(release.tag_name))
@@ -827,8 +956,8 @@ pub async fn check_update<L: Fn(String)>(dir: &Path, variant: &str, on_log: L) -
 }
 
 /// Удаление конкретного варианта бекенда (освобождает ~300-500 МБ)
-pub fn remove<L: Fn(String)>(dir: &Path, variant: &str, on_log: &L) -> Result<(), String> {
-    let target = variant_dir(dir, variant);
+pub fn remove<L: Fn(String)>(dir: &Path, source: &str, variant: &str, on_log: &L) -> Result<(), String> {
+    let target = variant_dir(dir, source, variant);
     if !target.exists() {
         return Ok(());
     }
@@ -853,6 +982,15 @@ fn chrono_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::sources::source_spec;
+
+    fn ggml() -> SourceSpec {
+        source_spec("ggml-org").expect("ggml-org")
+    }
+
+    fn beellama() -> SourceSpec {
+        source_spec("beellama").expect("beellama")
+    }
 
     #[test]
     fn variant_from_asset_name_parses_old_and_new_formats() {
@@ -867,6 +1005,10 @@ mod tests {
         assert_eq!(
             variant_from_asset_name("llama-b10278-bin-win-cpu-x64.zip").unwrap(),
             "cpu"
+        );
+        assert_eq!(
+            variant_from_asset_name("beellama-v0.4.6-bin-win-cuda-12.4-x64.zip").unwrap(),
+            "cuda-12.4"
         );
         assert_eq!(variant_from_asset_name("llama-b10278-bin-win-cuda-13.3-x64.zip.asc"), None);
     }
@@ -919,6 +1061,7 @@ mod tests {
     fn release_with(names: &[&str]) -> GitHubRelease {
         GitHubRelease {
             tag_name: "b10278".to_string(),
+            prerelease: false,
             assets: names
                 .iter()
                 .map(|n| GitHubAsset {
@@ -938,7 +1081,7 @@ mod tests {
             "llama-b10278-bin-win-cuda-13.7-x64.zip",
             "llama-b10278-bin-win-cpu-x64.zip",
         ]);
-        let (asset, actual) = find_engine_asset(&release, VARIANT_CUDA13).unwrap();
+        let (asset, actual) = find_engine_asset(&release, &ggml(), VARIANT_CUDA13).unwrap();
         assert_eq!(asset.name, "llama-b10278-bin-win-cuda-13.7-x64.zip");
         assert_eq!(actual, "cuda-13.7");
     }
@@ -946,7 +1089,7 @@ mod tests {
     #[test]
     fn exact_match_keeps_requested_variant() {
         let release = release_with(&["llama-b10278-bin-win-cuda-13.3-x64.zip"]);
-        let (_asset, actual) = find_engine_asset(&release, VARIANT_CUDA13).unwrap();
+        let (_asset, actual) = find_engine_asset(&release, &ggml(), VARIANT_CUDA13).unwrap();
         assert_eq!(actual, "cuda-13.3");
     }
 
@@ -955,14 +1098,14 @@ mod tests {
         // cudart-архив содержит только CUDA DLL (без llama-server.exe) и
         // не может быть движком — CPU-фолбэк на него запрещён
         let release = release_with(&["cudart-llama-bin-win-cuda-12.4-x64.zip"]);
-        assert!(find_engine_asset(&release, VARIANT_CPU).is_none());
+        assert!(find_engine_asset(&release, &ggml(), VARIANT_CPU).is_none());
     }
 
     #[test]
     fn cpu_finds_exact_cpu_asset() {
         // CPU-вариант публикуется в каждом релизе (в т.ч. b10331)
         let release = release_with(&["llama-b10278-bin-win-cpu-x64.zip"]);
-        let (asset, actual) = find_engine_asset(&release, VARIANT_CPU).unwrap();
+        let (asset, actual) = find_engine_asset(&release, &ggml(), VARIANT_CPU).unwrap();
         assert_eq!(asset.name, "llama-b10278-bin-win-cpu-x64.zip");
         assert_eq!(actual, "cpu");
     }
@@ -971,19 +1114,19 @@ mod tests {
     fn family_lookup_skips_cudart_archive() {
         // В релизе только cudart-дополнение, но не движок cuda-13 — движок не найден
         let release = release_with(&["cudart-llama-bin-win-cuda-13.3-x64.zip"]);
-        assert!(find_engine_asset(&release, VARIANT_CUDA13).is_none());
+        assert!(find_engine_asset(&release, &ggml(), VARIANT_CUDA13).is_none());
     }
 
     #[test]
     fn no_asset_returns_none() {
         let release = release_with(&["llama-b10278-bin-win-vulkan-x64.zip"]);
-        assert!(find_engine_asset(&release, VARIANT_CUDA13).is_none());
+        assert!(find_engine_asset(&release, &ggml(), VARIANT_CUDA13).is_none());
     }
 
     #[test]
     fn finds_cudart_supplement_exact_match() {
         let release = release_with(&["cudart-llama-bin-win-cuda-13.3-x64.zip"]);
-        let (asset, actual) = find_cudart_asset(&release, "cuda-13.3").unwrap();
+        let (asset, actual) = find_cudart_asset(&release, &ggml(), "cuda-13.3").unwrap();
         assert_eq!(asset.name, "cudart-llama-bin-win-cuda-13.3-x64.zip");
         assert_eq!(actual, "cuda-13.3");
     }
@@ -991,7 +1134,7 @@ mod tests {
     #[test]
     fn finds_cudart_supplement_by_family_when_minor_differs() {
         let release = release_with(&["cudart-llama-bin-win-cuda-13.7-x64.zip"]);
-        let (asset, actual) = find_cudart_asset(&release, "cuda-13.3").unwrap();
+        let (asset, actual) = find_cudart_asset(&release, &ggml(), "cuda-13.3").unwrap();
         assert_eq!(asset.name, "cudart-llama-bin-win-cuda-13.7-x64.zip");
         assert_eq!(actual, "cuda-13.7");
     }
@@ -999,20 +1142,59 @@ mod tests {
     #[test]
     fn cudart_supplement_ignores_non_cuda_variants() {
         let release = release_with(&["cudart-llama-bin-win-cuda-13.3-x64.zip"]);
-        assert!(find_cudart_asset(&release, "vulkan").is_none());
-        assert!(find_cudart_asset(&release, "cpu").is_none());
+        assert!(find_cudart_asset(&release, &ggml(), "vulkan").is_none());
+        assert!(find_cudart_asset(&release, &ggml(), "cpu").is_none());
     }
 
     #[test]
     fn cudart_supplement_none_when_release_lacks_it() {
         let release = release_with(&["llama-b10331-bin-win-cuda-13.3-x64.zip"]);
-        assert!(find_cudart_asset(&release, "cuda-13.3").is_none());
+        assert!(find_cudart_asset(&release, &ggml(), "cuda-13.3").is_none());
+    }
+
+    #[test]
+    fn beellama_cudart_never_returns_main_bin() {
+        // Регрессия: старый exact-match "{prefix}{tag}-bin-win-…" матчил
+        // MAIN движок как cudart → до-скачивал главный zip → cublas64_*.dll
+        // отсутствовал → LlamaEngine::new падал («CUDA-библиотека не найдена»).
+        let release = release_with(&[
+            "beellama-v0.4.6-bin-win-cuda-13.3-x64.zip",
+            "beellama-v0.4.6-cudart-win-cuda-13.3-x64.zip",
+        ]);
+        let (asset, actual) = find_cudart_asset(&release, &beellama(), "cuda-13.3")
+            .expect("cudart BeeLlama должен найтись");
+        assert_eq!(asset.name, "beellama-v0.4.6-cudart-win-cuda-13.3-x64.zip");
+        assert_eq!(actual, "cuda-13.3");
+        assert_ne!(
+            asset.name,
+            "beellama-v0.4.6-bin-win-cuda-13.3-x64.zip",
+            "cudart НИКОГДА не должен быть main-bin ассетом"
+        );
+    }
+
+    #[test]
+    fn beellama_cudart_none_when_only_main_bin() {
+        // Только main-движок, cudart-архива нет → None (не ловить main как cudart)
+        let release = release_with(&["beellama-v0.4.6-bin-win-cuda-13.3-x64.zip"]);
+        assert!(find_cudart_asset(&release, &beellama(), "cuda-13.3").is_none());
+    }
+
+    #[test]
+    fn ggml_cudart_never_returns_main_bin() {
+        let release = release_with(&[
+            "llama-b10331-bin-win-cuda-13.3-x64.zip",
+            "cudart-llama-bin-win-cuda-13.3-x64.zip",
+        ]);
+        let (asset, _) = find_cudart_asset(&release, &ggml(), "cuda-13.3")
+            .expect("cudart ggml-org должен найтись");
+        assert_eq!(asset.name, "cudart-llama-bin-win-cuda-13.3-x64.zip");
+        assert_ne!(asset.name, "llama-b10331-bin-win-cuda-13.3-x64.zip");
     }
 
     #[test]
     fn finds_vulkan_asset_by_family() {
         let release = release_with(&["llama-b10331-bin-win-vulkan-x64.zip"]);
-        let (asset, actual) = find_engine_asset(&release, VARIANT_VULKAN).unwrap();
+        let (asset, actual) = find_engine_asset(&release, &ggml(), VARIANT_VULKAN).unwrap();
         assert_eq!(asset.name, "llama-b10331-bin-win-vulkan-x64.zip");
         assert_eq!(actual, "vulkan");
     }
@@ -1020,9 +1202,55 @@ mod tests {
     #[test]
     fn finds_hip_asset_by_family() {
         let release = release_with(&["llama-b10331-bin-win-hip-radeon-x64.zip"]);
-        let (asset, actual) = find_engine_asset(&release, VARIANT_HIP).unwrap();
+        let (asset, actual) = find_engine_asset(&release, &ggml(), VARIANT_HIP).unwrap();
         assert_eq!(asset.name, "llama-b10331-bin-win-hip-radeon-x64.zip");
         assert_eq!(actual, "hip-radeon");
+    }
+
+    #[test]
+    fn finds_beellama_asset_by_prefix() {
+        let release = release_with(&[
+            "beellama-v0.4.6-bin-win-cuda-12.4-x64.zip",
+            "beellama-v0.4.6-cudart-win-cuda-12.4-x64.zip",
+        ]);
+        let (asset, actual) = find_engine_asset(&release, &beellama(), VARIANT_CUDA).unwrap();
+        assert_eq!(asset.name, "beellama-v0.4.6-bin-win-cuda-12.4-x64.zip");
+        assert_eq!(actual, "cuda-12.4");
+        // cudart BeeLlama находится по cudart_pattern "cudart"
+        let (cudart, _) = find_cudart_asset(&release, &beellama(), "cuda-12.4").unwrap();
+        assert_eq!(cudart.name, "beellama-v0.4.6-cudart-win-cuda-12.4-x64.zip");
+    }
+
+    #[test]
+    fn prefer_stable_skips_preview_releases() {
+        let releases = vec![
+            GitHubRelease {
+                tag_name: "preview-abc".to_string(),
+                prerelease: true,
+                assets: vec![GitHubAsset {
+                    name: "beellama-preview-abc-bin-win-cuda-12.4-x64.zip".into(),
+                    browser_download_url: "https://example.com/p".into(),
+                    size: 1,
+                    digest: None,
+                }],
+            },
+            GitHubRelease {
+                tag_name: "v0.4.6".to_string(),
+                prerelease: false,
+                assets: vec![GitHubAsset {
+                    name: "beellama-v0.4.6-bin-win-cuda-12.4-x64.zip".into(),
+                    browser_download_url: "https://example.com/s".into(),
+                    size: 1,
+                    digest: None,
+                }],
+            },
+        ];
+        let rel = first_release_with_engine(&releases, &beellama(), VARIANT_CUDA).unwrap();
+        assert_eq!(rel.tag_name, "v0.4.6");
+        // ggml-org без prefer_stable берёт первый: "llama-" — substring "beellama-…",
+        // оба ассета совпали → preview, если он первее в списке.
+        let rel2 = first_release_with_engine(&releases, &ggml(), VARIANT_CUDA).unwrap();
+        assert_eq!(rel2.tag_name, "preview-abc");
     }
 
     #[test]
@@ -1039,17 +1267,74 @@ mod tests {
         )
         .unwrap();
 
-        // Миграция → backends/cuda-12.4/
+        // Миграция → backends/ggml-org/cuda-12.4/
+        let default_src = sources::default_source_id();
         assert_eq!(migrate_legacy_layout(&tmp).unwrap().as_deref(), Some("cuda-12.4"));
-        assert!(is_installed(&tmp, "cuda-12.4"));
+        assert!(is_installed(&tmp, &default_src, "cuda-12.4"));
         assert!(!tmp.join("llama-server.exe").exists());
-        assert_eq!(installed_meta(&tmp, "cuda-12.4").unwrap().variant, "cuda-12.4");
-        assert_eq!(list_installed_variants(&tmp), vec!["cuda-12.4".to_string()]);
+        assert_eq!(
+            installed_meta(&tmp, &default_src, "cuda-12.4").unwrap().variant,
+            "cuda-12.4"
+        );
+        assert_eq!(
+            list_installed_variants(&tmp, &default_src),
+            vec!["cuda-12.4".to_string()]
+        );
         assert!(has_any_installed(&tmp));
         // Повторная миграция — no-op
         assert_eq!(migrate_legacy_layout(&tmp).unwrap(), None);
 
-        // Вторая миграция при отсутствии старого формата
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn migrate_flat_backends_to_source_level() {
+        let tmp = std::env::temp_dir().join(format!("kingorch_ms_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        // Плоский формат: backends/cuda-12.4/ (без уровня source)
+        let flat = tmp.join("backends/cuda-12.4");
+        fs::create_dir_all(&flat).unwrap();
+        fs::write(flat.join("llama-server.exe"), "bin").unwrap();
+        fs::write(
+            flat.join("engine_meta.json"),
+            r#"{"tag":"b10331","variant":"cuda-12.4","installed_at":"0"}"#,
+        )
+        .unwrap();
+
+        let moved = migrate_sources_layout(&tmp);
+        assert_eq!(moved, 1);
+        let default_src = sources::default_source_id();
+        assert!(is_installed(&tmp, &default_src, "cuda-12.4"));
+        assert!(!flat.exists());
+        // Повторный вызов — no-op
+        assert_eq!(migrate_sources_layout(&tmp), 0);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn side_by_side_sources_do_not_collide() {
+        let tmp = std::env::temp_dir().join(format!("kingorch_sbs_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        for src in ["ggml-org", "beellama"] {
+            let d = tmp.join("backends").join(src).join("cuda-12.4");
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("llama-server.exe"), "bin").unwrap();
+            fs::write(
+                d.join("engine_meta.json"),
+                format!(r#"{{"tag":"t","variant":"cuda-12.4","source":"{}","installed_at":"0"}}"#, src),
+            )
+            .unwrap();
+        }
+        assert!(is_installed(&tmp, "ggml-org", "cuda-12.4"));
+        assert!(is_installed(&tmp, "beellama", "cuda-12.4"));
+        assert_eq!(list_installed_sources(&tmp).len(), 2);
+        // Удаление одного источника не трогает другой
+        let log = |_: String| {};
+        remove(&tmp, "ggml-org", "cuda-12.4", &log).unwrap();
+        assert!(!is_installed(&tmp, "ggml-org", "cuda-12.4"));
+        assert!(is_installed(&tmp, "beellama", "cuda-12.4"));
+
         let _ = fs::remove_dir_all(&tmp);
     }
 
@@ -1074,6 +1359,7 @@ mod tests {
     fn release_with_tag(tag: &str, names: &[&str]) -> GitHubRelease {
         GitHubRelease {
             tag_name: tag.to_string(),
+            prerelease: tag.contains("preview"),
             assets: names
                 .iter()
                 .map(|n| GitHubAsset {
@@ -1100,7 +1386,7 @@ mod tests {
                 ],
             ),
         ];
-        let rel = first_release_with_engine(&releases, VARIANT_CUDA).unwrap();
+        let rel = first_release_with_engine(&releases, &ggml(), VARIANT_CUDA).unwrap();
         assert_eq!(rel.tag_name, "b10621");
     }
 
@@ -1110,9 +1396,9 @@ mod tests {
             "b10621",
             &["llama-b10621-bin-win-rocm-7.14-x64.zip"],
         )];
-        let rel = first_release_with_engine(&releases, VARIANT_HIP).unwrap();
+        let rel = first_release_with_engine(&releases, &ggml(), VARIANT_HIP).unwrap();
         assert_eq!(rel.tag_name, "b10621");
-        let (_asset, actual) = find_engine_asset(&rel, VARIANT_HIP).unwrap();
+        let (_asset, actual) = find_engine_asset(&rel, &ggml(), VARIANT_HIP).unwrap();
         assert_eq!(actual, "hip-radeon");
     }
 
@@ -1123,7 +1409,7 @@ mod tests {
             &["llama-b10621-bin-win-vulkan-x64.zip"],
         )];
         assert_eq!(
-            first_release_with_engine(&releases, VARIANT_VULKAN).unwrap().tag_name,
+            first_release_with_engine(&releases, &ggml(), VARIANT_VULKAN).unwrap().tag_name,
             "b10621"
         );
     }
@@ -1134,7 +1420,7 @@ mod tests {
         // — движок всё равно должен найтись по семейству -win-cuda-12.
         let release =
             release_with_tag("v9.9.9", &["llama-v9.9.9-bin-win-cuda-12.9-x64.zip"]);
-        let (asset, actual) = find_engine_asset(&release, VARIANT_CUDA).unwrap();
+        let (asset, actual) = find_engine_asset(&release, &ggml(), VARIANT_CUDA).unwrap();
         assert_eq!(asset.name, "llama-v9.9.9-bin-win-cuda-12.9-x64.zip");
         assert_eq!(actual, "cuda-12.9");
     }
@@ -1142,6 +1428,6 @@ mod tests {
     #[test]
     fn first_release_none_when_no_binary_release() {
         let releases = vec![release_with_tag("v0.3.0", &["nightly-tag.txt"])];
-        assert!(first_release_with_engine(&releases, VARIANT_CUDA).is_none());
+        assert!(first_release_with_engine(&releases, &ggml(), VARIANT_CUDA).is_none());
     }
 }

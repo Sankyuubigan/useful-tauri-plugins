@@ -16,6 +16,12 @@ export function installLlamaCpp() {
 export function setEngineVariant(variant) {
     return invoke('plugin:llama-engine|set_engine_variant', { variant });
 }
+export function listEngineSources() {
+    return invoke('plugin:llama-engine|list_engine_sources');
+}
+export function setEngineSource(source) {
+    return invoke('plugin:llama-engine|set_engine_source', { source });
+}
 /** Новый тег релиза или null, если движок актуален. */
 export function checkEngineUpdate() {
     return invoke('plugin:llama-engine|check_engine_update');

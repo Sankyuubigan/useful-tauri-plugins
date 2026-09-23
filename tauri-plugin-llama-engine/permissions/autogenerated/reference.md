@@ -7,6 +7,8 @@ Default permissions for the llama-engine plugin.
 - `allow-get-engine-status`
 - `allow-install-llamacpp`
 - `allow-set-engine-variant`
+- `allow-list-engine-sources`
+- `allow-set-engine-source`
 - `allow-check-engine-update`
 - `allow-install-engine-update`
 - `allow-remove-engine`
@@ -482,6 +484,32 @@ Denies the install_llamacpp command without any pre-configured scope.
 <tr>
 <td>
 
+`llama-engine:allow-list-engine-sources`
+
+</td>
+<td>
+
+Enables the list_engine_sources command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llama-engine:deny-list-engine-sources`
+
+</td>
+<td>
+
+Denies the list_engine_sources command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `llama-engine:allow-remove-engine`
 
 </td>
@@ -586,6 +614,32 @@ Denies the set_engine_dir command without any pre-configured scope.
 <tr>
 <td>
 
+`llama-engine:allow-set-engine-source`
+
+</td>
+<td>
+
+Enables the set_engine_source command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llama-engine:deny-set-engine-source`
+
+</td>
+<td>
+
+Denies the set_engine_source command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `llama-engine:allow-set-engine-variant`
 
 </td>
@@ -670,6 +724,32 @@ Allow installing/downloading a llama.cpp backend variant.
 <td>
 
 Allow switching the engine backend variant (cuda/vulkan/cpu/hip-radeon/auto).
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llama-engine:allow-list-engine-sources`
+
+</td>
+<td>
+
+Allow listing available engine binary sources (ggml-org, beellama, …).
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llama-engine:allow-set-engine-source`
+
+</td>
+<td>
+
+Allow switching the engine binary source (ggml-org/beellama).
 
 </td>
 </tr>

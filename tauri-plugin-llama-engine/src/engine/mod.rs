@@ -8,6 +8,8 @@
 pub mod analytics;
 pub mod config;
 pub mod detokenizer;
+#[cfg(test)]
+mod engine_liveness;
 pub mod downloader;
 pub mod gpu_detector;
 pub mod llamacpp_installer;
@@ -18,6 +20,7 @@ pub mod llm_types;
 pub mod mem_profiler;
 pub mod mmproj;
 pub mod process_util;
+pub mod sources;
 pub mod vram;
 pub mod vram_estimate;
 

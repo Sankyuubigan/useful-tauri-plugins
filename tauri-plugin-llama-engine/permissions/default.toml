@@ -18,6 +18,16 @@ description = "Allow switching the engine backend variant (cuda/vulkan/cpu/hip-r
 commands.allow = ["set_engine_variant"]
 
 [[permission]]
+identifier = "allow-list-engine-sources"
+description = "Allow listing available engine binary sources (ggml-org, beellama, …)."
+commands.allow = ["list_engine_sources"]
+
+[[permission]]
+identifier = "allow-set-engine-source"
+description = "Allow switching the engine binary source (ggml-org/beellama)."
+commands.allow = ["set_engine_source"]
+
+[[permission]]
 identifier = "allow-check-engine-update"
 description = "Allow checking for a newer llama.cpp engine release."
 commands.allow = ["check_engine_update"]
@@ -129,6 +139,8 @@ permissions = [
   "allow-get-engine-status",
   "allow-install-llamacpp",
   "allow-set-engine-variant",
+  "allow-list-engine-sources",
+  "allow-set-engine-source",
   "allow-check-engine-update",
   "allow-install-engine-update",
   "allow-remove-engine",

@@ -92,6 +92,7 @@
       super(...arguments);
       this.busy = false;
       this.applied = "auto";
+      this.appliedSource = "ggml-org";
     }
     connectedCallback() {
       if (this.root) return;
@@ -102,6 +103,12 @@
         <div class="row"><label>\u0421\u0442\u0430\u0442\u0443\u0441:</label><span id="status" class="hint">\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430\u2026</span></div>
         <div class="row"><label>GPU:</label><span id="gpu" class="hint"></span></div>
         <div class="row"><label>\u041F\u0443\u0442\u044C:</label><span id="path" class="hint" style="word-break:break-all; flex:1;"></span></div>
+        <div class="row" style="margin-top:8px;">
+          <label>\u0418\u0441\u0442\u043E\u0447\u043D\u0438\u043A:</label>
+          <select id="source" style="flex:1; min-width:200px;"><option value="">\u2026</option></select>
+          <button id="applySource" class="primary" style="display:none;">\u041F\u0440\u0438\u043C\u0435\u043D\u0438\u0442\u044C</button>
+        </div>
+        <div id="sourceHint" class="hint"></div>
         <div class="row" style="margin-top:8px;">
           <label>\u0411\u0435\u043A\u0435\u043D\u0434:</label>
           <select id="variant" style="flex:1; min-width:200px;"><option value="">\u2026</option></select>
@@ -131,6 +138,8 @@
           </div>
         </div>
       </div>`;
+      this.root.getElementById("source").addEventListener("change", () => this.onSourceChange());
+      this.root.getElementById("applySource").addEventListener("click", () => this.onApplySource());
       this.root.getElementById("variant").addEventListener("change", () => this.onVariantChange());
       this.root.getElementById("apply").addEventListener("click", () => this.onApplyVariant());
       this.root.getElementById("install").addEventListener("click", () => this.onInstall());
@@ -214,6 +223,20 @@
       const gpu = this.root.getElementById("gpu");
       gpu.textContent = st.has_nvidia ? `${st.gpu_name} (\u0434\u0440\u0430\u0439\u0432\u0435\u0440 CUDA ${st.cuda_major}.${st.cuda_minor}${st.compute_cap ? `, compute ${st.compute_cap}` : ""}; \u0440\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0443\u0435\u043C\u044B\u0439 \u0432\u0430\u0440\u0438\u0430\u043D\u0442: ${st.required_variant || "?"})` : "\u041D\u0435 \u043E\u0431\u043D\u0430\u0440\u0443\u0436\u0435\u043D\u0430";
       this.root.getElementById("path").textContent = st.path || "\u2014";
+      const srcSel = this.root.getElementById("source");
+      const prevSource = this.appliedSource;
+      srcSel.innerHTML = "";
+      for (const s of st.available_sources || []) {
+        const o = document.createElement("option");
+        o.value = s.id;
+        o.textContent = s.installed ? `${s.label} \u2014 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D` : s.is_default ? `${s.label} (\u0440\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0443\u0435\u0442\u0441\u044F)` : s.label;
+        srcSel.appendChild(o);
+      }
+      this.appliedSource = st.selected_source || "ggml-org";
+      srcSel.value = this.appliedSource;
+      const curSrc = (st.available_sources || []).find((s) => s.id === this.appliedSource);
+      this.root.getElementById("sourceHint").textContent = curSrc ? curSrc.note : "";
+      this.root.getElementById("applySource").style.display = srcSel.value === this.appliedSource ? "none" : "inline-block";
       const sel = this.root.getElementById("variant");
       const prev = this.applied;
       sel.innerHTML = "";
@@ -232,6 +255,33 @@
       this.root.getElementById("variantHint").textContent = this.hintText(st, sel.value);
       this.root.getElementById("apply").style.display = sel.value === prev ? "none" : sel.value === this.applied ? "none" : "inline-block";
       this.applyButtonStates(st);
+      void prevSource;
+    }
+    async onSourceChange() {
+      const sel = this.root.getElementById("source");
+      const value = sel.value;
+      this.root.getElementById("applySource").style.display = value === this.appliedSource ? "none" : "inline-block";
+      try {
+        const s = await getEngineStatus();
+        const info = (s.available_sources || []).find((x) => x.id === value);
+        this.root.getElementById("sourceHint").textContent = info ? info.note : "";
+      } catch {
+      }
+    }
+    async onApplySource() {
+      const btn = this.root.getElementById("applySource");
+      const source = this.root.getElementById("source").value;
+      btn.disabled = true;
+      try {
+        await setEngineSource(source);
+        toast(`\u0418\u0441\u0442\u043E\u0447\u043D\u0438\u043A: ${source}.`);
+        await this.refresh();
+      } catch (e) {
+        toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u0441\u043C\u0435\u043D\u044B \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u0430: ${e}`, "error");
+      } finally {
+        btn.disabled = false;
+        await this.refresh();
+      }
     }
     applyButtonStates(st) {
       const installed = st.installed;
@@ -257,7 +307,7 @@
     async onVariantChange() {
       const sel = this.root.getElementById("variant");
       const value = sel.value;
-      const st = { available_variants: [], installed_variants: [], resolved_variant: "", message: "", path: "", has_nvidia: false, requires_driver_update: false, cuda_major: 0, cuda_minor: 0, gpu_name: "", compute_cap: "", required_variant: "", selected_variant: "", installed: false };
+      const st = { available_variants: [], installed_variants: [], available_sources: [], selected_source: "ggml-org", resolved_variant: "", message: "", path: "", has_nvidia: false, requires_driver_update: false, cuda_major: 0, cuda_minor: 0, gpu_name: "", compute_cap: "", required_variant: "", selected_variant: "", installed: false };
       this.root.getElementById("variantHint").textContent = this.hintText(st, value);
       if (value !== this.applied) this.root.getElementById("apply").style.display = "inline-block";
       else this.root.getElementById("apply").style.display = "none";
@@ -747,6 +797,9 @@
   }
   function setEngineVariant(variant) {
     return invoke("plugin:llama-engine|set_engine_variant", { variant });
+  }
+  function setEngineSource(source) {
+    return invoke("plugin:llama-engine|set_engine_source", { source });
   }
   function checkEngineUpdate() {
     return invoke("plugin:llama-engine|check_engine_update");

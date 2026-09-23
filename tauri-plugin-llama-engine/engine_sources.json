@@ -1,0 +1,32 @@
+[
+  {
+    "id": "ggml-org",
+    "label": "Официальный llama.cpp (ggml-org)",
+    "note": "Стабильные nightly-билды ggml-org/llama.cpp. Полная совместимость, KV без жёсткого кванта.",
+    "repo": "ggml-org/llama.cpp",
+    "asset_prefix": "llama-",
+    "cudart_pattern": "cudart-llama-bin",
+    "prefer_stable": false,
+    "default": true,
+    "runtime": {
+      "cache_type_k": null,
+      "cache_type_v": null,
+      "kv_tail_tokens": null
+    }
+  },
+  {
+    "id": "beellama",
+    "label": "BeeLlama (KVarN, меньше VRAM)",
+    "note": "Форк Anbeeld/beellama.cpp с KV-квантом KVarN — экономит VRAM на слабых GPU. Только stable-релизы v0.x (не preview). Требует --flash-attn on (уже включён).",
+    "repo": "Anbeeld/beellama.cpp",
+    "asset_prefix": "beellama-",
+    "cudart_pattern": "cudart",
+    "prefer_stable": true,
+    "default": false,
+    "runtime": {
+      "cache_type_k": "kvarn5",
+      "cache_type_v": "kvarn4",
+      "kv_tail_tokens": 1024
+    }
+  }
+]

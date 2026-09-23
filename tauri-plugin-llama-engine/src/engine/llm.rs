@@ -252,20 +252,24 @@ impl LlamaEngine {
 
         // ── Проверка установки движка ──
         // Бекенд выбирается юзером в настройках (engine_variant в app_config.json,
-        // "auto" → подбор по GPU). Каждый вариант живёт в backends/<variant>/.
+        // "auto" → подбор по GPU). Источник бинарей — engine_source
+        // ("ggml-org" / "beellama"). Каждый вариант живёт в backends/<source>/<variant>/.
         let cfg_early = crate::engine::config::load_config_early();
+        let source_id = crate::engine::sources::resolve_source(cfg_early.engine_source.as_deref());
+        let source_spec = crate::engine::sources::source_spec(&source_id);
         let pref = cfg_early.engine_variant.as_deref();
         let selected_variant = crate::engine::llamacpp_installer::resolve_variant(pref);
         let installed_family = crate::engine::llamacpp_installer::EngineFamily::from_variant(&selected_variant);
 
-        let mut server_exe = crate::engine::llamacpp_installer::variant_dir(engine_dir, &selected_variant).join("llama-server.exe");
+        let mut server_exe = crate::engine::llamacpp_installer::variant_dir(engine_dir, &source_id, &selected_variant).join("llama-server.exe");
         if !server_exe.exists() {
             // Legacy-фолбэк: бинарь в корне папки движка (старый формат до миграции)
             server_exe = engine_dir.join("llama-server.exe");
         }
         if !server_exe.exists() {
             return fail(format!(
-                "Движок llama.cpp не установлен (llama-server.exe не найден для варианта «{}» в {}).\nОткройте Настройки → «Движок запуска нейромоделей» и установите движок.",
+                "Движок llama.cpp не установлен (llama-server.exe не найден для источника «{}», варианта «{}» в {}).\nОткройте Настройки → «Движок запуска нейромоделей» и установите движок.",
+                source_id,
                 crate::engine::llamacpp_installer::variant_label(&selected_variant),
                 engine_dir.display()
             ));
@@ -503,11 +507,23 @@ impl LlamaEngine {
                         c.arg("--mmproj").arg(mmp);
                     }
                 }
-            if kv_quant_keys {
+            // KV-квант: дефолт — чекбоксы kv_quant_* → q8_0. Если у источника
+            // задан свой runtime (напр. BeeLlama KVarN) — он ПЕРЕКРЫВАЕТ чекбокс
+            // (передаём ровно один --cache-type-k/v).
+            let src_k = source_spec.as_ref().and_then(|s| s.runtime.cache_type_k.clone());
+            let src_v = source_spec.as_ref().and_then(|s| s.runtime.cache_type_v.clone());
+            if let Some(ck) = src_k {
+                c.arg("--cache-type-k").arg(ck);
+            } else if kv_quant_keys {
                 c.arg("--cache-type-k").arg("q8_0");
             }
-            if kv_quant_values {
+            if let Some(cv) = src_v {
+                c.arg("--cache-type-v").arg(cv);
+            } else if kv_quant_values {
                 c.arg("--cache-type-v").arg("q8_0");
+            }
+            if let Some(tail) = source_spec.as_ref().and_then(|s| s.runtime.kv_tail_tokens) {
+                c.arg("--kv-tail-tokens").arg(tail.to_string());
             }
             if use_reasoning {
                 // Думатель выносится в отдельное поле reasoning_content, ограничен
@@ -1611,11 +1627,27 @@ impl LlamaEngine {
         if let Some(mmp) = &self.mmproj_path {
             c.arg("--mmproj").arg(mmp);
         }
-        if ctx.kv_quant_keys {
-            c.arg("--cache-type-k").arg("q8_0");
-        }
-        if ctx.kv_quant_values {
-            c.arg("--cache-type-v").arg("q8_0");
+        // KV-квант при перезапуске: тот же порядок, что в build_cmd —
+        // source.runtime (KVarN) перекрывает чекбоксы, иначе q8_0.
+        {
+            let cfg_r = crate::engine::config::load_config_early();
+            let sid = crate::engine::sources::resolve_source(cfg_r.engine_source.as_deref());
+            let spec = crate::engine::sources::source_spec(&sid);
+            let rk = spec.as_ref().and_then(|s| s.runtime.cache_type_k.clone());
+            let rv = spec.as_ref().and_then(|s| s.runtime.cache_type_v.clone());
+            if let Some(ck) = rk {
+                c.arg("--cache-type-k").arg(ck);
+            } else if ctx.kv_quant_keys {
+                c.arg("--cache-type-k").arg("q8_0");
+            }
+            if let Some(cv) = rv {
+                c.arg("--cache-type-v").arg(cv);
+            } else if ctx.kv_quant_values {
+                c.arg("--cache-type-v").arg("q8_0");
+            }
+            if let Some(tail) = spec.as_ref().and_then(|s| s.runtime.kv_tail_tokens) {
+                c.arg("--kv-tail-tokens").arg(tail.to_string());
+            }
         }
         if ctx.reasoning_enabled {
             c.arg("--reasoning-format").arg("deepseek");

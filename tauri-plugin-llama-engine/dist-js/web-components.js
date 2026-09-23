@@ -1,4 +1,4 @@
-import { autoDownloadDefaultModel, checkEngineUpdate, deleteModelFile, downloadModel, getAutoDownloadInfo, getEngineConfig, getEngineStatus, getModelsCatalog, getAllCapabilities, installEngineUpdate, installLlamaCpp, addModel, notifyModelsChanged, removeEngine, removeModel, setEngineDir, setEngineVariant, } from './index';
+import { autoDownloadDefaultModel, checkEngineUpdate, deleteModelFile, downloadModel, getAutoDownloadInfo, getEngineConfig, getEngineStatus, getModelsCatalog, getAllCapabilities, installEngineUpdate, installLlamaCpp, addModel, notifyModelsChanged, removeEngine, removeModel, setEngineDir, setEngineSource, setEngineVariant, } from './index';
 import { open as openDialog, save } from '@tauri-apps/plugin-dialog';
 import { listen } from '@tauri-apps/api/event';
 const STYLE = `
@@ -68,6 +68,7 @@ class LlamaEnginePanel extends HTMLElement {
         super(...arguments);
         this.busy = false;
         this.applied = 'auto';
+        this.appliedSource = 'ggml-org';
     }
     connectedCallback() {
         if (this.root)
@@ -79,6 +80,12 @@ class LlamaEnginePanel extends HTMLElement {
         <div class="row"><label>Статус:</label><span id="status" class="hint">Проверка…</span></div>
         <div class="row"><label>GPU:</label><span id="gpu" class="hint"></span></div>
         <div class="row"><label>Путь:</label><span id="path" class="hint" style="word-break:break-all; flex:1;"></span></div>
+        <div class="row" style="margin-top:8px;">
+          <label>Источник:</label>
+          <select id="source" style="flex:1; min-width:200px;"><option value="">…</option></select>
+          <button id="applySource" class="primary" style="display:none;">Применить</button>
+        </div>
+        <div id="sourceHint" class="hint"></div>
         <div class="row" style="margin-top:8px;">
           <label>Бекенд:</label>
           <select id="variant" style="flex:1; min-width:200px;"><option value="">…</option></select>
@@ -108,6 +115,8 @@ class LlamaEnginePanel extends HTMLElement {
           </div>
         </div>
       </div>`;
+        this.root.getElementById('source').addEventListener('change', () => this.onSourceChange());
+        this.root.getElementById('applySource').addEventListener('click', () => this.onApplySource());
         this.root.getElementById('variant').addEventListener('change', () => this.onVariantChange());
         this.root.getElementById('apply').addEventListener('click', () => this.onApplyVariant());
         this.root.getElementById('install').addEventListener('click', () => this.onInstall());
@@ -196,6 +205,22 @@ class LlamaEnginePanel extends HTMLElement {
             ? `${st.gpu_name} (драйвер CUDA ${st.cuda_major}.${st.cuda_minor}${st.compute_cap ? `, compute ${st.compute_cap}` : ''}; рекомендуемый вариант: ${st.required_variant || '?'})`
             : 'Не обнаружена';
         this.root.getElementById('path').textContent = st.path || '—';
+        // Источник бинарей (multi-repo)
+        const srcSel = this.root.getElementById('source');
+        const prevSource = this.appliedSource;
+        srcSel.innerHTML = '';
+        for (const s of st.available_sources || []) {
+            const o = document.createElement('option');
+            o.value = s.id;
+            o.textContent = s.installed ? `${s.label} — установлен` : s.is_default ? `${s.label} (рекомендуется)` : s.label;
+            srcSel.appendChild(o);
+        }
+        this.appliedSource = st.selected_source || 'ggml-org';
+        srcSel.value = this.appliedSource;
+        const curSrc = (st.available_sources || []).find((s) => s.id === this.appliedSource);
+        this.root.getElementById('sourceHint').textContent = curSrc ? curSrc.note : '';
+        this.root.getElementById('applySource').style.display =
+            srcSel.value === this.appliedSource ? 'none' : 'inline-block';
         const sel = this.root.getElementById('variant');
         const prev = this.applied;
         sel.innerHTML = '';
@@ -214,6 +239,36 @@ class LlamaEnginePanel extends HTMLElement {
         this.root.getElementById('variantHint').textContent = this.hintText(st, sel.value);
         this.root.getElementById('apply').style.display = sel.value === prev ? 'none' : sel.value === this.applied ? 'none' : 'inline-block';
         this.applyButtonStates(st);
+        void prevSource;
+    }
+    async onSourceChange() {
+        const sel = this.root.getElementById('source');
+        const value = sel.value;
+        this.root.getElementById('applySource').style.display =
+            value === this.appliedSource ? 'none' : 'inline-block';
+        try {
+            const s = await getEngineStatus();
+            const info = (s.available_sources || []).find((x) => x.id === value);
+            this.root.getElementById('sourceHint').textContent = info ? info.note : '';
+        }
+        catch { /* не критично */ }
+    }
+    async onApplySource() {
+        const btn = this.root.getElementById('applySource');
+        const source = this.root.getElementById('source').value;
+        btn.disabled = true;
+        try {
+            await setEngineSource(source);
+            toast(`Источник: ${source}.`);
+            await this.refresh();
+        }
+        catch (e) {
+            toast(`Ошибка смены источника: ${e}`, 'error');
+        }
+        finally {
+            btn.disabled = false;
+            await this.refresh();
+        }
     }
     applyButtonStates(st) {
         const installed = st.installed;
@@ -242,7 +297,7 @@ class LlamaEnginePanel extends HTMLElement {
     async onVariantChange() {
         const sel = this.root.getElementById('variant');
         const value = sel.value;
-        const st = { available_variants: [], installed_variants: [], resolved_variant: '', message: '', path: '', has_nvidia: false, requires_driver_update: false, cuda_major: 0, cuda_minor: 0, gpu_name: '', compute_cap: '', required_variant: '', selected_variant: '', installed: false };
+        const st = { available_variants: [], installed_variants: [], available_sources: [], selected_source: 'ggml-org', resolved_variant: '', message: '', path: '', has_nvidia: false, requires_driver_update: false, cuda_major: 0, cuda_minor: 0, gpu_name: '', compute_cap: '', required_variant: '', selected_variant: '', installed: false };
         this.root.getElementById('variantHint').textContent = this.hintText(st, value);
         if (value !== this.applied)
             this.root.getElementById('apply').style.display = 'inline-block';

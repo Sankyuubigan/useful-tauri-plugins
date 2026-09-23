@@ -33,6 +33,7 @@ export interface EngineConfig {
   mmproj_files: Record<string, string>
   model_meta: Record<string, ModelMeta>
   llamacpp_dir?: string | null
+  engine_source?: string | null
   engine_variant?: string | null
 }
 
@@ -56,6 +57,14 @@ export interface VariantInfo {
   installed: boolean
 }
 
+export interface SourceInfo {
+  id: string
+  label: string
+  note: string
+  installed: boolean
+  is_default: boolean
+}
+
 export interface EngineStatus {
   installed: boolean
   tag?: string | null
@@ -70,6 +79,8 @@ export interface EngineStatus {
   required_variant: string
   selected_variant: string
   resolved_variant: string
+  selected_source: string
+  available_sources: SourceInfo[]
   installed_variants: string[]
   available_variants: VariantInfo[]
   message: string
@@ -112,6 +123,14 @@ export function installLlamaCpp(): Promise<EngineStatus> {
 
 export function setEngineVariant(variant: string): Promise<EngineStatus> {
   return invoke<EngineStatus>('plugin:llama-engine|set_engine_variant', { variant })
+}
+
+export function listEngineSources(): Promise<SourceInfo[]> {
+  return invoke<SourceInfo[]>('plugin:llama-engine|list_engine_sources')
+}
+
+export function setEngineSource(source: string): Promise<EngineStatus> {
+  return invoke<EngineStatus>('plugin:llama-engine|set_engine_source', { source })
 }
 
 /** Новый тег релиза или null, если движок актуален. */

@@ -96,9 +96,32 @@ async function run(cfg) {
         ],
         message: `chore(release): ${tag}`,
         branch,
-    });
+});
 
     gitFetchTagsForce(cfg);
+
+    // Success report: консоль не закрывается молча — печатаем итоги релиза
+    // (сам шаблон release.bat делает pause после завершения).
+    const releaseUrl = `https://github.com/${cfg.repo}/releases/tag/${tag}`;
+    const lines = [
+        ['Tag', tag],
+        ['Product', product],
+        ['Installer', installer],
+        ['Release', releaseUrl],
+        ['latest.json', cfg.latestJsonPath],
+        ['Branch', `${branch} (pushed)`],
+    ];
+    const w1 = Math.max(...lines.map(([k]) => k.length));
+    const w2 = Math.max(...lines.map(([, v]) => String(v).length));
+    const bar = '='.repeat(Math.max(40, w1 + w2 + 5));
+    console.log('\n' + bar);
+    console.log('  RELEASE SUCCESS');
+    console.log(bar);
+    for (const [k, v] of lines) {
+        console.log(`  ${k.padEnd(w1)}  ${String(v).padEnd(w2)}`);
+    }
+    console.log(bar);
+
     console.log('\n[release] done. Tag:', tag);
 }
 

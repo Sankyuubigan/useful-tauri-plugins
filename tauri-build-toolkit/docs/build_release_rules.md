@@ -38,6 +38,10 @@ MSVC-окружение (vswhere → `vcvarsall.bat x64`). В шаблонах �
 После критического шага (`node cli.cjs ...`) — проверяй `%ERRORLEVEL%`. При ошибке:
 сообщение + `pause >nul` + `exit /b 1`. Консоль **НЕ** должна закрываться молча.
 
+Успешный `release` тоже не должен закрывать консоль молча: после `echo [+DONE]`
+идёт печать success-отчёта (тег, продукт, установщик, URL релиза, `latest.json`,
+ветка) из `lib/release.cjs`, затем `pause` — пользователь должен успеть прочитать итоги.
+
 ### Разделение сборки: dev vs installer
 - `build.bat` — быстрая dev-сборка (фронтенд + Rust), **без** сборки `.exe` установщика (`bundle.active=false` в dev-override).
 - `generate_installer.bat` — полная сборка `.exe` установщика (release, LTO, sidecar, иконки, версия).

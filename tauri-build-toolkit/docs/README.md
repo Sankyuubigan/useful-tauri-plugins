@@ -14,7 +14,7 @@
 | `build`     | dev-сборка: бамп версии + sync resources + `npm install` + иконки + `npx tauri build` + запуск приложения                                      |
 | `prep`      | только подготовка (бамп версии + sync + npm + иконки) — шаг 1 `generate_installer.bat`                                                       |
 | `installer` | `prep` + `npx tauri build --bundles nsis` + верификация установщика и `.sig` (подпись lenient: без ключа собирает без подписи)              |
-| `release`   | полный релиз: сборка NSIS → подпись (strict) → `gh release create` (с `--repo`) → `latest.json` → коммит версии → push (ветка автодетект) |
+| `release`   | полный релиз: сборка NSIS → подпись (strict) → `gh release create` (с `--repo`) → `latest.json` → коммит версии → push (ветка автодетект). В конце печатает success-отчёт (тег, продукт, установщик, URL релиза, `latest.json`, ветка); `release.bat` ставит `pause`, консоль не закрывается |
 | `test`      | `cargo test [фильтр]` (MSVC-окружение — из вызывающего `.bat`)                                                                               |
 | `version`   | только бамп версии по схеме `YY.M.P` и печать                                                                                                 |
 | `doctor`    | read-only диагностика: конфиг, git origin, repo-guard, путь ключа подписи                                                                     |

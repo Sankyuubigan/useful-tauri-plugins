@@ -125,10 +125,21 @@ class LlamaEnginePanel extends HTMLElement {
         });
         this.root.getElementById('setDir').addEventListener('click', () => this.onSetDir());
         void this.refresh();
+        // Единый прогресс-событие tauri-plugin-downloader (kind: engine/model/mmproj).
+        void listen('downloader:progress', (e) => {
+            const p = e.payload;
+            if (p.kind && !['engine', 'model', 'mmproj'].includes(p.kind))
+                return;
+            this.setProgress(p.downloaded, p.total);
+            if (p.status === 'done' || p.status === 'error') {
+                setTimeout(() => this.showProgress(false), 400);
+            }
+        }).then((u) => { this.unlisten = u; }).catch(() => { });
+        // Legacy-событие (если где-то ещё шлётся).
         void listen('engine_progress', (e) => {
             const { downloaded, total } = e.payload;
             this.setProgress(downloaded, total);
-        }).then((u) => { this.unlisten = u; }).catch(() => { });
+        }).then(() => { }).catch(() => { });
     }
     disconnectedCallback() {
         this.unlisten?.();
@@ -291,6 +302,9 @@ class LlamaEnginePanel extends HTMLElement {
     async onCheckUpdate() {
         const btn = this.root.getElementById('checkUpdate');
         btn.disabled = true;
+        const prevLabel = btn.textContent;
+        btn.textContent = 'Проверка…';
+        btn.classList.add('checking');
         this.root.getElementById('installUpdate').style.display = 'none';
         try {
             const newTag = await checkEngineUpdate();
@@ -308,6 +322,8 @@ class LlamaEnginePanel extends HTMLElement {
         }
         finally {
             btn.disabled = false;
+            btn.textContent = prevLabel || 'Проверить обновление';
+            btn.classList.remove('checking');
         }
     }
     async onInstallUpdate() {

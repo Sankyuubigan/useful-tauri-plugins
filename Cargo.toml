@@ -1,6 +1,13 @@
 [workspace]
 resolver = "2"
-members = ["tauri-plugin-about-updates", "tauri-plugin-speech", "tauri-plugin-logs", "tauri-plugin-llama-engine", "tauri-plugin-9router"]
+members = [
+    "tauri-plugin-about-updates",
+    "tauri-plugin-speech",
+    "tauri-plugin-logs",
+    "tauri-plugin-llama-engine",
+    "tauri-plugin-9router",
+    "tauri-plugin-downloader",
+]
 
 [workspace.dependencies]
 tauri = { version = "2", features = [] }

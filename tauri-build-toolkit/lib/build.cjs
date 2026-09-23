@@ -110,9 +110,15 @@ async function run(cfg, opts = {}) {
     const exe = checkExeFresh(cfg);
     copyVcRedistIfConfigured(cfg, exe);
 
-    launchApp(cfg, exe);
+    // launchApp: false → ранний краш (PANIC/missing DLL) — фейлим билд, не молчим.
+    const ok = await launchApp(cfg, exe);
+    if (ok === false) {
+        console.error('\n[build] FAILED: app did not stay alive after launch.');
+        process.exitCode = 1;
+        return { exe, launched: false };
+    }
     console.log('\n[build] done.');
-    return { exe };
+    return { exe, launched: true };
 }
 
 module.exports = {

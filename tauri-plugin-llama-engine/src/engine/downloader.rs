@@ -1,7 +1,7 @@
 use futures_util::StreamExt;
 use std::cmp::min;
 use std::fs::{self, File};
-use std::io::{Cursor, Read, SeekFrom, Write};
+use std::io::{Cursor, Read, SeekFrom};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -33,24 +33,7 @@ const RETRY_BASE_MS: u64 = 500;
 const STALL_TIMEOUT: Duration = Duration::from_secs(30);
 const PART_SUFFIX: &str = ".part";
 
-/// Зеркала HuggingFace. Если основной источник упорно падает (заблокирован в
-/// регионе, throttling), подменяем хост и качаем с зеркала.
-const HF_MIRRORS: &[(&str, &str)] = &[
-    ("hf.co", "hf-mirror.com"),
-    ("huggingface.co", "hf-mirror.com"),
-];
-
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-
-fn mirror_url(url: &str) -> Option<String> {
-    for (from, to) in HF_MIRRORS {
-        let prefix = format!("https://{}", from);
-        if let Some(stripped) = url.strip_prefix(&prefix) {
-            return Some(format!("https://{}{}", to, stripped));
-        }
-    }
-    None
-}
 
 /// Резолвим финальный CDN-URL, точный размер файла и поддержку HTTP Range.
 /// GET с `Range: bytes=0-0` заставляет сервер вернуть 206 + `Content-Range`
@@ -110,32 +93,19 @@ pub async fn download_model(app: AppHandle, url: String, save_path: String) -> R
     match run_download(&app, &client, &url, &save_path).await {
         Ok(()) => Ok(()),
         Err(e) => {
-            // Уровень 2: зеркало HuggingFace
-            if let Some(murl) = mirror_url(&url) {
-                eprintln!(
-                    "[download] Основной источник не удался ({}). Пробуем зеркало: {}",
-                    e, murl
-                );
-                let _ = fs::remove_file(format!("{}{}", save_path, PART_SUFFIX));
-                if run_download(&app, &client, &murl, &save_path).await.is_ok() {
-                    return Ok(());
-                }
-            }
-            // Уровень 3: PowerShell (системный прокси + Schannel)
-            eprintln!("[download] reqwest/зеркало не сработали. Пробуем PowerShell...");
+            // Страховка: единый движок скачивания (зеркала HF + process-фоллбэки).
+            eprintln!("[download] Основной путь не удался ({}). Плагин downloader...", e);
             let _ = fs::remove_file(format!("{}{}", save_path, PART_SUFFIX));
             let dest = std::path::PathBuf::from(&save_path);
             let on_log = |msg: String| { eprintln!("[download] {}", msg); };
-            let on_progress = |dl: u64, total: u64| {
-                let _ = app.emit("download_progress", DownloadProgress { downloaded: dl, total, speed_bps: 0.0 });
+            let opts = tauri_plugin_downloader::DownloadOptions {
+                label: "Модель".into(),
+                kind: "model".into(),
+                magic: Some(b"GGUF".to_vec()),
+                min_size: Some(MIN_GGUF_SIZE),
+                ..Default::default()
             };
-            match crate::engine::download_fallback::download_with_fallback(&url, &dest, None, &on_log, &on_progress).await {
-                Ok(()) => {
-                    eprintln!("[download] PowerShell: успешно");
-                    Ok(())
-                }
-                Err(e3) => Err(e3),
-            }
+            tauri_plugin_downloader::download(&url, &dest, opts, Some(&on_log)).await
         }
     }
 }
@@ -564,15 +534,17 @@ pub async fn download_binary(app: AppHandle, url: String, save_path: String, ext
             b.to_vec()
         }
         _ => {
-            // Уровень 2: PowerShell
-            eprintln!("[download_binary] reqwest не сработал. Пробуем PowerShell...");
+            // Единый движок скачивания (фоллбэки без лишних окон).
+            eprintln!("[download_binary] reqwest не сработал. Плагин downloader...");
             let tmp = std::env::temp_dir().join(format!("king_dl_bin_{}.tmp",
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs()));
             let on_log = |msg: String| { eprintln!("[download_binary] {}", msg); };
-            let on_progress = |dl: u64, total: u64| {
-                let _ = app.emit("download_progress", DownloadProgress { downloaded: dl, total, speed_bps: 0.0 });
+            let opts = tauri_plugin_downloader::DownloadOptions {
+                label: "Бинарь".into(),
+                kind: "bin".into(),
+                ..Default::default()
             };
-            crate::engine::download_fallback::download_with_fallback(&url, &tmp, None, &on_log, &on_progress).await
+            tauri_plugin_downloader::download(&url, &tmp, opts, Some(&on_log)).await
                 .map_err(|e| format!("Ошибка скачивания: {}", e))?;
             let b = fs::read(&tmp).map_err(|e| format!("Ошибка чтения temp: {}", e))?;
             let _ = fs::remove_file(&tmp);

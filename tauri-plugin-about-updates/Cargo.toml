@@ -13,6 +13,9 @@ serde_json = { workspace = true }
 reqwest = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
+log = { workspace = true }
+# Единый движок скачивания (SSOT) для установщиков/откатов версий.
+tauri-plugin-downloader = { path = "../tauri-plugin-downloader" }
 
 [lib]
 name = "tauri_plugin_about_updates"

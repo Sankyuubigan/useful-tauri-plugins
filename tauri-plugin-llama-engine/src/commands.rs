@@ -142,14 +142,6 @@ pub async fn install_llamacpp(app: AppHandle) -> Result<EngineStatus, String> {
     let log_cb = move |msg: String| {
         log::info!("[ENGINE] {}", msg);
     };
-    let app_prog = app.clone();
-    let progress_cb = move |downloaded: u64, total: u64| {
-        use tauri::Emitter;
-        let _ = app_prog.emit(
-            "engine_progress",
-            serde_json::json!({ "downloaded": downloaded, "total": total }),
-        );
-    };
 
     let dir = engine_dir(&app);
     ensure_migrated(&app);
@@ -164,7 +156,7 @@ pub async fn install_llamacpp(app: AppHandle) -> Result<EngineStatus, String> {
         llamacpp_installer::variant_label(&variant)
     ));
 
-    let _meta = llamacpp_installer::install(&dir, &variant, &log_cb, &progress_cb).await?;
+    let _meta = llamacpp_installer::install(&dir, &variant, &log_cb).await?;
     log_cb(format!("📂 Папка движка: {}", dir.display()));
 
     Ok(get_engine_status(app))

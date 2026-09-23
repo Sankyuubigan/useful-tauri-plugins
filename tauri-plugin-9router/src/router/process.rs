@@ -89,32 +89,39 @@ pub fn gateway_state(port: u16, router_dir: &Path) -> GatewayState {
     if !port_open(port, Duration::from_millis(400)) {
         return GatewayState::NotListening;
     }
-    match listener_pid(port) {
-        Some(pid) if pid != 0 && process_exe_matches(pid, &node_exe(router_dir)) => {
-            GatewayState::OursRunning
-        }
-        Some(pid) if pid != 0 => {
-            // Если порт отвечает 9router health-check и процесс — node.exe, считаем его нашим
-            if crate::router::client::is_healthy(&format!("http://127.0.0.1:{}", port)) {
-                if let Some(exe) = port_owner_exe_path(pid) {
-                    if exe.to_lowercase().ends_with("node.exe") {
-                        return GatewayState::OursRunning;
-                    }
+
+    // 1. Если эндпоинт отвечает на 9Router health-check — шлюз активен и готов к работе
+    if crate::router::client::is_healthy(&format!("http://127.0.0.1:{}", port)) {
+        return GatewayState::OursRunning;
+    }
+
+    // 2. Проверяем владеющий процессу сокет
+    if let Some(pid) = listener_pid(port) {
+        if pid != 0 {
+            // Запущен нами в этой сессии
+            if ACTIVE_SERVER_PIDS.lock().unwrap().contains(&pid) {
+                return GatewayState::OursRunning;
+            }
+            // Совпадает путь исполняемого файла с нашими настройками
+            if process_exe_matches(pid, &node_exe(router_dir)) {
+                return GatewayState::OursRunning;
+            }
+            // Процесс на порту — node.exe (наш портативный или прошлый запуск)
+            if let Some(exe) = port_owner_exe_path(pid) {
+                let exe_lower = exe.to_lowercase();
+                if exe_lower.ends_with("node.exe") || exe_lower.ends_with("node") {
+                    return GatewayState::OursRunning;
                 }
             }
-            GatewayState::ForeignOccupant(pid)
+            return GatewayState::ForeignOccupant(pid);
         }
-        _ => {
-            // Владельца не определили (не-Windows / отказ API). Фолбэк: считаем
-            // своим, если сами подняли сервер в этой сессии или шлюз отвечает по HTTP.
-            if !ACTIVE_SERVER_PIDS.lock().unwrap().is_empty()
-                || crate::router::client::is_healthy(&format!("http://127.0.0.1:{}", port))
-            {
-                GatewayState::OursRunning
-            } else {
-                GatewayState::ForeignOccupant(0)
-            }
-        }
+    }
+
+    // 3. Фолбэк (не удалось получить PID)
+    if !ACTIVE_SERVER_PIDS.lock().unwrap().is_empty() {
+        GatewayState::OursRunning
+    } else {
+        GatewayState::ForeignOccupant(0)
     }
 }
 
@@ -291,6 +298,14 @@ pub fn stop_server() {
         kill_pid_tree(pid);
     }
     ACTIVE_SERVER_PIDS.lock().unwrap().clear();
+
+    // Дополнительно останавливаем сиротские процессы на порту 20128
+    if let Some(pid) = listener_pid(20128) {
+        if pid != 0 {
+            log::info!("🛑 Остановка процесса на порту 20128 (pid {})", pid);
+            kill_pid_tree(pid);
+        }
+    }
 }
 
 /// Прибить все процессы node.exe, чей исполняемый файл — `target`.

@@ -8,7 +8,6 @@
 pub mod analytics;
 pub mod config;
 pub mod detokenizer;
-pub mod download_fallback;
 pub mod downloader;
 pub mod gpu_detector;
 pub mod llamacpp_installer;
@@ -21,6 +20,8 @@ pub mod mmproj;
 pub mod process_util;
 pub mod vram;
 pub mod vram_estimate;
+
+// download_fallback удалён: единый движок скачивания — tauri-plugin-downloader (SSOT).
 
 // ── Re-exports (совместимость с прежним фасадом хоста `crate::infra::*`) ──
 

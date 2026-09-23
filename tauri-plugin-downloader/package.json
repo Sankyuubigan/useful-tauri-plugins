@@ -1,0 +1,26 @@
+{
+  "name": "@my-tauri-plugins/plugin-downloader",
+  "version": "0.1.0",
+  "description": "Unified file download engine with progress/speed/ETA events and web-component progress UI for Tauri apps.",
+  "type": "module",
+  "main": "dist-js/index.js",
+  "types": "dist-js/index.d.ts",
+  "files": [
+    "dist-js",
+    "guest-js",
+    "api-iife.js"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:watch": "tsc -p tsconfig.json --watch",
+    "build:global": "node scripts/build-global.cjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^5.4.0"
+  },
+  "license": "MIT"
+}

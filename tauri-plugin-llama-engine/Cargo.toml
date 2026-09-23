@@ -26,6 +26,9 @@ minijinja = { workspace = true }
 # Опциональная связка с tauri-plugin-logs (единая телеметрия King Orch). Хост
 # включает feature `host-logs`, если рядом стоит плагин логов.
 tauri-plugin-logs = { path = "../tauri-plugin-logs", optional = true }
+# Единый движок скачивания (SSOT): multi-chunk reqwest + curl + process-фоллбэки,
+# stall/resume/прогресс `downloader:progress`. Заменяет старый download_fallback.
+tauri-plugin-downloader = { path = "../tauri-plugin-downloader" }
 
 [features]
 default = []

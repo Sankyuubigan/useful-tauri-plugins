@@ -40,11 +40,38 @@ function tryRun(cfg, cmd, args, opts = {}) {
 }
 
 // Запуск приложения отвязанным процессом (build.bat не блокирует скрипт).
-function launchApp(cfg, exePath) {
-    if (!exePath) return;
+// После spawn ждём settleMs: если процесс уже умер (PANIC на старте,
+// missing DLL) — честно фиксируем фейл, а не печатаем безусловный "Launched:".
+// Async: event loop должен крутиться, иначе exit/error не сработают.
+function launchApp(cfg, exePath, opts = {}) {
+    if (!exePath) return Promise.resolve(false);
+    const settleMs = Number(opts.settleMs) > 0 ? Number(opts.settleMs) : 2000;
     const p = spawn(exePath, [], { cwd: cfg.projectRoot, detached: true, stdio: 'ignore' });
-    p.unref();
-    console.log('Launched:', exePath);
+    return new Promise((resolve) => {
+        let settled = false;
+        const finish = (ok) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(ok);
+        };
+        const timer = setTimeout(() => {
+            // Процесс пережил settle-окно → успех.
+            p.unref();
+            console.log('Launched:', exePath);
+            finish(true);
+        }, settleMs);
+        p.on('error', (err) => {
+            console.error('Launch failed:', exePath, err.message);
+            process.exitCode = 1;
+            finish(false);
+        });
+        p.on('exit', (code) => {
+            console.error(`App exited immediately (code=${code}):`, exePath);
+            process.exitCode = 1;
+            finish(false);
+        });
+    });
 }
 
 // Закрытие запущенного инстанса приложения (высвобождает file lock exe).

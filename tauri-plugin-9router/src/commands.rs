@@ -57,6 +57,8 @@ fn build_status(app: &AppHandle) -> NineRouterStatus {
                 .unwrap_or_default()
         )
     } else if let process::GatewayState::ForeignOccupant(pid) = gw {
+        // pid=0 — владелец не определён (listener_pid=None): не врём про «чужой»
+        // процесс, если health-check уже прошёл выше; иначе честно про порт.
         if pid != 0 {
             format!(
                 "Порт {} занят чужим процессом (pid {}). Остановите внешний 9Router или смените порт.",
@@ -64,7 +66,7 @@ fn build_status(app: &AppHandle) -> NineRouterStatus {
             )
         } else {
             format!(
-                "Порт {} занят чужим процессом. Остановите внешний 9Router или смените порт.",
+                "Порт {} открыт, но 9Router не отвечает. Возможно, порт занят другим сервисом — смените порт в настройках.",
                 port
             )
         }

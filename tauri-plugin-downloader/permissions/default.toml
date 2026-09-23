@@ -1,0 +1,30 @@
+"$schema" = "../gen/schemas/acl.json"
+
+[[permission]]
+identifier = "allow-download-file"
+description = "Allow downloading a file to a destination path."
+commands.allow = ["download_file"]
+
+[[permission]]
+identifier = "allow-download-bytes"
+description = "Allow downloading a file into a temp path and reading its bytes."
+commands.allow = ["download_bytes"]
+
+[[permission]]
+identifier = "allow-cancel-download"
+description = "Allow cancelling an active download by task id."
+commands.allow = ["cancel_download"]
+
+[[permission]]
+identifier = "allow-list-active"
+description = "Allow listing active download tasks."
+commands.allow = ["list_active"]
+
+[default]
+description = "Default permissions for the downloader plugin."
+permissions = [
+  "allow-download-file",
+  "allow-download-bytes",
+  "allow-cancel-download",
+  "allow-list-active",
+]

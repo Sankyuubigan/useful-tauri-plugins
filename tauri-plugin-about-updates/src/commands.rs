@@ -107,31 +107,22 @@ pub async fn install_release<R: Runtime>(app: AppHandle<R>, download_url: String
         .ok_or_else(|| "Некорректный URL установщика".to_string())?
         .to_string();
 
-    // 3. Скачивание установщика во временную папку.
-    let client = reqwest::Client::builder()
-        .user_agent("tauri-plugin-about-updates")
-        .build()
-        .map_err(|e| e.to_string())?;
-
-    let resp = client
-        .get(&download_url)
-        .send()
-        .await
-        .map_err(|e| format!("Ошибка загрузки установщика: {}", e))?;
-    if !resp.status().is_success() {
-        return Err(format!(
-            "Не удалось скачать установщик (HTTP {}). Возможно, релиз недоступен или был удалён.",
-            resp.status()
-        ));
-    }
-    let bytes = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("Ошибка чтения установщика: {}", e))?;
-
+    // 3. Скачивание установщика единым движком (прогресс, без лишних окон).
     let installer_path: PathBuf = std::env::temp_dir().join(&file_name);
-    std::fs::write(&installer_path, &bytes)
-        .map_err(|e| format!("Ошибка записи установщика на диск: {}", e))?;
+    tauri_plugin_downloader::download(
+        &download_url,
+        &installer_path,
+        tauri_plugin_downloader::DownloadOptions {
+            label: format!("Установщик {}", file_name),
+            kind: "app".into(),
+            ..Default::default()
+        },
+        Some(&|msg: String| {
+            log::info!("[about-updates] {}", msg);
+        }),
+    )
+    .await
+    .map_err(|e| format!("Ошибка загрузки установщика: {}", e))?;
 
     // 4. Запуск инсталлера в тихом режиме и авто-перезапуск приложения после
     //    переустановки. NSIS в режиме /S НЕ перезапускает приложение сам, поэтому

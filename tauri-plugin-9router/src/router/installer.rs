@@ -271,53 +271,15 @@ fn strip_top_level(path: &Path) -> Option<PathBuf> {
 
 // ─────────────────────────────── Скачивание байт ───────────────────────────────
 
-/// Скачивание с фоллбэком: reqwest → PowerShell (читает системный прокси,
-/// Schannel как браузер). По-байтово, с прогрессом по content-length.
-fn download_bytes(client: &Client, url: &str) -> Result<Vec<u8>, String> {
-    match client.get(url).send() {
-        Ok(resp) if resp.status().is_success() => {
-            let total = resp.content_length().unwrap_or(0);
-            let bytes = resp.bytes().map_err(|e| format!("Ошибка чтения {}: {}", url, e))?;
-            if total > 0 && (bytes.len() as u64) < total {
-                return Err(format!("Недокачано {}: {} из {} байт", url, bytes.len(), total));
-            }
-            Ok(bytes.to_vec())
-        }
-        Ok(resp) => Err(format!("{}: HTTP {}", url, resp.status())),
-        Err(_) => download_via_powershell(url),
-    }
-}
-
-/// Фоллбэк: PowerShell Invoke-WebRequest в temp-файл → чтение в память.
-fn download_via_powershell(url: &str) -> Result<Vec<u8>, String> {
-    let tmp = std::env::temp_dir().join(format!("nr_dl_{}.bin", std::process::id()));
-    let dest_str = tmp.display().to_string();
-    let ps_script = format!(
-        "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; \
-         $ProgressPreference = 'SilentlyContinue'; \
-         Invoke-WebRequest -Uri '{url}' -OutFile '{dest}' -UseBasicParsing",
-        url = url.replace('\'', "''"),
-        dest = dest_str.replace('\'', "''"),
-    );
-    let mut cmd = std::process::Command::new("powershell");
-    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &ps_script]);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-    }
-    let output = cmd.output()
-        .map_err(|e| format!("PowerShell не найден: {}", e))?;
-    if output.status.success() {
-        let bytes = fs::read(&tmp).map_err(|e| format!("Не прочитать temp: {}", e))?;
-        let _ = fs::remove_file(&tmp);
-        if bytes.is_empty() {
-            return Err("PowerShell скачал пустой файл".to_string());
-        }
-        return Ok(bytes);
-    }
-    let _ = fs::remove_file(&tmp);
-    Err(format!("PowerShell: {}", String::from_utf8_lossy(&output.stderr).trim()))
+/// Скачивание байтов единым движком tauri-plugin-downloader (6 уровней,
+/// CREATE_NO_WINDOW на process-фоллбэках, stall/resume).
+fn download_bytes(_client: &Client, url: &str) -> Result<Vec<u8>, String> {
+    let opts = tauri_plugin_downloader::DownloadOptions {
+        label: "9Router / Node.js".into(),
+        kind: "9router".into(),
+        ..Default::default()
+    };
+    tauri_plugin_downloader::download_bytes_blocking(url, opts)
 }
 
 /// Удобный PathBuf импорт (используется снаружи тестами).

@@ -135,13 +135,31 @@ fn main() {
 
 ### 3.3 `src/lib.rs` — Config, PluginState, `init`
 
+**⚠️ Config ОБЯЗАН переживать `null`.** Если ключа `plugins.<id>` нет в
+`tauri.conf.json` хоста, Tauri передаёт `null`, и наивный
+`#[derive(Deserialize)]` паникует на старте хоста:
+`invalid type: null, expected struct Config`. Поэтому **всегда** пишем
+кастомный `Deserialize`, который через `Option::<...>::deserialize`
+трактует `null` как `Default::default()` (см. `tauri-plugin-9router` /
+`tauri-plugin-downloader`). Не добавляйте плагин в хост без этой защиты.
+
 ```rust
 use serde::Deserialize;
 use tauri::{plugin::{Builder, TauriPlugin}, Manager, Runtime};
 
 /// Конфиг из tauri.conf.json хоста: "plugins": { "logs": { "log_file_name": "...", "last_logs": true } }
-#[derive(Deserialize, Clone)]
+#[derive(Clone, Default)]
 pub struct Config { /* ... */ }
+
+impl<'de> Deserialize<'de> for Config {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where D: serde::Deserializer<'de> {
+        // null (секции нет) → default; объект → поля.
+        let _ = Option::<serde::de::IgnoredAny>::deserialize(deserializer)?;
+        Ok(Config::default())
+    }
+    // Для конфига с полями: Option::<ConfigInner>::deserialize → map → unwrap_or_default
+}
 
 /// Вызывается из хоста: `.plugin(tauri_plugin_logs::init())`.
 pub fn init<R: Runtime>() -> TauriPlugin<R, Config> {

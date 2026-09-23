@@ -148,11 +148,21 @@
       });
       this.root.getElementById("setDir").addEventListener("click", () => this.onSetDir());
       void this.refresh();
+      void listen("downloader:progress", (e) => {
+        const p = e.payload;
+        if (p.kind && !["engine", "model", "mmproj"].includes(p.kind)) return;
+        this.setProgress(p.downloaded, p.total);
+        if (p.status === "done" || p.status === "error") {
+          setTimeout(() => this.showProgress(false), 400);
+        }
+      }).then((u) => {
+        this.unlisten = u;
+      }).catch(() => {
+      });
       void listen("engine_progress", (e) => {
         const { downloaded, total } = e.payload;
         this.setProgress(downloaded, total);
-      }).then((u) => {
-        this.unlisten = u;
+      }).then(() => {
       }).catch(() => {
       });
     }
@@ -301,6 +311,9 @@
     async onCheckUpdate() {
       const btn = this.root.getElementById("checkUpdate");
       btn.disabled = true;
+      const prevLabel = btn.textContent;
+      btn.textContent = "\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430\u2026";
+      btn.classList.add("checking");
       this.root.getElementById("installUpdate").style.display = "none";
       try {
         const newTag = await checkEngineUpdate();
@@ -315,6 +328,8 @@
         toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0438 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u0434\u0432\u0438\u0436\u043A\u0430: ${e}`, "error");
       } finally {
         btn.disabled = false;
+        btn.textContent = prevLabel || "\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435";
+        btn.classList.remove("checking");
       }
     }
     async onInstallUpdate() {

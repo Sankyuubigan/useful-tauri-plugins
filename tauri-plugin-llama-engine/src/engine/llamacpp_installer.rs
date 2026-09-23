@@ -14,7 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 /// Варианты движка llama.cpp в ассетах релизов ggml-org/llama.cpp.
@@ -573,70 +573,6 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(hex)
 }
 
-/// Скачивание ассета с докачкой (HTTP Range) и прогрессом
-async fn download_asset<L: Fn(String), P: Fn(u64, u64)>(
-    client: &reqwest::Client,
-    asset: &GitHubAsset,
-    dest_zip: &Path,
-    on_log: &L,
-    on_progress: &P,
-) -> Result<(), String> {
-    let part_path = dest_zip.with_extension("zip.part");
-    let resume_from = fs::metadata(&part_path).map(|m| m.len()).unwrap_or(0);
-
-    let mut req = client.get(&asset.browser_download_url);
-    if resume_from > 0 {
-        req = req.header("Range", format!("bytes={}-", resume_from));
-        on_log(format!("Докачка архива с {} МБ...", resume_from / 1024 / 1024));
-    } else {
-        on_log(format!(
-            "📥 Скачивание {} ({} МБ)...",
-            asset.name,
-            asset.size / 1024 / 1024
-        ));
-    }
-
-    let resp = req.send().await.map_err(|e| format!("Ошибка загрузки: {}", crate::engine::llm::chain_err(&e, 3)))?;
-    let status = resp.status();
-    let total = asset.size;
-
-    let mut file = if status == reqwest::StatusCode::PARTIAL_CONTENT && resume_from > 0 {
-        fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(&part_path)
-            .map_err(|e| format!("Ошибка создания файла: {}", e))?
-    } else {
-        if status != reqwest::StatusCode::OK {
-            return Err(format!("Сервер вернул HTTP {}", status));
-        }
-        fs::File::create(&part_path).map_err(|e| format!("Ошибка создания файла: {}", e))?
-    };
-
-    let mut downloaded = resume_from;
-    let mut stream = resp.bytes_stream();
-    use futures_util::StreamExt;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("Ошибка приёма данных: {}", crate::engine::llm::chain_err(&e, 3)))?;
-        file.write_all(&chunk)
-            .map_err(|e| format!("Ошибка записи на диск: {}", e))?;
-        downloaded += chunk.len() as u64;
-        if total > 0 {
-            on_progress(downloaded, total);
-        }
-    }
-    drop(file);
-
-    if total > 0 && downloaded < total {
-        let _ = fs::remove_file(&part_path);
-        return Err(format!("Загрузка прервалась: скачано {} из {} байт", downloaded, total));
-    }
-
-    fs::rename(&part_path, dest_zip).map_err(|e| format!("Ошибка финализации файла: {}", e))?;
-    on_log(format!("✅ Скачано: {} МБ", downloaded / 1024 / 1024));
-    Ok(())
-}
-
 /// Извлечение ВСЕГО содержимого архива в dest_dir (с подпапками, например backends/)
 fn extract_all<L: Fn(String)>(zip_path: &Path, dest_dir: &Path, on_log: &L) -> Result<u32, String> {
     on_log("📦 Распаковка движка llama.cpp...".to_string());
@@ -742,11 +678,12 @@ fn lift_server_files(variant_root: &Path, on_log: &dyn Fn(String)) -> Result<(),
 
 /// Установка (или обновление) варианта бекенда llamacpp: полный архив llama-server.
 /// Ставится в `backends/<variant>/`, остальные установленные варианты не трогаются.
-pub async fn install<L: Fn(String) + Send + Sync, P: Fn(u64, u64) + Send + Sync>(
+/// Прогресс скачивания идёт через единый tauri-plugin-downloader (`downloader:progress`),
+/// поэтому отдельный `on_progress` не нужен.
+pub async fn install<L: Fn(String) + Send + Sync>(
     dir: &Path,
     variant: &str,
     on_log: L,
-    on_progress: P,
 ) -> Result<EngineMeta, String> {
     let target = variant_dir(dir, variant);
     fs::create_dir_all(&target).map_err(|e| format!("Не удалось создать папку {}: {}", target.display(), e))?;
@@ -774,12 +711,16 @@ pub async fn install<L: Fn(String) + Send + Sync, P: Fn(u64, u64) + Send + Sync>
     }
 
     let zip_path = target.join("engine.zip");
-    crate::engine::download_fallback::download_with_fallback(
+    tauri_plugin_downloader::download(
         &asset.0.browser_download_url,
         &zip_path,
-        Some(asset.0.size),
-        &on_log,
-        &on_progress,
+        tauri_plugin_downloader::DownloadOptions {
+            label: format!("Движок {}", actual_variant),
+            kind: "engine".into(),
+            expected_size: Some(asset.0.size),
+            ..Default::default()
+        },
+        Some(&on_log),
     )
     .await?;
 
@@ -816,12 +757,16 @@ pub async fn install<L: Fn(String) + Send + Sync, P: Fn(u64, u64) + Send + Sync>
         if let Some(cudart) = find_cudart_asset(&release, &actual_variant) {
             on_log(format!("⬇️ Дополнение CUDA-рантайма: {}", cudart.0.name));
             let cudart_zip = target.join("cudart.zip");
-            crate::engine::download_fallback::download_with_fallback(
+            tauri_plugin_downloader::download(
                 &cudart.0.browser_download_url,
                 &cudart_zip,
-                Some(cudart.0.size),
-                &on_log,
-                &on_progress,
+                tauri_plugin_downloader::DownloadOptions {
+                    label: format!("CUDA runtime {}", actual_variant),
+                    kind: "engine".into(),
+                    expected_size: Some(cudart.0.size),
+                    ..Default::default()
+                },
+                Some(&on_log),
             )
             .await?;
             if let Some(digest) = &cudart.0.digest {

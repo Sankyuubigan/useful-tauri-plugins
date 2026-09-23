@@ -64,12 +64,16 @@ fn client() -> Result<Client, String> {
         .map_err(|e| format!("HTTP client: {}", e))
 }
 
-/// Жив ли шлюз (GET /v1/models).
+/// Жив ли шлюз (GET /v1/models). 401/403 = сервер жив, требует авторизацию —
+/// считаем здоровым (иначе ForeignOccupant(0) на внешнем 9Router с API-ключом).
 pub fn is_healthy(base_url: &str) -> bool {
     let url = format!("{}/v1/models", base_url.trim_end_matches('/'));
     let Ok(c) = client() else { return false };
     match c.get(&url).timeout(Duration::from_secs(4)).send() {
-        Ok(resp) => resp.status().is_success(),
+        Ok(resp) => {
+            let s = resp.status();
+            s.is_success() || s == reqwest::StatusCode::UNAUTHORIZED || s == reqwest::StatusCode::FORBIDDEN
+        }
         Err(_) => false,
     }
 }

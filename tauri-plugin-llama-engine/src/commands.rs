@@ -701,7 +701,9 @@ pub struct PromptMemoryInfo {
 /// Live-превью счётчика токенов: прогноз VRAM на ЭФФЕКТИВНЫЙ контекст
 /// (промпт + запас генерации + резерв, но не больше лимита) + факты NVML.
 /// Единый источник оценки — `engine::vram_estimate` (то же, что в pre-flight
-/// запуска и пик-линии после генерации).
+/// запуска и пик-линии после генерации). KV-spec резолвится по ТЕКУЩЕМУ
+/// `engine_source` (BeeLlama → kvarn5/kvarn4+tail); входящие `kv_quant_*`
+/// учитываются только для источников без своего runtime.
 #[tauri::command]
 pub fn estimate_prompt_memory(
     model_path: String,
@@ -713,11 +715,11 @@ pub fn estimate_prompt_memory(
 ) -> Result<PromptMemoryInfo, String> {
     const CTX_RESERVE: u32 = 128;
     let effective_ctx = (prompt_tokens + max_gen + CTX_RESERVE).min(context_size);
-    let est = crate::engine::vram_estimate::estimate_vram(
+    let spec = crate::engine::vram_estimate::current_kv_spec(kv_quant_keys, kv_quant_values);
+    let est = crate::engine::vram_estimate::estimate_vram_with_spec(
         &model_path,
         effective_ctx,
-        kv_quant_keys,
-        kv_quant_values,
+        &spec,
     );
     let (used_mb, total_mb) = match nvml_wrapper::Nvml::init() {
         Ok(nvml) => match nvml.device_by_index(0).and_then(|d| d.memory_info()) {

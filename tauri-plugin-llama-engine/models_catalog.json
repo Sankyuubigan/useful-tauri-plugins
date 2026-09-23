@@ -2,9 +2,9 @@
   {
     "name": "gemma-4-8b",
     "is_default": true,
-    "size_gb": "5.16",
-    "download_url": "https://huggingface.co/mradermacher/Gemma-4-E4B-IT-ABLITERATED-UNCENSORED-PHILADELPHIA-CLASS-i1-GGUF/resolve/main/Gemma-4-E4B-IT-ABLITERATED-UNCENSORED-PHILADELPHIA-CLASS.i1-IQ4_NL.gguf?download=true",
-    "mmproj_url": "https://huggingface.co/mradermacher/Gemma-4-E4B-IT-ABLITERATED-UNCENSORED-PHILADELPHIA-CLASS-GGUF/resolve/main/Gemma-4-E4B-IT-ABLITERATED-UNCENSORED-PHILADELPHIA-CLASS.mmproj-Q8_0.gguf?download=true",
+    "size_gb": "4.26",
+    "download_url": "https://huggingface.co/guga112/gemma-4-E4B-it-heretic-QAT-GGUF/resolve/main/gemma-4-E4B-it-heretic-QAT-UD-Q4_K_XL.gguf?download=true",
+    "mmproj_url": "https://huggingface.co/guga112/gemma-4-E4B-it-heretic-QAT-GGUF/resolve/main/mmproj-gemma-4-E4B-it-heretic-BF16.gguf?download=true",
     "tokenizer_id": "google/gemma-4-E4B-it",
     "uncen": true,
     "vision": true,
@@ -61,11 +61,11 @@
   },
   {
     "name": "gemma-4-4b",
-    "size_gb": "3.3",
-    "download_url": "https://huggingface.co/mradermacher/gemma4-e2b-Snowfox-hf-GGUF/resolve/main/gemma4-e2b-Snowfox-hf.IQ4_XS.gguf?download=true",
-    "mmproj_url": "https://huggingface.co/mradermacher/gemma4-e2b-Snowfox-hf-GGUF/resolve/main/gemma4-e2b-Snowfox-hf.mmproj-Q8_0.gguf?download=true",
+    "size_gb": "2.64",
+    "download_url": "https://huggingface.co/RemySkye/Gemma-4-E2B-it-qat-abliterated-UD-Q4_K_XL-GGUF/resolve/main/Huihui-gemma-4-E2B-it-qat-UD-Q4_K_XL.gguf?download=true",
+    "mmproj_url": "https://huggingface.co/RemySkye/Gemma-4-E2B-it-qat-abliterated-UD-Q4_K_XL-GGUF/resolve/main/mmproj-BF16.gguf?download=true",
     "tokenizer_id": "google/gemma-4-E2B-it",
-    "uncen": false,
+    "uncen": true,
     "vision": true,
     "audio": false
   },

@@ -35,6 +35,7 @@ pub use config::{
 };
 pub use llm::{
     build_json_object_grammar_with_keys, build_json_only_grammar, chain_err, estimate_vram_mb,
+    estimate_vram_mb_with_spec,
     extract_f32_from_gguf, extract_gguf_arch, extract_model_filename, extract_u32_from_gguf,
     extract_u32_with_arch, get_hybrid_grammar, llm_history, message_phase, push_report,
     ChatAttachment, ChatMessage, GrammarSpec, LlamaEngine, LlmMessage, PromptFormat, SubCall,
@@ -44,3 +45,7 @@ pub use llm_gguf::{extract_i64_array_from_gguf, extract_i64_array_with_arch};
 pub use mem_profiler::{current_process_rss, peak_line, MemGuard, MemSampler};
 pub use mmproj::ensure_mmproj_for_model;
 pub use vram::notify_vram;
+pub use vram_estimate::{
+    cache_type_bytes, current_kv_spec, estimate_vram, estimate_vram_with_spec,
+    kv_spec_from_source, max_fitting_ngl_safe_with_spec, vram_for_ngl_with_spec, KvQuantSpec,
+};

@@ -54,8 +54,17 @@ const DEFAULT_STOP_WORDS: &[&str] = &[
 /// KV-кэш считается по реальным параметрам архитектуры из метаданных GGUF
 /// Единственная точка расчёта VRAM — `infra::vram_estimate` (SSOT, см. модуль).
 /// Все формульные фрагменты здесь запрещены: расхождение между UI и логом — баг.
+///
+/// Legacy-флаги `kv_quant_*` уточняют q8_0 для источников БЕЗ своего runtime;
+/// runtime источника (BeeLlama KVarN + tail) их ПЕРЕКРЫВАЕТ (`current_kv_spec`).
 pub fn estimate_vram_mb(model_path: &str, ctx_size: u32, kv_quant_keys: bool, kv_quant_values: bool) -> f64 {
-    crate::engine::vram_estimate::estimate_vram(model_path, ctx_size, kv_quant_keys, kv_quant_values).total_mb
+    let spec = crate::engine::vram_estimate::current_kv_spec(kv_quant_keys, kv_quant_values);
+    crate::engine::vram_estimate::estimate_vram_with_spec(model_path, ctx_size, &spec).total_mb
+}
+
+/// Прогноз VRAM с ЯВНЫМ KV-spec (когда `SourceSpec` уже в скоупе — pre-flight).
+pub fn estimate_vram_mb_with_spec(model_path: &str, ctx_size: u32, spec: &crate::engine::vram_estimate::KvQuantSpec) -> f64 {
+    crate::engine::vram_estimate::estimate_vram_with_spec(model_path, ctx_size, spec).total_mb
 }
 
 pub struct LlamaEngine {
@@ -110,6 +119,8 @@ struct RespawnCtx {
     reasoning_budget: u32,
     kv_quant_keys: bool,
     kv_quant_values: bool,
+    /// KV-spec источника (KVarN/tail BeeLlama) — для оценок OOM-ретрая и peak-line.
+    kv_spec: crate::engine::vram_estimate::KvQuantSpec,
     /// Финальные флаги запуска ПОСЛЕ фолбэков цикла запуска (реально применились).
     reasoning_enabled: bool,
     is_pre_hopper: bool,
@@ -370,6 +381,13 @@ impl LlamaEngine {
         // слои пойдут в ОЗУ. Юзеру шлём неблокирующее окно-уведомление с фактами
         // (одна кнопка «ОК»). Враньё «запуск с меньшим -ngl происходит автоматически»
         // из cuda_oom_friendly_reason тут не нужно — offload честно выполняем ДО старта.
+        // KV-spec = runtime источника (BeeLlama kvarn5/kvarn4+tail) или legacy-чекбоксы:
+        // без этого оценка завышала KV в ~3 раза и -ngl занижался до уровня vanilla.
+        let kv_spec = crate::engine::vram_estimate::kv_spec_from_source(
+            source_spec.as_ref(),
+            kv_quant_keys,
+            kv_quant_values,
+        );
         let mut vram_notice: Option<String> = None;
         if use_gpu && vram_before > 0 {
             if let Ok(nvml) = nvml_wrapper::Nvml::init() {
@@ -377,8 +395,8 @@ impl LlamaEngine {
                     if let Ok(mem) = device.memory_info() {
                         let total_vram_mb = mem.total / 1024 / 1024;
                         let free_vram_mb = mem.free as f64 / (1024.0 * 1024.0);
-                        let est = crate::engine::vram_estimate::estimate_vram(
-                            &model_path, global_ctx_limit, kv_quant_keys, kv_quant_values,
+                        let est = crate::engine::vram_estimate::estimate_vram_with_spec(
+                            &model_path, global_ctx_limit, &kv_spec,
                         );
                         // Запас сверх оценки на фрагментацию/пиковые compute-тензоры
                         // + CUDA-контекст/драйвер (в breakdown llama это «unaccounted»,
@@ -394,8 +412,8 @@ impl LlamaEngine {
                         if need_mb > free_vram_mb {
                             // Ступенчатый offload: максимальное число слоёв из бюджета
                             // (с тем же фактором безопасности на МБ/слой).
-                            let new_ngl = crate::engine::vram_estimate::max_fitting_ngl_safe(
-                                &model_path, global_ctx_limit, kv_quant_keys, kv_quant_values,
+                            let new_ngl = crate::engine::vram_estimate::max_fitting_ngl_safe_with_spec(
+                                &model_path, global_ctx_limit, &kv_spec,
                                 free_vram_mb, VRAM_RESERVE_MB, VRAM_SAFETY_FACTOR,
                             );
                             let was_ngl = gpu_layers;
@@ -728,6 +746,7 @@ impl LlamaEngine {
                 reasoning_budget,
                 kv_quant_keys,
                 kv_quant_values,
+                kv_spec,
                 reasoning_enabled: attempt_reasoning,
                 is_pre_hopper,
             })),
@@ -756,7 +775,7 @@ impl LlamaEngine {
             }).unwrap_or(0);
 
             let diff = vram_after as i64 - vram_before as i64;
-            let est = crate::engine::vram_estimate::estimate_vram(&model_path, global_ctx_limit, kv_quant_keys, kv_quant_values);
+            let est = crate::engine::vram_estimate::estimate_vram_with_spec(&model_path, global_ctx_limit, &kv_spec);
             let layers = est.num_layers.max(1);
             let frac = (gpu_layers.min(est.num_layers) as f64) / layers as f64;
             let expected_weights_mb = est.model_mb * frac;
@@ -796,7 +815,7 @@ impl LlamaEngine {
         // ── Предупреждение о нехватке памяти (не блокирует запуск) ──
         // Оценка (модель + KV-кэш) сравнивается со свободной RAM. На CPU-режиме
         // модель живёт в RAM (вместе с KV), на GPU — файл всё равно мапится.
-        let need_mb = estimate_vram_mb(&model_path, global_ctx_limit, kv_quant_keys, kv_quant_values) + 512.0;
+        let need_mb = estimate_vram_mb_with_spec(&model_path, global_ctx_limit, &kv_spec) + 512.0;
         let free_ram_mb = sys.free_memory() as f64 / (1024.0 * 1024.0);
         if need_mb > free_ram_mb {
             let warn = format!(
@@ -1431,7 +1450,12 @@ impl LlamaEngine {
 
         // ── Пиковые показатели памяти за время генерации (сверка с прогнозом) ──
         let report = mem_guard.finish();
-        let total_mb = estimate_vram_mb(&self.model_path, self.global_ctx_limit, false, false);
+        let peak_kv_spec = self
+            .respawn_ctx
+            .as_ref()
+            .map(|c| c.kv_spec)
+            .unwrap_or_else(|| crate::engine::vram_estimate::current_kv_spec(false, false));
+        let total_mb = estimate_vram_mb_with_spec(&self.model_path, self.global_ctx_limit, &peak_kv_spec);
         let extra = format!(
             "{} токенов (+{} думателя) за {:.1}с ({:.0} tok/s), причина: {}",
             generated_tokens, reasoning_tokens, gen_elapsed, speed, stop_reason
@@ -1571,18 +1595,18 @@ impl LlamaEngine {
     }
 
     /// Максимальное число GPU-слоёв, помещающихся в свободную VRAM СЕЙЧАС
-    /// (единая формула vram_estimate). None — NVML недоступен или нет контекста.
+    /// (единая формула vram_estimate + KV-spec источника). None — NVML недоступен
+    /// или нет контекста.
     fn fitting_ngl_from_current_vram(&self) -> Option<u32> {
         let ctx = self.respawn_ctx.as_deref()?;
         let nvml = nvml_wrapper::Nvml::init().ok()?;
         let device = nvml.device_by_index(0).ok()?;
         let mem = device.memory_info().ok()?;
         let free_mb = mem.free as f64 / (1024.0 * 1024.0);
-        Some(crate::engine::vram_estimate::max_fitting_ngl_safe(
+        Some(crate::engine::vram_estimate::max_fitting_ngl_safe_with_spec(
             &self.model_path,
             self.global_ctx_limit,
-            ctx.kv_quant_keys,
-            ctx.kv_quant_values,
+            &ctx.kv_spec,
             free_mb,
             256.0,
             1.25,

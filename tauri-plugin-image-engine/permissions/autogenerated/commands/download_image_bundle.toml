@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-download-image-bundle"
+description = "Enables the download_image_bundle command without any pre-configured scope."
+commands.allow = ["download_image_bundle"]
+
+[[permission]]
+identifier = "deny-download-image-bundle"
+description = "Denies the download_image_bundle command without any pre-configured scope."
+commands.deny = ["download_image_bundle"]

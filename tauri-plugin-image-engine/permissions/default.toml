@@ -1,0 +1,106 @@
+"$schema" = "../gen/schemas/acl.json"
+
+# ── Движок sd.cpp ──
+
+[[permission]]
+identifier = "allow-get-image-engine-status"
+description = "Allow reading the image engine status (installed variants, gpu)."
+commands.allow = ["get_image_engine_status"]
+
+[[permission]]
+identifier = "allow-install-image-engine"
+description = "Allow installing/downloading an sd.cpp backend variant."
+commands.allow = ["install_image_engine"]
+
+[[permission]]
+identifier = "allow-set-image-engine-variant"
+description = "Allow switching the image engine backend variant (cuda12/cpu/vulkan/rocm/auto)."
+commands.allow = ["set_image_engine_variant"]
+
+[[permission]]
+identifier = "allow-check-image-engine-update"
+description = "Allow checking for a newer sd.cpp engine release."
+commands.allow = ["check_image_engine_update"]
+
+[[permission]]
+identifier = "allow-install-image-engine-update"
+description = "Allow re-installing (updating) the sd.cpp engine."
+commands.allow = ["install_image_engine_update"]
+
+[[permission]]
+identifier = "allow-remove-image-engine"
+description = "Allow removing the sd.cpp engine backend."
+commands.allow = ["remove_image_engine"]
+
+[[permission]]
+identifier = "allow-set-image-engine-dir"
+description = "Allow overriding the image engine directory."
+commands.allow = ["set_image_engine_dir"]
+
+# ── Каталог бандлов ──
+
+[[permission]]
+identifier = "allow-get-image-models-catalog"
+description = "Allow reading the embedded image model bundles catalog."
+commands.allow = ["get_image_models_catalog"]
+
+[[permission]]
+identifier = "allow-get-image-bundle-info"
+description = "Allow reading download proposal for the default image bundle."
+commands.allow = ["get_image_bundle_info"]
+
+[[permission]]
+identifier = "allow-download-image-bundle"
+description = "Allow downloading all files of the default image bundle."
+commands.allow = ["download_image_bundle"]
+
+[[permission]]
+identifier = "allow-validate-image-bundle-dir"
+description = "Allow validating an existing image bundle directory."
+commands.allow = ["validate_image_bundle_dir"]
+
+[[permission]]
+identifier = "allow-set-image-bundle-dir"
+description = "Allow pointing the image bundle to an existing valid directory."
+commands.allow = ["set_image_bundle_dir"]
+
+[[permission]]
+identifier = "allow-remove-image-bundle"
+description = "Allow deleting the downloaded image bundle files."
+commands.allow = ["remove_image_bundle"]
+
+[[permission]]
+identifier = "allow-estimate-image-memory"
+description = "Allow estimating VRAM/RAM needs for the image bundle (NVML facts)."
+commands.allow = ["estimate_image_memory"]
+
+# ── Генерация ──
+
+[[permission]]
+identifier = "allow-generate-image"
+description = "Allow text-to-image generation via sd-server."
+commands.allow = ["generate_image"]
+
+[[permission]]
+identifier = "allow-edit-image"
+description = "Allow image editing via sd-server (reference images)."
+commands.allow = ["edit_image"]
+
+[default]
+description = "Default permissions for the image-engine plugin."
+permissions = [
+  "allow-get-image-engine-status",
+  "allow-install-image-engine",
+  "allow-set-image-engine-variant",
+  "allow-check-image-engine-update",
+  "allow-install-image-engine-update",
+  "allow-remove-image-engine",
+  "allow-set-image-engine-dir",
+  "allow-get-image-models-catalog",
+  "allow-get-image-bundle-info",
+  "allow-download-image-bundle",
+  "allow-remove-image-bundle",
+  "allow-estimate-image-memory",
+  "allow-generate-image",
+  "allow-edit-image",
+]

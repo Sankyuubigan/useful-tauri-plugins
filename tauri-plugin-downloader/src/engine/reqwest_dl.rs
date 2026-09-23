@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 const CHUNK_COUNT: usize = 8;
 const MAX_CHUNK_RETRIES: usize = 10;
 const RETRY_BASE_MS: u64 = 500;
-const STALL_TIMEOUT: Duration = Duration::from_secs(30);
+const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 const PART_SUFFIX: &str = ".part";
 const GUI_EMIT_INTERVAL: Duration = Duration::from_millis(200);
 const MIN_VALID_SIZE: u64 = 1;
@@ -56,7 +56,7 @@ async fn resolve_target(client: &reqwest::Client, url: &str) -> Result<(String, 
         .header("Range", "bytes=0-0")
         .send()
         .await
-        .map_err(|e| format!("Ошибка подключения: {}", e))?;
+        .map_err(|e| format!("Ошибка подключения к {}: {}", url, e))?;
 
     let status = resp.status();
     if !status.is_success() && status != reqwest::StatusCode::PARTIAL_CONTENT {
@@ -94,10 +94,22 @@ pub async fn download(task: &TaskHandle, url: &str, dest: &Path) -> Result<(u64,
         }
     }
 
-    let (final_url, total, supports_range) = resolve_target(&client, url).await?;
+    let (final_url, total, supports_range) = match resolve_target(&client, url).await {
+        Ok(v) => v,
+        Err(e) => {
+            if let Some(mirror) = mirror_url(url) {
+                let (m_final, m_total, m_range) = resolve_target(&client, &mirror)
+                    .await
+                    .map_err(|e2| format!("{}; зеркало: {}", e, e2))?;
+                (m_final, m_total, m_range)
+            } else {
+                return Err(e);
+            }
+        }
+    };
 
     if total == 0 || !supports_range {
-        let bytes = download_single(task, &client, url, dest, &part_path, total).await?;
+        let bytes = download_single(task, &client, &final_url, dest, &part_path, total).await?;
         return Ok((bytes, total.max(bytes)));
     }
 

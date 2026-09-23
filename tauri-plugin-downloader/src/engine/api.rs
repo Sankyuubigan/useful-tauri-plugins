@@ -89,14 +89,21 @@ pub async fn download(
     let task = TaskHandle::new(&label, &kind, url, &dest.to_string_lossy());
     log(format!("Старт: {} -> {}", url, dest.display()));
 
-    let outcome = chain::download_with_fallback(
-        &task,
-        url,
-        dest,
-        opts.expected_size,
-        &log,
-    )
-    .await;
+    let outcome = chain::download_with_fallback(&task, url, dest, opts.expected_size, &log).await;
+    let outcome = match outcome {
+        Ok(o) => Ok(o),
+        Err(e) => {
+            if let Some(mirror) = super::reqwest_dl::mirror_url(url) {
+                log(format!("Пробую зеркало HF: {}", mirror));
+                let task2 = TaskHandle::new(&label, &kind, &mirror, &dest.to_string_lossy());
+                chain::download_with_fallback(&task2, &mirror, dest, opts.expected_size, &log)
+                    .await
+                    .map_err(|e2| format!("{}; зеркало: {}", e, e2))
+            } else {
+                Err(e)
+            }
+        }
+    };
 
     match outcome {
         Ok(o) => {

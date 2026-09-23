@@ -1,0 +1,36 @@
+[package]
+name = "tauri-plugin-image-engine"
+version = "0.1.0"
+edition = "2021"
+links = "tauri-plugin-image-engine"
+description = "Reusable stable-diffusion.cpp engine: install/update sd-server.exe variants, image model bundles, VRAM preflight, generate/edit via HTTP (SSOT for King Orch and other hosts)"
+license = "MIT"
+readme = "docs/README.md"
+
+[dependencies]
+tauri = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+# Движок (внешний процесс sd-server) + каталог бандлов. reqwest — как в хосте
+# King Orch (default-features=false + rustls, чтобы не конфликтовать
+# с native-tls воркспейса).
+reqwest = { version = "0.12", features = ["json", "rustls-tls-native-roots", "stream", "blocking"], default-features = false }
+zip = { workspace = true }
+sysinfo = "0.30.0"
+nvml-wrapper = "0.10.0"
+sha2 = "0.10"
+futures-util = "0.3"
+base64 = "0.22"
+
+# Единый движок скачивания (SSOT): multi-chunk reqwest + curl + process-фоллбэки,
+# stall/resume/прогресс `downloader:progress`.
+tauri-plugin-downloader = { path = "../tauri-plugin-downloader" }
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[lib]
+name = "tauri_plugin_image_engine"
+path = "src/lib.rs"

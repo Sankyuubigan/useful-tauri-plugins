@@ -1,0 +1,27 @@
+{
+  "name": "@my-tauri-plugins/plugin-image-engine",
+  "version": "0.1.0",
+  "description": "Reusable stable-diffusion.cpp engine (install/update backends, image bundles, VRAM preflight, generate/edit) for Tauri apps — TS API + Web Components.",
+  "type": "module",
+  "main": "dist-js/index.js",
+  "types": "dist-js/index.d.ts",
+  "files": [
+    "dist-js",
+    "guest-js",
+    "api-iife.js"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:watch": "tsc -p tsconfig.json --watch",
+    "build:global": "node scripts/build-global.cjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-dialog": "^2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^5.4.0"
+  },
+  "license": "MIT"
+}

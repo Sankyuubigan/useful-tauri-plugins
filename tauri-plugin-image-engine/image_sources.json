@@ -1,0 +1,12 @@
+[
+  {
+    "id": "leejet",
+    "label": "Официальный stable-diffusion.cpp (leejet)",
+    "note": "Готовые сборки sd-server/sd-cli. Теги вида master-XXX-<sha>, ассеты sd-master-<sha>-bin-win-<variant>-x64.zip.",
+    "repo": "leejet/stable-diffusion.cpp",
+    "asset_prefix": "sd-",
+    "cudart_pattern": "cudart-sd-bin",
+    "prefer_stable": false,
+    "default": true
+  }
+]

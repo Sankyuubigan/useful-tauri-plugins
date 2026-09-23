@@ -139,34 +139,36 @@ function rowsHtml(rows: Map<string, RowState>, compact: boolean): string {
 }
 
 const HOST_STYLE = `
-:host { display: block; color: inherit; font: inherit; }
+:host { display: block; color: var(--text, #eee); font: inherit; }
 .dl-list { display: flex; flex-direction: column; gap: 8px; }
 .dl-row {
   position: relative;
-  background: color-mix(in srgb, Canvas 92%, CanvasText 8%);
-  border: 1px solid color-mix(in srgb, CanvasText 18%, transparent);
+  background: var(--bg-elevated, var(--panel-bg, #1c1c1c));
+  border: 1px solid var(--border, #333);
   border-radius: 8px;
   padding: 8px 34px 8px 10px;
+  color: var(--text, #eee);
 }
 .dl-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
-.dl-label { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dl-meta { display: flex; gap: 8px; font-size: 0.85em; opacity: 0.75; flex-shrink: 0; }
+.dl-label { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text, #eee); }
+.dl-meta { display: flex; gap: 8px; font-size: 0.85em; color: var(--text-muted, #aaa); flex-shrink: 0; }
+.dl-status { color: var(--text, #eee); }
 .dl-bar {
   margin-top: 6px;
   height: 6px;
   border-radius: 4px;
   overflow: hidden;
-  background: color-mix(in srgb, CanvasText 12%, transparent);
+  background: var(--border, #333);
 }
 .dl-fill {
   height: 100%;
-  background: #3b82f6;
+  background: var(--primary, #3b82f6);
   transition: width 150ms linear;
 }
 .dl-done .dl-fill { background: #22c55e; }
 .dl-error .dl-fill { background: #ef4444; }
 .dl-cancelled .dl-fill { background: #a3a3a3; }
-.dl-sub { margin-top: 4px; font-size: 0.8em; opacity: 0.65; }
+.dl-sub { margin-top: 4px; font-size: 0.8em; color: var(--text-muted, #aaa); }
 .dl-cancel {
   position: absolute;
   top: 6px;
@@ -177,12 +179,12 @@ const HOST_STYLE = `
   border-radius: 50%;
   cursor: pointer;
   background: transparent;
-  color: inherit;
+  color: var(--text-muted, #aaa);
   font-size: 16px;
   line-height: 1;
-  opacity: 0.55;
 }
-.dl-cancel:hover { opacity: 1; background: color-mix(in srgb, CanvasText 10%, transparent); }
+.dl-cancel:hover { color: var(--text, #eee); background: var(--session-hover, #2a2a2a); }
+.dl-empty { color: var(--text-muted, #aaa); }
 `
 
 function attachCancelClicks(host: ShadowRoot | HTMLElement, onId: (id: string) => void): void {

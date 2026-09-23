@@ -1,0 +1,46 @@
+[
+  {
+    "name": "qwen-image-2.1",
+    "label": "Qwen Image 2.1 (генерация + редактирование)",
+    "note": "Единый бандл: diffusion Q6_K + текст-энкодер Qwen3-VL Q4_K_M + mmproj + VAE. Русские промпты понимает (энкодер — мультиязычный LLM), но максимум качества — развёрнутый английский промпт (его пишет media-агент). Размеры картинки — кратно 32.",
+    "is_default": true,
+    "files": [
+      {
+        "role": "diffusion",
+        "filename": "qwen_image_2.1-Q6_K.gguf",
+        "download_url": "https://huggingface.co/leejet/Qwen-Image-2.1-GGUF/resolve/main/qwen_image_2.1-Q6_K.gguf?download=true",
+        "size_bytes": 5996851232
+      },
+      {
+        "role": "llm",
+        "filename": "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+        "download_url": "https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main/Qwen3VL-8B-Instruct-Q4_K_M.gguf?download=true",
+        "size_bytes": 5027784800
+      },
+      {
+        "role": "mmproj",
+        "filename": "mmproj-Qwen3VL-8B-Instruct-F16.gguf",
+        "download_url": "https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-8B-Instruct-F16.gguf?download=true",
+        "size_bytes": 1159029824
+      },
+      {
+        "role": "vae",
+        "filename": "qwen_image_2.1_vae_bf16.safetensors",
+        "download_url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors?download=true",
+        "size_bytes": 675509688
+      }
+    ],
+    "preset": {
+      "cfg_scale": 6.0,
+      "sampler": "euler",
+      "width": 1024,
+      "height": 1024,
+      "steps": 28,
+      "seed": -1
+    },
+    "size_gb": "12.9",
+    "vram_fast_gb": 16.0,
+    "vram_min_gb": 8.0,
+    "ram_min_gb": 16.0
+  }
+]

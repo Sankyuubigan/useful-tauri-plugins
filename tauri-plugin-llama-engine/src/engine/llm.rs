@@ -25,6 +25,10 @@ use serde_json::json;
 
 use crate::engine::config::ModelParams;
 use crate::engine::detokenizer::compute_stream_diff;
+use crate::engine::stream_diagnostics::{
+    ResponseMeta, ServerHealth, ServerProcessSnapshot, ServerProcessState, ServerTrace,
+    StreamDiagnostics, StreamReaderError,
+};
 
 pub use super::llm_types::{ChatMessage, ChatAttachment, SubCall, ToolCallInfo, PromptFormat, push_report, message_phase, LlmMessage, extract_model_filename, GenerationResult, LlmMetrics, llm_history, GrammarSpec, build_base_grammar, build_json_only_grammar, build_json_object_grammar_with_keys, get_hybrid_grammar, ToolDefinition, FunctionDef, ToolCall};
 pub use super::llm_gguf::{extract_string_from_gguf, extract_f32_from_gguf, extract_u32_from_gguf, extract_gguf_arch, extract_u32_with_arch};
@@ -36,6 +40,7 @@ const HEALTH_TIMEOUT: Duration = Duration::from_secs(120);
 /// Работает как таймаут «первого токена», но НЕ обрезает длинную генерацию:
 /// при живом стриме данные идут чаще.
 const READ_TIMEOUT: Duration = Duration::from_secs(120);
+const STREAM_RETRY_MARKER: &str = "[stream-retry-before-first-token]";
 /// Диапазон портов для локального сервера
 const PORT_MIN: u16 = 17800;
 const PORT_RANGE: u16 = 1500;
@@ -78,6 +83,7 @@ pub struct LlamaEngine {
     log_cb: Arc<dyn Fn(String) + Send + Sync>,
     client: Client,
     server_log: PathBuf,
+    server_trace: ServerTrace,
     /// Форматированный счётчик уже обработанных строк llama_server.log
     /// (дигностика: привязка LCP/граф-строк сервера к запросу клиента).
     server_log_line_count: std::sync::Mutex<usize>,
@@ -570,17 +576,23 @@ impl LlamaEngine {
 
         let client = match Client::builder()
             .connect_timeout(Duration::from_secs(5))
+            .tcp_keepalive(Some(Duration::from_secs(30)))
+            .tcp_keepalive_interval(Some(Duration::from_secs(10)))
+            .tcp_nodelay(true)
+            .pool_idle_timeout(Some(Duration::from_secs(300)))
             .build()
         {
             Ok(c) => c,
             Err(e) => return fail(format!("Ошибка создания HTTP-клиента: {}", e)),
         };
 
-        // Поток чтения stderr llama-server: ggml_cuda_init, CUDA-ошибки, варнинги
+        let server_trace = ServerTrace::new();
         let spawn_stderr_reader = {
             let log_cb = log_cb.clone();
+            let server_trace = server_trace.clone();
             move |stderr: std::process::ChildStderr| {
                 let log_cb = log_cb.clone();
+                let server_trace = server_trace.clone();
                 std::thread::spawn(move || {
                     use std::io::BufRead;
                     let reader = std::io::BufReader::new(stderr);
@@ -591,6 +603,7 @@ impl LlamaEngine {
                         };
                         let line = line.trim();
                         if !line.is_empty() {
+                            server_trace.push_stderr(line.to_string());
                             log_cb(format!("[llama-server] {}", line));
                         }
                     }
@@ -615,6 +628,7 @@ impl LlamaEngine {
                 Ok(c) => c,
                 Err(e) => return fail(format!("Ошибка запуска llama-server: {}", e)),
             };
+            server_trace.begin_process(child.id());
             // ── Гарантия зачистки при выходе из приложения ──
             // Регистрируем PID (для докиля в обработчике выхода main.rs) и назначаем
             // процесс в Windows Job Object с KILL_ON_JOB_CLOSE — тогда ОС убьёт
@@ -734,6 +748,7 @@ impl LlamaEngine {
             log_cb: log_cb.clone(),
             client,
             server_log,
+            server_trace,
             server_log_line_count: std::sync::Mutex::new(0),
             port,
             api_key,
@@ -972,9 +987,80 @@ impl LlamaEngine {
         format!("{}{}.{}", reason, mem, log_tail)
     }
 
+    fn capture_server_snapshot(&self) -> ServerProcessSnapshot {
+        let process = match self.child.lock() {
+            Ok(mut child) => match child.as_mut() {
+                Some(child) => match child.try_wait() {
+                    Ok(Some(status)) => ServerProcessState::Exited(status.code()),
+                    Ok(None) => ServerProcessState::Running,
+                    Err(error) => ServerProcessState::Unknown(error.to_string()),
+                },
+                None => ServerProcessState::Missing,
+            },
+            Err(error) => ServerProcessState::Unknown(error.to_string()),
+        };
+        let health = match process {
+            ServerProcessState::Running => {
+                if engine_health_check(&self.client, self.port, &self.auth_header()) {
+                    ServerHealth::Healthy
+                } else {
+                    ServerHealth::Unavailable
+                }
+            }
+            _ => ServerHealth::NotChecked,
+        };
+        ServerProcessSnapshot {
+            pid: self.server_trace.pid(),
+            process,
+            health,
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn capture_stream_diagnostics(
+        &self,
+        reason: String,
+        response: ResponseMeta,
+        reader_error: Option<StreamReaderError>,
+        gen_start: Instant,
+        first_event_at: Option<Instant>,
+        first_token_at: Option<Instant>,
+        last_data_at: Option<Instant>,
+        raw_lines: u64,
+        events: u64,
+        bytes: u64,
+        output_tokens: u32,
+        reasoning_tokens: u32,
+        finish_reason: String,
+    ) -> StreamDiagnostics {
+        let elapsed_ms = gen_start.elapsed().as_millis();
+        let first_event_ms = first_event_at.map(|at| at.duration_since(gen_start).as_millis());
+        let first_token_ms = first_token_at.map(|at| at.duration_since(gen_start).as_millis());
+        let last_data_age_ms = last_data_at.map(|at| at.elapsed().as_millis());
+        StreamDiagnostics {
+            reason,
+            response,
+            reader_error,
+            server: self.capture_server_snapshot(),
+            elapsed_ms,
+            first_event_ms,
+            first_token_ms,
+            last_data_age_ms,
+            raw_lines,
+            events,
+            bytes,
+            output_tokens,
+            reasoning_tokens,
+            finish_reason,
+            stderr_lines: self.server_trace.diagnostic_lines(),
+        }
+    }
+
     /// Ошибка генерации гарантированно уходит в единый лог (log::Log) и телеметрию.
     fn report_generation_error(&self, ctx_label: &str, report: &crate::engine::mem_profiler::MemReport, message: &str) {
         log::error!("LLM генерация [{}]: {}", ctx_label, message);
+        let primary_error = message.lines().next().unwrap_or("generation failed");
+        let primary_error = primary_error.split(" | reader=").next().unwrap_or(primary_error);
         crate::engine::analytics::track_event(
             "llm_error",
             Some(json!({
@@ -982,7 +1068,7 @@ impl LlamaEngine {
                 "model": extract_model_filename(&self.model_path),
                 "mode": self.engine_mode.borrow().clone(),
                 "samples": report.samples,
-                "error": message,
+                "error": primary_error,
             })),
         );
     }
@@ -1204,6 +1290,7 @@ impl LlamaEngine {
                 read_log_tail(&self.server_log)
             ))?;
 
+        let response_meta = ResponseMeta::from_response(&resp);
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().unwrap_or_default();
@@ -1221,7 +1308,7 @@ impl LlamaEngine {
         // прервать по таймауту. Основной цикл ждёт строки с recv_timeout —
         // так работает таймаут «первого токена» (и детект зависшего движка),
         // при этом длинная живая генерация не обрезается.
-        let (lines_tx, lines_rx) = std::sync::mpsc::channel::<Result<Option<String>, String>>();
+        let (lines_tx, lines_rx) = std::sync::mpsc::channel::<Result<Option<String>, StreamReaderError>>();
         let mut reader = BufReader::new(resp);
         std::thread::spawn(move || {
             let mut line = String::new();
@@ -1231,10 +1318,13 @@ impl LlamaEngine {
                     Ok(0) => { let _ = lines_tx.send(Ok(None)); break; }
                     Ok(_) => {
                         if lines_tx.send(Ok(Some(line.clone()))).is_err() {
-                            break; // основной цикл вышел — стрим больше не нужен
+                            break;
                         }
                     }
-                    Err(e) => { let _ = lines_tx.send(Err(e.to_string())); break; }
+                    Err(error) => {
+                        let _ = lines_tx.send(Err(StreamReaderError::from_io(&error)));
+                        break;
+                    }
                 }
             }
         });
@@ -1251,7 +1341,12 @@ impl LlamaEngine {
         let mut prompt_per_second: Option<f64> = None;
         let mut prompt_tokens: u32 = 0;
         let mut final_timings: Option<Timings> = None;
+        let mut first_event_at: Option<Instant> = None;
         let mut first_token_at: Option<Instant> = None;
+        let mut last_data_at: Option<Instant> = None;
+        let mut stream_events: u64 = 0;
+        let mut raw_lines: u64 = 0;
+        let mut stream_bytes: u64 = 0;
 
         loop {
             if cancel_flag.load(Ordering::SeqCst) {
@@ -1261,33 +1356,114 @@ impl LlamaEngine {
 
             let line = match lines_rx.recv_timeout(READ_TIMEOUT) {
                 Ok(Ok(Some(line))) => line,
-                Ok(Ok(None)) => break, // сервер закрыл стрим (EOF)
-                Ok(Err(e)) => {
+                Ok(Ok(None)) => {
+                    let received_tokens = generated_tokens + reasoning_tokens;
+                    if received_tokens == 0 {
+                        let diagnostics = self.capture_stream_diagnostics(
+                            format!("{}Сервер закрыл поток до первого токена", STREAM_RETRY_MARKER),
+                            response_meta.clone(),
+                            Some(StreamReaderError {
+                                message: "unexpected EOF before first token".to_string(),
+                                kind: "UnexpectedEof".to_string(),
+                                raw_os_error: None,
+                            }),
+                            gen_start,
+                            first_event_at,
+                            first_token_at,
+                            last_data_at,
+                            raw_lines,
+                            stream_events,
+                            stream_bytes,
+                            generated_tokens,
+                            reasoning_tokens,
+                            "нет".to_string(),
+                        );
+                        crate::engine::analytics::track_event(
+                            "llm_stream_error",
+                            Some(diagnostics.telemetry()),
+                        );
+                        let report = mem_guard.finish();
+                        return Err(self.err_details(&report, &diagnostics.format()));
+                    }
+                    break;
+                }
+                Ok(Err(reader_error)) => {
+                    let received_tokens = generated_tokens + reasoning_tokens;
+                    let marker = if received_tokens == 0 { STREAM_RETRY_MARKER } else { "" };
+                    let diagnostics = self.capture_stream_diagnostics(
+                        format!("{}Ошибка чтения потока генерации: {}", marker, reader_error.message),
+                        response_meta.clone(),
+                        Some(reader_error),
+                        gen_start,
+                        first_event_at,
+                        first_token_at,
+                        last_data_at,
+                        raw_lines,
+                        stream_events,
+                        stream_bytes,
+                        generated_tokens,
+                        reasoning_tokens,
+                        "нет".to_string(),
+                    );
+                    crate::engine::analytics::track_event(
+                        "llm_stream_error",
+                        Some(diagnostics.telemetry()),
+                    );
                     let report = mem_guard.finish();
-                    let message = self.err_details(&report, &format!("Ошибка чтения потока генерации: {}", e));
-                    self.report_generation_error(ctx_label, &report, &message);
+                    let message = self.err_details(&report, &diagnostics.format());
+                    if received_tokens > 0 {
+                        self.report_generation_error(ctx_label, &report, &message);
+                    }
                     return Err(message);
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    let report = mem_guard.finish();
-                    let message = self.err_details(
-                        &report,
-                        &format!(
-                            "Движок не прислал данные в течение {} сек (завис или слишком долго обрабатывает промпт на CPU)",
+                    let received_tokens = generated_tokens + reasoning_tokens;
+                    let marker = if received_tokens == 0 { STREAM_RETRY_MARKER } else { "" };
+                    let diagnostics = self.capture_stream_diagnostics(
+                        format!(
+                            "{}Движок не прислал данные в течение {} сек (завис или слишком долго обрабатывает промпт на CPU)",
+                            marker,
                             READ_TIMEOUT.as_secs()
                         ),
+                        response_meta.clone(),
+                        None,
+                        gen_start,
+                        first_event_at,
+                        first_token_at,
+                        last_data_at,
+                        raw_lines,
+                        stream_events,
+                        stream_bytes,
+                        generated_tokens,
+                        reasoning_tokens,
+                        "нет".to_string(),
                     );
-                    self.report_generation_error(ctx_label, &report, &message);
+                    crate::engine::analytics::track_event(
+                        "llm_stream_error",
+                        Some(diagnostics.telemetry()),
+                    );
+                    let report = mem_guard.finish();
+                    let message = self.err_details(&report, &diagnostics.format());
+                    if received_tokens > 0 {
+                        self.report_generation_error(ctx_label, &report, &message);
+                    }
                     return Err(message);
                 }
                 Err(_) => break, // поток-читатель завершился без данных
             };
+            raw_lines += 1;
+            stream_bytes += line.len() as u64;
+            last_data_at = Some(Instant::now());
             let trimmed = line.trim();
             let Some(data) = trimmed.strip_prefix("data:") else { continue };
             let data = data.trim();
             if data.is_empty() {
                 continue;
             }
+            if first_event_at.is_none() {
+                first_event_at = Some(Instant::now());
+            }
+            stream_events += 1;
             let event: ChatCompletionEvent = match serde_json::from_str(data) {
                 Ok(e) => e,
                 Err(_) => {
@@ -1318,11 +1494,13 @@ impl LlamaEngine {
             if let Some(delta) = event.choices.first().and_then(|c| c.delta.content.as_deref()) {
                 if !delta.is_empty() {
                     if first_token_at.is_none() {
-                        first_token_at = Some(Instant::now());
+                        let token_at = Instant::now();
+                        first_token_at = Some(token_at);
                         // Диагностика: первый сырой фрагмент ответа движка. Под
                         // envelope-json первый токен обязан быть "{", а не "<".
                         let preview: String = delta.chars().take(120).collect();
-                        log_cb(format!("🔬 [{}] Первый фрагмент ответа движка ({} симв.): {}", ctx_label, delta.chars().count(), preview.replace('\n', "\\n")));
+                        let ttft = token_at.duration_since(gen_start).as_secs_f64();
+                        log_cb(format!("🔬 [{}] Первый токен через {:.1}с ({} симв.): {}", ctx_label, ttft, delta.chars().count(), preview.replace('\n', "\\n")));
                     }
                     generated_bytes.extend_from_slice(delta.as_bytes());
                     let current_text = String::from_utf8_lossy(&generated_bytes).into_owned();
@@ -1531,6 +1709,8 @@ impl LlamaEngine {
                 l.contains("get_availabl")
                     || l.contains("launch_slot_")
                     || (l.contains("print_timing") && l.contains("prompt eval"))
+                    || l.contains("prompt processing")
+                    || l.contains("slot print_timing")
                     || l.contains("graphs reused")
                     || (l.contains("release") && l.contains("stop processing"))
             })
@@ -1718,11 +1898,13 @@ impl LlamaEngine {
         c.stderr(std::process::Stdio::piped());
 
         let mut child = c.spawn().map_err(|e| format!("Ошибка перезапуска llama-server: {}", e))?;
+        self.server_trace.begin_process(child.id());
         crate::engine::process_util::register_engine_pid(child.id());
         #[cfg(windows)]
         crate::engine::process_util::assign_child_to_kill_job(&child);
         if let Some(stderr) = child.stderr.take() {
             let log_cb = self.log_cb.clone();
+            let server_trace = self.server_trace.clone();
             std::thread::spawn(move || {
                 let reader = std::io::BufReader::new(stderr);
                 for line in reader.lines() {
@@ -1732,6 +1914,7 @@ impl LlamaEngine {
                     };
                     let line = line.trim().to_string();
                     if !line.is_empty() {
+                        server_trace.push_stderr(line.clone());
                         log_cb(format!("[llama-server] {}", line));
                     }
                 }
@@ -1801,8 +1984,9 @@ impl LlamaEngine {
         mut progress_cb: F,
         log_cb: L,
     ) -> Result<GenerationResult, String>
-    where F: FnMut(f32, &str), L: Fn(String) {
+    where F: FnMut(f32, &str), L: Fn(String)     {
         let mut step: u8 = 0;
+        let mut stream_retry_used = false;
         loop {
             let result = self.run_chat_completions(
                 messages,
@@ -1826,8 +2010,18 @@ impl LlamaEngine {
             // Пользователь нажал «Стоп»: движок/стрим могли оборваться ИЗ-ЗА остановки,
             // а не из-за OOM — повторять запрос запрещено (иначе «Стоп» игнорируется).
             if cancel_flag.load(Ordering::SeqCst) {
-                return Err(err);
+                return Err(strip_stream_retry_marker(&err));
             }
+            if should_retry_stream(false, stream_retry_used, &err) {
+                stream_retry_used = true;
+                (self.log_cb)("🔄 Стрим оборвался до первого токена — повторяю запрос 1/1.".to_string());
+                log::warn!("Стрим оборвался до первого токена: {}", strip_stream_retry_marker(&err));
+                continue;
+            }
+            if is_stream_retry_candidate(&err) {
+                log::error!("LLM генерация [{}]: {}", ctx_label, strip_stream_retry_marker(&err));
+            }
+            let err = strip_stream_retry_marker(&err);
             // OOM-детект: (1) явные маркеры в тексте ошибки и/или в хвосте лога движка;
             // (2) «молчаливая смерть» стрима — сервер убит БЕЗ печати OOM (драйвер
             // сбросил GPU по TDR раньше, чем ggml написал диагноз), при этом пиковый
@@ -2091,15 +2285,60 @@ pub fn chain_err(e: &dyn std::error::Error, max: usize) -> String {
     msg
 }
 
+fn is_stream_retry_candidate(message: &str) -> bool {
+    message.starts_with(STREAM_RETRY_MARKER)
+}
+
+fn should_retry_stream(cancelled: bool, retry_used: bool, message: &str) -> bool {
+    !cancelled && !retry_used && is_stream_retry_candidate(message)
+}
+
+fn strip_stream_retry_marker(message: &str) -> String {
+    message.strip_prefix(STREAM_RETRY_MARKER).unwrap_or(message).trim_start().to_string()
+}
+
 /// Хвост лога движка для диагностики ошибок запуска
 fn read_log_tail(path: &Path) -> String {
-    match std::fs::read_to_string(path) {
-        Ok(content) => {
-            let tail = content.chars().rev().take(800).collect::<String>().chars().rev().collect::<String>();
-            format!("\n--- хвост лога llama-server ---\n{}", tail)
-        }
-        Err(_) => String::new(),
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return String::new();
+    };
+    format_log_tail(&content)
+}
+
+fn format_log_tail(content: &str) -> String {
+    let lines: Vec<&str> = content.lines().collect();
+    let recent_start = lines.len().saturating_sub(50);
+    let error_indices: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .rev()
+        .filter(|(_, line)| {
+            let lower = line.to_lowercase();
+            lower.contains("error") || lower.contains("failed") || lower.contains("oom")
+                || lower.contains("exception") || lower.contains("fatal")
+        })
+        .take(20)
+        .map(|(index, _)| index)
+        .collect();
+    let mut selected = std::collections::BTreeSet::new();
+    for index in &error_indices {
+        selected.insert(*index);
     }
+    for index in recent_start..lines.len() {
+        selected.insert(index);
+    }
+    let body = selected
+        .into_iter()
+        .filter_map(|index| lines.get(index).map(|line| line.trim_end()))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let status = if error_indices.is_empty() {
+        "В последних 50 строках llama-server явных ошибок нет."
+    } else {
+        "Сначала показаны последние строки с ошибками, затем остальные строки запуска."
+    };
+    format!("\n--- хвост лога llama-server ---\n{}\n{}", status, body)
 }
 
 /// Проверка: упал ли llama-server из-за ОШИБКИ ЗАГРУЗКИ проектора mmproj
@@ -2307,6 +2546,49 @@ mod tests {
         assert!(!is_cuda_oom_text("no kernel image is available for execution on the device"));
         assert!(!is_cuda_oom_text("driver version is insufficient"));
         assert!(!is_cuda_oom_text("invalid device function"));
+    }
+
+    #[test]
+    fn stream_retry_marker_is_added_only_before_first_token() {
+        let before = format!(
+            "{}Ошибка чтения потока генерации: error decoding response body",
+            STREAM_RETRY_MARKER
+        );
+        let after = "Ошибка чтения потока генерации: error decoding response body".to_string();
+        assert!(is_stream_retry_candidate(&before));
+        assert_eq!(
+            strip_stream_retry_marker(&before),
+            "Ошибка чтения потока генерации: error decoding response body"
+        );
+        assert!(!is_stream_retry_candidate(&after));
+    }
+
+    #[test]
+    fn stream_retry_policy_respects_cancel_and_attempt_limit() {
+        let before_first = format!("{}stream error", STREAM_RETRY_MARKER);
+        let after_first_token = "stream error after token".to_string();
+        assert!(should_retry_stream(false, false, &before_first));
+        assert!(!should_retry_stream(false, true, &before_first));
+        assert!(!should_retry_stream(true, false, &before_first));
+        assert!(!should_retry_stream(false, false, &after_first_token));
+    }
+
+    #[test]
+    fn log_tail_prioritizes_errors_and_keeps_recent_lines() {
+        let mut content = String::new();
+        for index in 0..100 {
+            content.push_str(&format!("slot print_timing: prompt processing line {}\n", index));
+        }
+        content.push_str("CUDA error: out of memory\n");
+        for index in 0..10 {
+            content.push_str(&format!("recent line {}\n", index));
+        }
+        let tail = format_log_tail(&content);
+        let error_pos = tail.find("CUDA error").unwrap_or(0);
+        let recent_pos = tail.find("recent line 0").unwrap_or(0);
+        assert!(error_pos > 0);
+        assert!(error_pos < recent_pos);
+        assert!(tail.contains("slot print_timing: prompt processing line 99"));
     }
 
     #[test]

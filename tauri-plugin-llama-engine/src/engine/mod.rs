@@ -21,6 +21,7 @@ pub mod mem_profiler;
 pub mod mmproj;
 pub mod process_util;
 pub mod sources;
+pub mod stream_diagnostics;
 pub mod vram;
 pub mod vram_estimate;
 

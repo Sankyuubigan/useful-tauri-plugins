@@ -118,11 +118,17 @@ pub async fn set_engine_source(app: AppHandle, source: String) -> Result<EngineS
     } else {
         log::info!("⚙️ Источник движка: {} (уже установлен — переключение мгновенное).", source);
     }
-    Ok(get_engine_status(app))
+    Ok(get_engine_status_blocking(app))
 }
 
 #[tauri::command]
-pub fn get_engine_status(app: AppHandle) -> EngineStatus {
+pub async fn get_engine_status(app: AppHandle) -> Result<EngineStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || get_engine_status_blocking(app))
+        .await
+        .map_err(|e| format!("Ошибка чтения статуса движка: {e}"))
+}
+
+fn get_engine_status_blocking(app: AppHandle) -> EngineStatus {
     let dir = engine_dir(&app);
     ensure_migrated(&app);
 
@@ -222,7 +228,7 @@ pub async fn install_llamacpp(app: AppHandle) -> Result<EngineStatus, String> {
     let _meta = llamacpp_installer::install(&dir, &source, &variant, &log_cb).await?;
     log_cb(format!("📂 Папка движка: {}", dir.display()));
 
-    Ok(get_engine_status(app))
+    Ok(get_engine_status_blocking(app))
 }
 
 /// Смена бекенда: сохраняет выбор юзера в конфиг; если вариант ещё не установлен —
@@ -258,7 +264,7 @@ pub async fn set_engine_variant(app: AppHandle, variant: String) -> Result<Engin
         ));
     }
 
-    Ok(get_engine_status(app))
+    Ok(get_engine_status_blocking(app))
 }
 
 #[tauri::command]
@@ -287,7 +293,7 @@ pub fn remove_engine(app: AppHandle) -> Result<EngineStatus, String> {
         log::info!("[ENGINE] {}", msg);
     };
     llamacpp_installer::remove(&dir, &source, &variant, &log_cb)?;
-    Ok(get_engine_status(app))
+    Ok(get_engine_status_blocking(app))
 }
 
 #[tauri::command]
@@ -295,7 +301,7 @@ pub fn set_engine_dir(app: AppHandle, path: String) -> Result<EngineStatus, Stri
     let mut cfg = engine::load_config(&app);
     cfg.llamacpp_dir = Some(path);
     engine::save_config(&app, &cfg);
-    Ok(get_engine_status(app))
+    Ok(get_engine_status_blocking(app))
 }
 
 // ─────────────────────────── Модели и каталог ──────────────────────────

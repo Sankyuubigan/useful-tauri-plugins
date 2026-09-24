@@ -404,7 +404,10 @@ class ImageBundlePanel extends HTMLElement {
         this.root.getElementById('note').textContent = info.note || '';
         const ul = this.root.getElementById('files');
         ul.innerHTML = '';
+        let anyExists = false;
         for (const f of info.files) {
+            if (f.exists)
+                anyExists = true;
             const li = document.createElement('li');
             li.className = f.exists ? 'ok' : 'missing';
             const size = f.size_bytes ? ` — ${formatBytes(f.size_bytes)}` : '';
@@ -417,7 +420,9 @@ class ImageBundlePanel extends HTMLElement {
         this.root.getElementById('mem').textContent =
             `GPU: ${info.vram_fast_gb ?? '?'} ГБ (быстро) / ${info.vram_min_gb ?? '?'} ГБ (мин.) · RAM ≥${info.ram_min_gb ?? '?'} ГБ`;
         this.root.getElementById('dir').textContent = info.save_dir;
-        this.root.getElementById('download').style.display = info.fully_downloaded ? 'none' : 'inline-block';
+        const dlBtn = this.root.getElementById('download');
+        dlBtn.style.display = info.fully_downloaded ? 'none' : 'inline-block';
+        dlBtn.textContent = anyExists ? 'Докачать файлы' : 'Скачать набор';
         this.root.getElementById('remove').style.display = info.fully_downloaded ? 'inline-block' : 'none';
         try {
             const mem = await estimateImageMemory();
@@ -438,14 +443,19 @@ class ImageBundlePanel extends HTMLElement {
         this.setProgress(0, 0);
         try {
             const cur = await getImageBundleInfo();
-            const sel = await openDialog({ directory: true, title: 'Куда скачать набор?' });
-            if (!sel)
-                return;
-            const base = Array.isArray(sel) ? sel[0] : sel;
-            if (!base)
-                return;
-            const sep = base.includes('\\') ? '\\' : '/';
-            const target = base.endsWith(sep) ? `${base}${cur.bundle_name}` : `${base}${sep}${cur.bundle_name}`;
+            let target = cur.save_dir;
+            const anyExists = cur.files.some((f) => f.exists);
+            if (!anyExists || !target) {
+                const sel = await openDialog({ directory: true, title: 'Куда скачать набор?' });
+                if (!sel)
+                    return;
+                const base = Array.isArray(sel) ? sel[0] : sel;
+                if (!base)
+                    return;
+                const sep = base.includes('\\') ? '\\' : '/';
+                const tail = base.split(/[\\/]/).pop() ?? '';
+                target = tail === cur.bundle_name ? base : (base.endsWith(sep) ? `${base}${cur.bundle_name}` : `${base}${sep}${cur.bundle_name}`);
+            }
             await downloadImageBundle(target);
             notifyBundleChanged();
             toast('Набор изображений скачан!');
@@ -495,15 +505,45 @@ class ImageModelsPanel extends HTMLElement {
         <div id="status" class="hint"></div>
         <ul class="files" id="files"></ul>
         <div class="row" style="margin-top:10px;">
-          <button id="add" class="primary">+ Добавить набор</button>
+          <button id="add" class="secondary">+ Добавить набор</button>
+          <button id="resume" class="primary" style="display:none;">Докачать файлы</button>
+        </div>
+        <div id="progress" class="progress-container">
+          <div class="progress-status" id="progressStatus">0 MB / 0 MB</div>
+          <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
         </div>
       </div>`;
         this.root.getElementById('add').addEventListener('click', () => this.onAdd());
+        this.root.getElementById('resume').addEventListener('click', () => this.onResume());
         document.addEventListener('image:bundle-changed', this.onChangedBound);
         void this.refresh();
+        void listen('downloader:progress', (e) => {
+            const p = e.payload;
+            if (p.kind && p.kind !== 'image-model')
+                return;
+            this.setProgress(p.downloaded, p.total);
+            if (p.status === 'done' || p.status === 'error') {
+                setTimeout(() => { this.showProgress(false); void this.refresh(); }, 400);
+            }
+        }).then((u) => { this.unlisten = u; }).catch(() => { });
     }
     disconnectedCallback() {
         document.removeEventListener('image:bundle-changed', this.onChangedBound);
+        this.unlisten?.();
+    }
+    setProgress(downloaded, total) {
+        const pct = total > 0 ? (downloaded / total) * 100 : 0;
+        const bar = this.root.getElementById('progressBar');
+        if (bar)
+            bar.style.width = `${pct}%`;
+        const st = this.root.getElementById('progressStatus');
+        if (st)
+            st.textContent = `${formatBytes(downloaded)} / ${total > 0 ? formatBytes(total) : '?'}${total > 0 ? ` (${pct.toFixed(0)}%)` : ''}`;
+    }
+    showProgress(on) {
+        const prg = this.root.getElementById('progress');
+        if (prg)
+            prg.style.display = on ? 'block' : 'none';
     }
     async refresh() {
         let info;
@@ -520,12 +560,43 @@ class ImageModelsPanel extends HTMLElement {
         for (const f of info.files) {
             const li = document.createElement('li');
             li.className = f.exists ? 'ok' : 'missing';
-            li.textContent = `${f.exists ? '✓' : '○'} ${esc(f.filename)} (${f.role})`;
+            const size = f.size_bytes ? ` — ${formatBytes(f.size_bytes)}` : '';
+            li.textContent = `${f.exists ? '✓' : '○'} ${esc(f.filename)} (${f.role})${size}`;
             ul.appendChild(li);
         }
         const missing = info.files.filter((f) => !f.exists).length;
         this.root.getElementById('status').textContent =
-            info.fully_downloaded ? `Набор валиден: ${info.files.length}/4 файла на месте.` : `Не хватает файлов: ${missing} из ${info.files.length}.`;
+            info.fully_downloaded ? `Набор валиден: ${info.files.length}/${info.files.length} файла на месте.` : `Не хватает файлов: ${missing} из ${info.files.length}.`;
+        const resumeBtn = this.root.getElementById('resume');
+        if (resumeBtn) {
+            resumeBtn.style.display = info.fully_downloaded ? 'none' : 'inline-block';
+        }
+    }
+    async onResume() {
+        if (this.busy)
+            return;
+        this.busy = true;
+        const btn = this.root.getElementById('resume');
+        if (btn)
+            btn.disabled = true;
+        this.showProgress(true);
+        this.setProgress(0, 0);
+        try {
+            const cur = await getImageBundleInfo();
+            await downloadImageBundle(cur.save_dir);
+            notifyBundleChanged();
+            toast('Недостающие файлы набора скачаны!');
+        }
+        catch (e) {
+            toast(`Ошибка докачивания набора: ${e}`, 'error');
+        }
+        finally {
+            this.busy = false;
+            if (btn)
+                btn.disabled = false;
+            this.showProgress(false);
+            await this.refresh();
+        }
     }
     async onAdd() {
         if (this.busy)
@@ -548,13 +619,14 @@ class ImageModelsPanel extends HTMLElement {
                 toast(`Ошибка проверки набора: ${e}`, 'error');
                 return;
             }
-            if (!v.valid) {
-                toast(`Набор не валиден, не хватает: ${v.missing.join(', ')}`, 'error');
-                return;
-            }
             await setImageBundleDir(path);
             notifyBundleChanged();
-            toast('Набор добавлен: валиден.');
+            if (v.valid) {
+                toast('Набор добавлен: все файлы на месте.');
+            }
+            else {
+                toast(`Папка выбрана. Не хватает файлов: ${v.missing.length}. Нажмите «Докачать файлы».`);
+            }
             await this.refresh();
         }
         catch (e) {

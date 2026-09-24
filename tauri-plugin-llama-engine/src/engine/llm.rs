@@ -1613,6 +1613,40 @@ impl LlamaEngine {
         ))
     }
 
+    /// Освобождает VRAM перед тяжёлым внешним вычислением (image-движок):
+    /// убивает llama-server, конфиг перезапуска сохраняется в respawn_ctx.
+    /// Возвращает true, если процесс был жив и убит.
+    pub fn suspend_for_external_compute(&self) -> bool {
+        let old = self.child.lock().unwrap().take();
+        if let Some(mut child) = old {
+            let pid = child.id();
+            crate::engine::process_util::unregister_engine_pid(pid);
+            log::info!(
+                "⏸ llama-server (pid {}) приостановлен для внешнего вычисления (освобождение VRAM)",
+                pid
+            );
+            crate::engine::process_util::kill_process_tree(&mut child);
+            let _ = child.wait();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Перезапускает llama-server после внешнего вычисления (тот же -ngl/порт/конфиг).
+    /// KV-кэш теряется (новый процесс) — промпт будет переоценён заново.
+    pub fn resume_after_external_compute(&self) -> Result<(), String> {
+        if self.child.lock().unwrap().is_some() {
+            return Ok(());
+        }
+        let ngl = self.current_ngl.get();
+        (self.log_cb)(format!(
+            "▶ Перезапуск llama-server после внешнего вычисления (-ngl {})…",
+            ngl
+        ));
+        self.respawn_with_ngl(ngl)
+    }
+
     /// Убивает текущий llama-server и запускает заново с указанным -ngl.
     /// Возвращает Ok, когда сервер здоров. Логи попадают в UI (self.log_cb).
     fn respawn_with_ngl(&self, new_ngl: u32) -> Result<(), String> {

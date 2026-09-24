@@ -14,6 +14,8 @@ Default permissions for the image-engine plugin.
 - `allow-get-image-models-catalog`
 - `allow-get-image-bundle-info`
 - `allow-download-image-bundle`
+- `allow-validate-image-bundle-dir`
+- `allow-set-image-bundle-dir`
 - `allow-remove-image-bundle`
 - `allow-estimate-image-memory`
 - `allow-generate-image`

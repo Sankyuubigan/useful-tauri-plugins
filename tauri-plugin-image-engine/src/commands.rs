@@ -300,11 +300,10 @@ pub fn validate_image_bundle_dir(path: String) -> Result<ImageBundleValidate, St
 
 #[tauri::command]
 pub fn set_image_bundle_dir(app: AppHandle, path: String) -> Result<ImageBundleInfo, String> {
-    let entry = engine::default_bundle_entry()
-        .ok_or_else(|| "В каталоге нет бандла по умолчанию".to_string())?;
-    let v = validate_bundle_dir(&entry, Path::new(&path));
-    if !v.valid {
-        return Err(format!("Набор не валиден, не хватает: {}", v.missing.join(", ")));
+    let p = Path::new(&path);
+    if !p.exists() {
+        std::fs::create_dir_all(p)
+            .map_err(|e| format!("Не удалось создать папку {}: {}", p.display(), e))?;
     }
     let mut cfg = engine::load_image_config(&app);
     cfg.image_bundle_dir = Some(path);

@@ -406,7 +406,9 @@
       this.root.getElementById("note").textContent = info.note || "";
       const ul = this.root.getElementById("files");
       ul.innerHTML = "";
+      let anyExists = false;
       for (const f of info.files) {
+        if (f.exists) anyExists = true;
         const li = document.createElement("li");
         li.className = f.exists ? "ok" : "missing";
         const size = f.size_bytes ? ` \u2014 ${formatBytes(f.size_bytes)}` : "";
@@ -417,7 +419,9 @@
       this.root.getElementById("disk").textContent = `~${totalGb} \u0413\u0411 \u043D\u0430 \u0434\u0438\u0441\u043A\u0435 \xB7 \u0441\u0432\u043E\u0431\u043E\u0434\u043D\u043E ${info.free_space_gb} \u0413\u0411`;
       this.root.getElementById("mem").textContent = `GPU: ${info.vram_fast_gb ?? "?"} \u0413\u0411 (\u0431\u044B\u0441\u0442\u0440\u043E) / ${info.vram_min_gb ?? "?"} \u0413\u0411 (\u043C\u0438\u043D.) \xB7 RAM \u2265${info.ram_min_gb ?? "?"} \u0413\u0411`;
       this.root.getElementById("dir").textContent = info.save_dir;
-      this.root.getElementById("download").style.display = info.fully_downloaded ? "none" : "inline-block";
+      const dlBtn = this.root.getElementById("download");
+      dlBtn.style.display = info.fully_downloaded ? "none" : "inline-block";
+      dlBtn.textContent = anyExists ? "\u0414\u043E\u043A\u0430\u0447\u0430\u0442\u044C \u0444\u0430\u0439\u043B\u044B" : "\u0421\u043A\u0430\u0447\u0430\u0442\u044C \u043D\u0430\u0431\u043E\u0440";
       this.root.getElementById("remove").style.display = info.fully_downloaded ? "inline-block" : "none";
       try {
         const mem = await estimateImageMemory();
@@ -435,13 +439,17 @@
       this.setProgress(0, 0);
       try {
         const cur = await getImageBundleInfo();
-        const sel = await open({ directory: true, title: "\u041A\u0443\u0434\u0430 \u0441\u043A\u0430\u0447\u0430\u0442\u044C \u043D\u0430\u0431\u043E\u0440?" });
-        if (!sel) return;
-        const base = Array.isArray(sel) ? sel[0] : sel;
-        if (!base) return;
-        const sep = base.includes("\\") ? "\\" : "/";
-        const tail = base.split(/[\\/]/).pop() ?? "";
-        const target = tail === cur.bundle_name ? base : base.endsWith(sep) ? `${base}${cur.bundle_name}` : `${base}${sep}${cur.bundle_name}`;
+        let target = cur.save_dir;
+        const anyExists = cur.files.some((f) => f.exists);
+        if (!anyExists || !target) {
+          const sel = await open({ directory: true, title: "\u041A\u0443\u0434\u0430 \u0441\u043A\u0430\u0447\u0430\u0442\u044C \u043D\u0430\u0431\u043E\u0440?" });
+          if (!sel) return;
+          const base = Array.isArray(sel) ? sel[0] : sel;
+          if (!base) return;
+          const sep = base.includes("\\") ? "\\" : "/";
+          const tail = base.split(/[\\/]/).pop() ?? "";
+          target = tail === cur.bundle_name ? base : base.endsWith(sep) ? `${base}${cur.bundle_name}` : `${base}${sep}${cur.bundle_name}`;
+        }
         await downloadImageBundle(target);
         notifyBundleChanged();
         toast("\u041D\u0430\u0431\u043E\u0440 \u0438\u0437\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u0439 \u0441\u043A\u0430\u0447\u0430\u043D!");
@@ -487,15 +495,47 @@
         <div id="status" class="hint"></div>
         <ul class="files" id="files"></ul>
         <div class="row" style="margin-top:10px;">
-          <button id="add" class="primary">+ \u0414\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u043D\u0430\u0431\u043E\u0440</button>
+          <button id="add" class="secondary">+ \u0414\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u043D\u0430\u0431\u043E\u0440</button>
+          <button id="resume" class="primary" style="display:none;">\u0414\u043E\u043A\u0430\u0447\u0430\u0442\u044C \u0444\u0430\u0439\u043B\u044B</button>
+        </div>
+        <div id="progress" class="progress-container">
+          <div class="progress-status" id="progressStatus">0 MB / 0 MB</div>
+          <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
         </div>
       </div>`;
       this.root.getElementById("add").addEventListener("click", () => this.onAdd());
+      this.root.getElementById("resume").addEventListener("click", () => this.onResume());
       document.addEventListener("image:bundle-changed", this.onChangedBound);
       void this.refresh();
+      void listen("downloader:progress", (e) => {
+        const p = e.payload;
+        if (p.kind && p.kind !== "image-model") return;
+        this.setProgress(p.downloaded, p.total);
+        if (p.status === "done" || p.status === "error") {
+          setTimeout(() => {
+            this.showProgress(false);
+            void this.refresh();
+          }, 400);
+        }
+      }).then((u) => {
+        this.unlisten = u;
+      }).catch(() => {
+      });
     }
     disconnectedCallback() {
       document.removeEventListener("image:bundle-changed", this.onChangedBound);
+      this.unlisten?.();
+    }
+    setProgress(downloaded, total) {
+      const pct = total > 0 ? downloaded / total * 100 : 0;
+      const bar = this.root.getElementById("progressBar");
+      if (bar) bar.style.width = `${pct}%`;
+      const st = this.root.getElementById("progressStatus");
+      if (st) st.textContent = `${formatBytes(downloaded)} / ${total > 0 ? formatBytes(total) : "?"}${total > 0 ? ` (${pct.toFixed(0)}%)` : ""}`;
+    }
+    showProgress(on) {
+      const prg = this.root.getElementById("progress");
+      if (prg) prg.style.display = on ? "block" : "none";
     }
     async refresh() {
       let info;
@@ -511,11 +551,37 @@
       for (const f of info.files) {
         const li = document.createElement("li");
         li.className = f.exists ? "ok" : "missing";
-        li.textContent = `${f.exists ? "\u2713" : "\u25CB"} ${esc(f.filename)} (${f.role})`;
+        const size = f.size_bytes ? ` \u2014 ${formatBytes(f.size_bytes)}` : "";
+        li.textContent = `${f.exists ? "\u2713" : "\u25CB"} ${esc(f.filename)} (${f.role})${size}`;
         ul.appendChild(li);
       }
       const missing = info.files.filter((f) => !f.exists).length;
-      this.root.getElementById("status").textContent = info.fully_downloaded ? `\u041D\u0430\u0431\u043E\u0440 \u0432\u0430\u043B\u0438\u0434\u0435\u043D: ${info.files.length}/4 \u0444\u0430\u0439\u043B\u0430 \u043D\u0430 \u043C\u0435\u0441\u0442\u0435.` : `\u041D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0444\u0430\u0439\u043B\u043E\u0432: ${missing} \u0438\u0437 ${info.files.length}.`;
+      this.root.getElementById("status").textContent = info.fully_downloaded ? `\u041D\u0430\u0431\u043E\u0440 \u0432\u0430\u043B\u0438\u0434\u0435\u043D: ${info.files.length}/${info.files.length} \u0444\u0430\u0439\u043B\u0430 \u043D\u0430 \u043C\u0435\u0441\u0442\u0435.` : `\u041D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0444\u0430\u0439\u043B\u043E\u0432: ${missing} \u0438\u0437 ${info.files.length}.`;
+      const resumeBtn = this.root.getElementById("resume");
+      if (resumeBtn) {
+        resumeBtn.style.display = info.fully_downloaded ? "none" : "inline-block";
+      }
+    }
+    async onResume() {
+      if (this.busy) return;
+      this.busy = true;
+      const btn = this.root.getElementById("resume");
+      if (btn) btn.disabled = true;
+      this.showProgress(true);
+      this.setProgress(0, 0);
+      try {
+        const cur = await getImageBundleInfo();
+        await downloadImageBundle(cur.save_dir);
+        notifyBundleChanged();
+        toast("\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u044E\u0449\u0438\u0435 \u0444\u0430\u0439\u043B\u044B \u043D\u0430\u0431\u043E\u0440\u0430 \u0441\u043A\u0430\u0447\u0430\u043D\u044B!");
+      } catch (e) {
+        toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u0434\u043E\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u044F \u043D\u0430\u0431\u043E\u0440\u0430: ${e}`, "error");
+      } finally {
+        this.busy = false;
+        if (btn) btn.disabled = false;
+        this.showProgress(false);
+        await this.refresh();
+      }
     }
     async onAdd() {
       if (this.busy) return;
@@ -534,13 +600,13 @@
           toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0438 \u043D\u0430\u0431\u043E\u0440\u0430: ${e}`, "error");
           return;
         }
-        if (!v.valid) {
-          toast(`\u041D\u0430\u0431\u043E\u0440 \u043D\u0435 \u0432\u0430\u043B\u0438\u0434\u0435\u043D, \u043D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442: ${v.missing.join(", ")}`, "error");
-          return;
-        }
         await setImageBundleDir(path);
         notifyBundleChanged();
-        toast("\u041D\u0430\u0431\u043E\u0440 \u0434\u043E\u0431\u0430\u0432\u043B\u0435\u043D: \u0432\u0430\u043B\u0438\u0434\u0435\u043D.");
+        if (v.valid) {
+          toast("\u041D\u0430\u0431\u043E\u0440 \u0434\u043E\u0431\u0430\u0432\u043B\u0435\u043D: \u0432\u0441\u0435 \u0444\u0430\u0439\u043B\u044B \u043D\u0430 \u043C\u0435\u0441\u0442\u0435.");
+        } else {
+          toast(`\u041F\u0430\u043F\u043A\u0430 \u0432\u044B\u0431\u0440\u0430\u043D\u0430. \u041D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0444\u0430\u0439\u043B\u043E\u0432: ${v.missing.length}. \u041D\u0430\u0436\u043C\u0438\u0442\u0435 \xAB\u0414\u043E\u043A\u0430\u0447\u0430\u0442\u044C \u0444\u0430\u0439\u043B\u044B\xBB.`);
+        }
         await this.refresh();
       } catch (e) {
         toast(`\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0434\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u043D\u0430\u0431\u043E\u0440: ${e}`, "error");

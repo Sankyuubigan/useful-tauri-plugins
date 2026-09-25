@@ -25,6 +25,16 @@ static FILE_LOCK: Mutex<()> = Mutex::new(());
 static LOG_FILE: OnceLock<std::path::PathBuf> = OnceLock::new();
 static LAST_LOGS: OnceLock<std::path::PathBuf> = OnceLock::new();
 static PANIC_HOOK_INSTALLED: Once = Once::new();
+const MAX_LOG_MESSAGE_CHARS: usize = 2000;
+
+fn bounded_message(msg: &str) -> String {
+    if msg.chars().count() <= MAX_LOG_MESSAGE_CHARS {
+        return msg.to_string();
+    }
+    let mut bounded: String = msg.chars().take(MAX_LOG_MESSAGE_CHARS - 1).collect();
+    bounded.push('…');
+    bounded
+}
 
 /// Читаемый локальный таймстамп `YYYY-MM-DD HH:MM:SS`.
 pub fn timestamp() -> String {
@@ -59,7 +69,7 @@ fn fresh_file(path: &Path) {
 /// Запись только в файлы (без stderr и события) — для panic-hook, чтобы не
 /// рисковать вторичной паникой внутри уже паникующего потока.
 fn write_files(level: &str, msg: &str) {
-    let line = format!("[{}] [{}] {}\n", timestamp(), level, msg);
+    let line = format!("[{}] [{}] {}\n", timestamp(), level, bounded_message(msg));
     let _guard = lock(&FILE_LOCK);
     if let Some(path) = LAST_LOGS.get() {
         append_file(path, &line);
@@ -72,7 +82,7 @@ fn write_files(level: &str, msg: &str) {
 
 /// Полная запись: stderr + файлы + кольцевой буфер + событие `logs:message`.
 pub fn write_regular(level: &str, msg: &str) {
-    let line = format!("[{}] [{}] {}", timestamp(), level, msg);
+    let line = format!("[{}] [{}] {}", timestamp(), level, bounded_message(msg));
     eprintln!("{line}");
     {
         let _guard = lock(&FILE_LOCK);
@@ -132,7 +142,7 @@ impl Log for AppLogger {
     }
 
     fn log(&self, record: &Record) {
-        let msg = record.args().to_string();
+        let msg = bounded_message(&record.args().to_string());
         write_regular(record.level().as_str(), &msg);
         if record.level() == Level::Error {
             // Дамп контекста в постоянной crash_dump.log (переживает рестарт)
@@ -196,9 +206,10 @@ pub fn early_init(log_file_name: &str) {
 
 /// Ранняя запись строки в файлы (только files + stderr, без события — GUI ещё нет).
 pub fn early_log(level: &str, msg: &str) {
+    let msg = bounded_message(msg);
     let line = format!("[{}] [{}] {}", timestamp(), level, msg);
     eprintln!("{line}");
-    write_files(level, msg);
+    write_files(level, &msg);
 }
 
 /// Установка логгера и путей в setup плагина. Повторные вызовы безвредны.
@@ -281,5 +292,13 @@ mod tests {
         append_file(&file, "current session\n");
         let content = std::fs::read_to_string(&file).unwrap();
         assert_eq!(content, "current session\n");
+    }
+
+    #[test]
+    fn bounded_message_limits_long_log_entries() {
+        let message = "x".repeat(MAX_LOG_MESSAGE_CHARS + 100);
+        let bounded = bounded_message(&message);
+        assert_eq!(bounded.chars().count(), MAX_LOG_MESSAGE_CHARS);
+        assert!(bounded.ends_with('…'));
     }
 }

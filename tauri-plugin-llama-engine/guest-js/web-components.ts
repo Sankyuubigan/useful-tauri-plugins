@@ -64,6 +64,17 @@ function fileName(p: string): string {
   return parts[parts.length - 1] || p
 }
 
+function fileStem(p: string): string {
+  return fileName(p).replace(/\.gguf$/i, '').toLowerCase()
+}
+
+function catalogFileStem(url: string): string {
+  const raw = url.split('?')[0]
+  let name = raw.split('/').pop() || ''
+  try { name = decodeURIComponent(name) } catch { }
+  return name.replace(/\.gguf$/i, '').toLowerCase()
+}
+
 function formatBytes(n: number): string {
   if (!isFinite(n) || n <= 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB']
@@ -627,6 +638,7 @@ class LlamaModelsPanel extends HTMLElement {
   private pendingAction: 'remove' | 'delete' | null = null
   private pendingPath = ''
   private capMap: Record<string, { uncen: boolean; vision: boolean; audio: boolean }> = {}
+  private catalog: CatalogEntry[] | null = null
 
   connectedCallback() {
     if (this.root) return
@@ -672,10 +684,20 @@ class LlamaModelsPanel extends HTMLElement {
 
   private onChangedBound = () => { void this.refresh() }
 
+  private isCatalogModel(path: string): boolean {
+    if (!this.catalog) return true
+    const stem = fileStem(path)
+    return this.catalog.some((entry) => {
+      const stems = [entry.download_url, entry.mmproj_url].filter((url): url is string => !!url)
+      return stems.some((url) => catalogFileStem(url) === stem)
+    })
+  }
+
   private async refresh() {
     let cfg: EngineConfig
     try { cfg = await getEngineConfig() } catch { return }
     try { this.capMap = await getAllCapabilities() } catch { this.capMap = {} }
+    try { this.catalog = await getModelsCatalog() } catch { this.catalog = null }
 
     const list = this.root.getElementById('list')!
     list.innerHTML = ''
@@ -697,6 +719,9 @@ class LlamaModelsPanel extends HTMLElement {
       const name = document.createElement('div')
       name.style.cssText = 'font-weight:600; color:var(--text,#eee); word-break:break-all;'
       name.textContent = (cfg.last_model === m ? '● ' : '') + fileName(m)
+      if (!this.isCatalogModel(m)) {
+        name.appendChild(span('Сторонняя модель', 'Файл не найден в каталоге моделей'))
+      }
       const meta = this.capMap[m]
       if (meta) {
         if (meta.uncen) { const s = span('😈', 'Без цензуры (uncensored)'); name.appendChild(s) }

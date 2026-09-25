@@ -90,7 +90,7 @@ pub fn init() -> TauriPlugin<Wry, Config> {
         })
         .on_event(|_app, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
-                error_reporting::flush_blocking();
+                error_reporting::flush_on_exit();
             }
         })
         .invoke_handler(tauri::generate_handler![

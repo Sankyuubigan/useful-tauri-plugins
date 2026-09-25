@@ -90,8 +90,10 @@ fn build_status(app: &AppHandle) -> NineRouterStatus {
 
 /// Статус шлюза (для индикатора в UI). Не запускает сервер.
 #[tauri::command]
-pub fn get_status(app: AppHandle) -> NineRouterStatus {
-    build_status(&app)
+pub async fn get_status(app: AppHandle) -> Result<NineRouterStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || build_status(&app))
+        .await
+        .map_err(|e| format!("status task join error: {}", e))
 }
 
 /// Установить / обновить 9router (портативный Node.js + npm-бандл).
@@ -201,7 +203,11 @@ pub async fn get_combos(app: AppHandle) -> Result<Vec<client::ComboInfo>, String
 pub async fn open_dashboard(app: AppHandle) -> Result<(), String> {
     let cfg = config::load_config(&app);
     let base_url = cfg.base_url();
-    if !client::is_healthy(&base_url) {
+    let health_url = base_url.clone();
+    let healthy = tauri::async_runtime::spawn_blocking(move || client::is_healthy(&health_url))
+        .await
+        .map_err(|e| format!("health task join error: {}", e))?;
+    if !healthy {
         let status = build_status(&app);
         if !status.installed {
             return Err("9Router не установлен.".to_string());
@@ -274,6 +280,8 @@ pub async fn chat_completion(
         messages,
         max_tokens,
         temperature,
+        tools: None,
+        tool_choice: None,
         stream: true,
     };
     let author = author.unwrap_or_default();

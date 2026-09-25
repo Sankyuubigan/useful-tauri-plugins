@@ -38,6 +38,18 @@ function fileName(p) {
     const parts = p.split(/[/\\]/);
     return parts[parts.length - 1] || p;
 }
+function fileStem(p) {
+    return fileName(p).replace(/\.gguf$/i, '').toLowerCase();
+}
+function catalogFileStem(url) {
+    const raw = url.split('?')[0];
+    let name = raw.split('/').pop() || '';
+    try {
+        name = decodeURIComponent(name);
+    }
+    catch { }
+    return name.replace(/\.gguf$/i, '').toLowerCase();
+}
 function formatBytes(n) {
     if (!isFinite(n) || n <= 0)
         return '0 B';
@@ -624,6 +636,7 @@ class LlamaModelsPanel extends HTMLElement {
         this.pendingAction = null;
         this.pendingPath = '';
         this.capMap = {};
+        this.catalog = null;
         this.onChangedBound = () => { void this.refresh(); };
     }
     connectedCallback() {
@@ -666,6 +679,15 @@ class LlamaModelsPanel extends HTMLElement {
     disconnectedCallback() {
         document.removeEventListener('llama:models-changed', this.onChangedBound);
     }
+    isCatalogModel(path) {
+        if (!this.catalog)
+            return true;
+        const stem = fileStem(path);
+        return this.catalog.some((entry) => {
+            const stems = [entry.download_url, entry.mmproj_url].filter((url) => !!url);
+            return stems.some((url) => catalogFileStem(url) === stem);
+        });
+    }
     async refresh() {
         let cfg;
         try {
@@ -679,6 +701,12 @@ class LlamaModelsPanel extends HTMLElement {
         }
         catch {
             this.capMap = {};
+        }
+        try {
+            this.catalog = await getModelsCatalog();
+        }
+        catch {
+            this.catalog = null;
         }
         const list = this.root.getElementById('list');
         list.innerHTML = '';
@@ -698,6 +726,9 @@ class LlamaModelsPanel extends HTMLElement {
             const name = document.createElement('div');
             name.style.cssText = 'font-weight:600; color:var(--text,#eee); word-break:break-all;';
             name.textContent = (cfg.last_model === m ? '● ' : '') + fileName(m);
+            if (!this.isCatalogModel(m)) {
+                name.appendChild(span('Сторонняя модель', 'Файл не найден в каталоге моделей'));
+            }
             const meta = this.capMap[m];
             if (meta) {
                 if (meta.uncen) {

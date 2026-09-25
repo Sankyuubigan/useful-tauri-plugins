@@ -5,6 +5,7 @@
 //! - `/api/combos`    — список комбо (для дропдауна чата).
 //! - `/v1/chat/completions` — OpenAI-совместимый чат (стриминг SSE / полный).
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use reqwest::blocking::Client;
@@ -31,7 +32,11 @@ impl ComboInfo {
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: String,
+    pub content: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_calls: Option<Vec<serde_json::Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
@@ -42,7 +47,32 @@ pub struct ChatRequest {
     pub max_tokens: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<String>,
     pub stream: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CloudToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ChatCompletionResult {
+    pub content: String,
+    pub reasoning: String,
+    pub tool_calls: Vec<CloudToolCall>,
+    pub finish_reason: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StreamDelta {
+    pub content: String,
+    pub reasoning: String,
 }
 
 impl Default for ChatRequest {
@@ -52,6 +82,8 @@ impl Default for ChatRequest {
             messages: Vec::new(),
             max_tokens: None,
             temperature: None,
+            tools: None,
+            tool_choice: None,
             stream: true,
         }
     }
@@ -190,6 +222,30 @@ pub fn chat_completion_stream(
     req: &ChatRequest,
     mut on_delta: impl FnMut(&str),
 ) -> Result<String, String> {
+    let mut full = String::new();
+    let result = chat_completion_stream_result(base_url, api_key, req, |delta| {
+        if !delta.content.is_empty() {
+            full.push_str(&delta.content);
+        }
+        if !delta.reasoning.is_empty() {
+            full.push_str(&delta.reasoning);
+        }
+        if !delta.content.is_empty() {
+            on_delta(&delta.content);
+        }
+        if !delta.reasoning.is_empty() {
+            on_delta(&delta.reasoning);
+        }
+    })?;
+    Ok(if full.is_empty() { result.content } else { full })
+}
+
+pub fn chat_completion_stream_result(
+    base_url: &str,
+    api_key: Option<&str>,
+    req: &ChatRequest,
+    mut on_delta: impl FnMut(StreamDelta),
+) -> Result<ChatCompletionResult, String> {
     let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
     let mut body = req.clone();
     body.stream = true;
@@ -210,7 +266,8 @@ pub fn chat_completion_stream(
         return Err(format!("/v1/chat/completions: HTTP {} {}", status, &text[..text.len().min(400)]));
     }
 
-    let mut full = String::new();
+    let mut result = ChatCompletionResult::default();
+    let mut tool_calls: BTreeMap<usize, (String, String, String)> = BTreeMap::new();
     for line in resp.bytes().map_err(|e| e.to_string())?.split(|&b| b == b'\n') {
         let line = String::from_utf8_lossy(line);
         let trimmed = line.trim();
@@ -221,20 +278,54 @@ pub fn chat_completion_stream(
         if data == "[DONE]" {
             break;
         }
-        let v: serde_json::Value = serde_json::from_str(data).unwrap_or_default();
-        if let Some(delta) = v.pointer("/choices/0/delta/content").and_then(|c| c.as_str()) {
-            if !delta.is_empty() {
-                full.push_str(delta);
-                on_delta(delta);
-            }
+        let value: serde_json::Value = serde_json::from_str(data).unwrap_or_default();
+        if let Some(reason) = value
+            .pointer("/choices/0/finish_reason")
+            .and_then(|v| v.as_str())
+        {
+            result.finish_reason = reason.to_string();
         }
-        if let Some(rc) = v.pointer("/choices/0/delta/reasoning_content").and_then(|c| c.as_str()) {
-            if !rc.is_empty() {
-                full.push_str(rc);
-                on_delta(rc);
+        let content = value
+            .pointer("/choices/0/delta/content")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let reasoning = value
+            .pointer("/choices/0/delta/reasoning_content")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        if !content.is_empty() || !reasoning.is_empty() {
+            result.content.push_str(content);
+            result.reasoning.push_str(reasoning);
+            on_delta(StreamDelta {
+                content: content.to_string(),
+                reasoning: reasoning.to_string(),
+            });
+        }
+        if let Some(items) = value
+            .pointer("/choices/0/delta/tool_calls")
+            .and_then(|v| v.as_array())
+        {
+            for item in items {
+                let index = item.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                let entry = tool_calls.entry(index).or_default();
+                if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                    if !id.is_empty() {
+                        entry.0.push_str(id);
+                    }
+                }
+                if let Some(name) = item.pointer("/function/name").and_then(|v| v.as_str()) {
+                    entry.1.push_str(name);
+                }
+                if let Some(arguments) = item.pointer("/function/arguments").and_then(|v| v.as_str()) {
+                    entry.2.push_str(arguments);
+                }
             }
         }
     }
-
-    Ok(full)
+    result.tool_calls = tool_calls
+        .into_values()
+        .map(|(id, name, arguments)| CloudToolCall { id, name, arguments })
+        .filter(|call| !call.name.is_empty())
+        .collect();
+    Ok(result)
 }

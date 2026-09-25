@@ -69,6 +69,10 @@ pub fn port_open(port: u16, timeout: Duration) -> bool {
     TcpStream::connect_timeout(&addr, timeout).is_ok()
 }
 
+fn decode_local_port(value: u32) -> u16 {
+    u16::from_le(value as u16)
+}
+
 // ───────────────────────── Владелец порта (правда о статусе) ─────────────────────────
 
 /// Состояние порта 9router с точки зрения НАШЕЙ установки.
@@ -90,12 +94,7 @@ pub fn gateway_state(port: u16, router_dir: &Path) -> GatewayState {
         return GatewayState::NotListening;
     }
 
-    // 1. Если эндпоинт отвечает на 9Router health-check — шлюз активен и готов к работе
-    if crate::router::client::is_healthy(&format!("http://127.0.0.1:{}", port)) {
-        return GatewayState::OursRunning;
-    }
-
-    // 2. Проверяем владеющий процессу сокет
+    // Проверяем владеющий процессу сокет
     if let Some(pid) = listener_pid(port) {
         if pid != 0 {
             // Запущен нами в этой сессии
@@ -117,7 +116,7 @@ pub fn gateway_state(port: u16, router_dir: &Path) -> GatewayState {
         }
     }
 
-    // 3. Фолбэк (не удалось получить PID)
+    // Фолбэк (не удалось получить PID)
     if !ACTIVE_SERVER_PIDS.lock().unwrap().is_empty() {
         GatewayState::OursRunning
     } else {
@@ -360,6 +359,7 @@ mod port_owner {
     //! крейтов, raw FFI как в `kill_job`.
     #![allow(non_camel_case_types, dead_code)]
 
+    use super::decode_local_port;
     use std::ffi::c_void;
 
     type DWORD = u32;
@@ -452,7 +452,7 @@ mod port_owner {
         };
         for row in rows {
             if row.state == MIB_TCP_STATE_LISTEN
-                && u16::from_be((row.local_port & 0xffff) as u16) == port
+                && decode_local_port(row.local_port) == port
             {
                 return Some(row.owning_pid);
             }
@@ -603,5 +603,15 @@ pub fn append_log(dir: &Path, line: &str) {
     let log_path = dir.join("server.log");
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(log_path) {
         let _ = writeln!(f, "{}", line);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_local_port;
+
+    #[test]
+    fn windows_local_port_decodes_little_endian() {
+        assert_eq!(decode_local_port(20_128), 20_128);
     }
 }

@@ -55,7 +55,12 @@ pub struct SubCall {
 pub struct ChatAttachment {
     pub file_name: String,
     pub mime_type: String,
+    #[serde(default)]
     pub data_base64: String,
+    #[serde(default)]
+    pub file_path: Option<String>,
+    #[serde(default)]
+    pub is_dir: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default)]

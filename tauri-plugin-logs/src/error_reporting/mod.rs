@@ -174,7 +174,10 @@ pub fn track_event(name: &str, props: Option<Value>) {
     aptabase::enqueue_event(name, props);
 }
 
-/// Блокирующий flush накопленных событий (вызывается при выходе из приложения).
-pub fn flush_blocking() {
-    tauri::async_runtime::block_on(aptabase::flush_periodic());
+pub fn flush_on_exit() {
+    let _ = std::thread::Builder::new()
+        .name("tauri-logs-flush".to_string())
+        .spawn(|| {
+            tauri::async_runtime::block_on(aptabase::flush_periodic());
+        });
 }

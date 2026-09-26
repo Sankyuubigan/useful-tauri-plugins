@@ -3,7 +3,7 @@ name = "tauri-plugin-9router"
 version = "0.1.0"
 edition = "2021"
 links = "tauri-plugin-9router"
-description = "Reusable 9Router gateway: self-contained install (portable node.exe + npm tgz), lazy start with Windows Job Object (KILL_ON_JOB_CLOSE), combos list, web dashboard and OpenAI-compatible chat completion (SSOT for King Orch and other hosts)"
+description = "Reusable 9Router gateway: self-contained install (portable node.exe + npm tgz), lazy start with persistent background process, combos list, web dashboard and OpenAI-compatible chat completion (SSOT for King Orch and other hosts)"
 license = "MIT"
 readme = "docs/README.md"
 

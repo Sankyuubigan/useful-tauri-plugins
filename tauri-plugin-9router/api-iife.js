@@ -159,6 +159,16 @@
       }
       this.render();
     }
+    async onStop() {
+      try {
+        this.status = await stop();
+        this.combos = [];
+        this.notifyCombosChanged();
+      } catch (e) {
+        console.error("[9router] stop failed", e);
+      }
+      this.render();
+    }
     async onShowCombos() {
       try {
         this.combos = await getCombos();
@@ -258,8 +268,15 @@
         <button class="check-update" style="${installed ? "" : "display:none;"}">\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435</button>
         <button class="primary install-update" style="display:none;">\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C</button>
         <button class="open" ${installed ? "" : "disabled"}>\u041E\u0442\u043A\u0440\u044B\u0442\u044C Web UI</button>
+        <button class="stop" ${running ? "" : "disabled"}>\u041E\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C</button>
         <button class="refresh" ${installed ? "" : "disabled"}>\u27F3 \u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043A\u043E\u043C\u0431\u043E</button>
         <button class="setdir">\u0418\u0437\u043C\u0435\u043D\u0438\u0442\u044C \u043F\u0443\u0442\u044C</button>
+      </div>
+      <div class="row muted">
+        <span>\u0414\u0430\u043D\u043D\u044B\u0435: ${s?.data_dir ? esc(s.data_dir) : "\u2014"}</span>
+      </div>
+      <div class="row muted">
+        <span>\u0411\u0430\u0437\u0430: ${s?.db_present ? "\u043D\u0430\u0439\u0434\u0435\u043D\u0430" : "\u26A0 \u0411\u0414 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430 \u2014 9router \u043F\u043E\u043A\u0430\u0436\u0435\u0442 \u043F\u0443\u0441\u0442\u044B\u0435 \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438"}</span>
       </div>
       ${!installed && (s?.node_present || s?.server_present) ? '<div class="muted warn-hint">\u0427\u0430\u0441\u0442\u0438\u0447\u043D\u0430\u044F \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0430: \u043D\u0430\u0439\u0434\u0435\u043D\u044B \u043D\u0435 \u0432\u0441\u0435 \u043A\u043E\u043C\u043F\u043E\u043D\u0435\u043D\u0442\u044B 9Router. \u041D\u0430\u0436\u043C\u0438\u0442\u0435 \xAB\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C\xBB, \u0447\u0442\u043E\u0431\u044B \u043F\u043E\u0447\u0438\u043D\u0438\u0442\u044C.</div>' : ""}
       <div class="progress-container">
@@ -276,6 +293,7 @@
       this.root.querySelector(".install")?.addEventListener("click", () => void this.onInstall());
       this.root.querySelector(".check-update")?.addEventListener("click", () => void this.onCheckUpdate());
       this.root.querySelector(".install-update")?.addEventListener("click", () => void this.onInstallUpdate());
+      this.root.querySelector(".stop")?.addEventListener("click", () => void this.onStop());
       this.root.querySelector(".refresh")?.addEventListener("click", () => void this.onShowCombos());
       this.root.querySelector(".open")?.addEventListener("click", () => void this.onOpen());
       this.root.querySelector(".setdir")?.addEventListener("click", () => void this.onSetDir());

@@ -25,6 +25,10 @@ pub struct NineRouterStatus {
     pub base_url: String,
     /// Папка установки (по умолчанию <exe>/9router).
     pub path: String,
+    /// Каталог данных (DATA_DIR).
+    pub data_dir: String,
+    /// Наличие файла базы данных (db/data.sqlite).
+    pub db_present: bool,
     pub node_present: bool,
     pub server_present: bool,
     /// Человеко-читаемое сообщение для UI.
@@ -34,6 +38,8 @@ pub struct NineRouterStatus {
 fn build_status(app: &AppHandle) -> NineRouterStatus {
     let cfg = config::load_config(app);
     let dir = router_dir(app);
+    let data_dir = config::router_data_dir(app);
+    let db_present = data_dir.join("db").join("data.sqlite").exists();
     let node_present = node_exe(&dir).exists();
     let server_present = server_script(&dist_dir(&dir)).exists();
     let installed = node_present && server_present;
@@ -42,7 +48,7 @@ fn build_status(app: &AppHandle) -> NineRouterStatus {
     // процесс на порту (глобальный npm 9Router и т.п.) сервером приложения НЕ
     // является: иначе панель врут (инцидент: внешний 9Router на порту 20128
     // выглядел «работающим» при ненастроенном бандле).
-    let gw = process::gateway_state(port, &dir);
+    let gw = process::gateway_state(port, &dir, &data_dir);
     let running = gw == process::GatewayState::OursRunning;
 
     let message = if !installed {
@@ -60,10 +66,17 @@ fn build_status(app: &AppHandle) -> NineRouterStatus {
         // pid=0 — владелец не определён (listener_pid=None): не врём про «чужой»
         // процесс, если health-check уже прошёл выше; иначе честно про порт.
         if pid != 0 {
-            format!(
-                "Порт {} занят чужим процессом (pid {}). Остановите внешний 9Router или смените порт.",
-                port, pid
-            )
+            if process::process_exe_matches(pid, &node_exe(&dir)) {
+                format!(
+                    "Порт {} держит 9router, запущенный не из этого каталога данных (тот же node.exe). Нажмите «Остановить», чтобы поднять свой.",
+                    port
+                )
+            } else {
+                format!(
+                    "Порт {} занят чужим процессом (pid {}). Остановите внешний 9Router или смените порт.",
+                    port, pid
+                )
+            }
         } else {
             format!(
                 "Порт {} открыт, но 9Router не отвечает. Возможно, порт занят другим сервисом — смените порт в настройках.",
@@ -82,6 +95,8 @@ fn build_status(app: &AppHandle) -> NineRouterStatus {
         port,
         base_url: cfg.base_url(),
         path: dir.to_string_lossy().to_string(),
+        data_dir: data_dir.to_string_lossy().to_string(),
+        db_present,
         node_present,
         server_present,
         message,
@@ -145,7 +160,9 @@ pub async fn ensure_started(app: AppHandle) -> Result<NineRouterStatus, String> 
 /// Остановить сервер 9router.
 #[tauri::command]
 pub fn stop(app: AppHandle) -> NineRouterStatus {
-    process::stop_server();
+    let data_dir = config::router_data_dir(&app);
+    let cfg = config::load_config(&app);
+    process::stop_server(cfg.port_or_default(), &data_dir);
     build_status(&app)
 }
 
@@ -161,8 +178,10 @@ pub fn set_router_dir(app: AppHandle, path: String) -> Result<NineRouterStatus, 
     if path.trim().is_empty() {
         return Err("Путь установки не может быть пустым".to_string());
     }
-    process::stop_server();
-    let mut cfg = config::load_config(&app);
+    let data_dir = config::router_data_dir(&app);
+    let cfg_curr = config::load_config(&app);
+    process::stop_server(cfg_curr.port_or_default(), &data_dir);
+    let mut cfg = cfg_curr;
     cfg.dir = Some(path);
     config::save_config(&app, &cfg);
     log::info!(

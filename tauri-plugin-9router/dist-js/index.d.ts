@@ -20,6 +20,8 @@ export interface NineRouterStatus {
     base_url: string;
     /** Папка установки (по умолчанию `<exe>/9router`). */
     path: string;
+    data_dir: string;
+    db_present: boolean;
     node_present: boolean;
     server_present: boolean;
     /** Человеко-читаемое сообщение для UI. */

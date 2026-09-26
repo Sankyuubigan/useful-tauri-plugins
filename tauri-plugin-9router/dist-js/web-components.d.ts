@@ -19,6 +19,7 @@ export declare class NineRouterPanel extends HTMLElement {
     private notifyCombosChanged;
     private onInstall;
     private onOpen;
+    private onStop;
     private onShowCombos;
     private onSaveApiKey;
     private onSetDir;

@@ -80,7 +80,10 @@ pub fn install_or_update(
     // иначе перезапись node.exe/dist падает с «файл занят другим процессом»
     // (os error 32). Глушим и зарегистрированные PID, и «осиротевшие» node.exe
     // по целевому пути (могут жить после рестарта приложения).
-    crate::router::process::stop_server();
+    crate::router::process::stop_server(
+        cfg.port_or_default(),
+        &crate::router::config::router_data_dir(app),
+    );
     crate::router::process::kill_node_processes(&node_exe(&dir));
 
     fs::create_dir_all(dir.join("runtime"))

@@ -9,9 +9,9 @@
 //! - **Установкой без системных зависимостей**: портативный `node.exe`
 //!   (официальный zip с nodejs.org) + готовый standalone-билд 9router
 //!   (тарболл с registry.npmjs.org). Юзеру не нужен ни Node.js, ни терминал.
-//! - **Ленивым автозапуском по требованию**: сервер стартует только когда хост
-//!   реально использует выбор (комбо 9router в чате), и гасится при закрытии
-//!   приложения (Windows Job Object `KILL_ON_JOB_CLOSE` + реестр PID).
+//! - **Ленивый автозапуск по требованию**: сервер стартует только когда хост
+//!   реально использует выбор (комбо 9router в чате), и продолжает работать
+//!   после закрытия приложения (управляется через `server.json` и порты).
 //! - **Доступом к комбо**: список комбо из `/api/combos` для дропдауна чата.
 //! - **OpenAI-совместимым chat completions** со стримингом через Tauri-события.
 //!
@@ -45,7 +45,7 @@ pub use router::config::set_app_data_dir_name;
 
 use serde::Deserialize;
 use tauri::plugin::{Builder, TauriPlugin};
-use tauri::{RunEvent, Wry};
+use tauri::Wry;
 
 /// Конфиг плагина (`plugins.9router` в `tauri.conf.json` хоста).
 ///
@@ -80,20 +80,16 @@ impl<'de> Deserialize<'de> for Config {
 /// Инициализация плагина: `.plugin(tauri_plugin_9router::init())`.
 pub fn init() -> TauriPlugin<Wry, Config> {
     Builder::<Wry, Config>::new("9router")
-        .setup(|_app, api| {
+        .setup(|app, api| {
             if let Some(name) = &api.config().data_dir_name {
                 if !name.is_empty() {
                     router::config::set_app_data_dir_name(name);
                 }
             }
+            let handle = app.clone();
+            router::process::reconcile_server_state(&handle);
+            router::config::migrate_legacy_data_dir(&handle);
             Ok(())
-        })
-        .on_event(|_app, event| {
-            if let RunEvent::ExitRequested { .. } = event {
-                // Гарантированное убийство сервера 9router на выходе
-                // (Job Object KILL_ON_JOB_CLOSE + плановый килл по PID).
-                router::process::kill_active_servers();
-            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_status,

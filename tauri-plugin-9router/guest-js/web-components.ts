@@ -7,6 +7,7 @@ import {
   openDashboard,
   setApiKey,
   setRouterDir,
+  stop,
   type ComboInfo,
   type NineRouterStatus,
 } from './index'
@@ -156,6 +157,17 @@ export class NineRouterPanel extends HTMLElement {
     this.render()
   }
 
+  private async onStop() {
+    try {
+      this.status = await stop()
+      this.combos = []
+      this.notifyCombosChanged()
+    } catch (e) {
+      console.error('[9router] stop failed', e)
+    }
+    this.render()
+  }
+
   private async onShowCombos() {
     try {
       this.combos = await getCombos()
@@ -261,8 +273,15 @@ export class NineRouterPanel extends HTMLElement {
         <button class="check-update" style="${installed ? '' : 'display:none;'}">Проверить обновление</button>
         <button class="primary install-update" style="display:none;">Обновить</button>
         <button class="open" ${installed ? '' : 'disabled'}>Открыть Web UI</button>
+        <button class="stop" ${running ? '' : 'disabled'}>Остановить</button>
         <button class="refresh" ${installed ? '' : 'disabled'}>⟳ Обновить комбо</button>
         <button class="setdir">Изменить путь</button>
+      </div>
+      <div class="row muted">
+        <span>Данные: ${s?.data_dir ? esc(s.data_dir) : '—'}</span>
+      </div>
+      <div class="row muted">
+        <span>База: ${s?.db_present ? 'найдена' : '⚠ БД не найдена — 9router покажет пустые настройки'}</span>
       </div>
       ${!installed && (s?.node_present || s?.server_present)
         ? '<div class="muted warn-hint">Частичная установка: найдены не все компоненты 9Router. Нажмите «Установить», чтобы починить.</div>'
@@ -286,6 +305,7 @@ export class NineRouterPanel extends HTMLElement {
     this.root.querySelector('.install')?.addEventListener('click', () => void this.onInstall())
     this.root.querySelector('.check-update')?.addEventListener('click', () => void this.onCheckUpdate())
     this.root.querySelector('.install-update')?.addEventListener('click', () => void this.onInstallUpdate())
+    this.root.querySelector('.stop')?.addEventListener('click', () => void this.onStop())
     this.root.querySelector('.refresh')?.addEventListener('click', () => void this.onShowCombos())
     this.root.querySelector('.open')?.addEventListener('click', () => void this.onOpen())
     this.root.querySelector('.setdir')?.addEventListener('click', () => void this.onSetDir())

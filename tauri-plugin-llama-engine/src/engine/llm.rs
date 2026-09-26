@@ -920,6 +920,10 @@ impl LlamaEngine {
         format!("http://127.0.0.1:{}{}", self.port, path)
     }
 
+    pub fn is_alive(&self) -> bool {
+        self.is_healthy()
+    }
+
     fn is_healthy(&self) -> bool {
         let resp = self.client
             .get(self.url("/health"))

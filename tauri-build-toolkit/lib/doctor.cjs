@@ -24,6 +24,7 @@ function run(cfg) {
     console.log('vcRedist        :', cfg.vcRedist);
     console.log('npmInstallArgs  :', cfg.npmInstallArgs.join(' '));
     console.log('syncPkgVersion  :', cfg.syncPackageJsonVersion);
+    console.log('isolateDevData  :', cfg.isolateDevData, '(dev APPDATA -> src-tauri/target/dev-appdata)');
 
     const keyPath = resolveKeyPath(cfg);
     console.log('signing key     :', keyPath, fs.existsSync(keyPath) ? '(present)' : '(MISSING)');

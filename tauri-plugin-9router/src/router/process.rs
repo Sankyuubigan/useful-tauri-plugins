@@ -76,7 +76,10 @@ pub fn port_open(port: u16, timeout: Duration) -> bool {
 }
 
 fn decode_local_port(value: u32) -> u16 {
-    u16::from_le(value as u16)
+    // `dwLocalPort` из GetExtendedTcpTable приходит в network byte order
+    // (big-endian), а не в little-endian хоста — иначе порт 20128 (0x4EA0)
+    // декодируется как 0xA04E и поиск PID по порту никогда не находит цель.
+    u16::from_be(value as u16)
 }
 
 // ───────────────────────── Владелец порта (правда о статусе) ─────────────────────────
@@ -314,6 +317,13 @@ pub fn stop_server(port: u16, data_dir: &Path) {
         }
     }
 
+    if pids.is_empty() {
+        log::warn!(
+            "⚠️ 9router: stop_server не нашёл процессов для остановки (порт {})",
+            port
+        );
+    }
+
     for pid in pids {
         log::info!("🛑 Остановка 9router (pid {})", pid);
         kill_pid_tree(pid);
@@ -508,7 +518,10 @@ mod tests {
     use super::decode_local_port;
 
     #[test]
-    fn windows_local_port_decodes_little_endian() {
+    fn windows_local_port_decodes_network_byte_order() {
+        // Порт 20128 = 0x4EA0 в network byte order (big-endian): 0xA04E в LE.
+        // Раньше здесь стоял from_le — порт не совпадал и listener_pid не находил.
         assert_eq!(decode_local_port(20_128), 20_128);
+        assert_ne!(decode_local_port(20_128), 0xA04E);
     }
 }

@@ -1,5 +1,7 @@
 //! Tauri-команды плагина 9router. Тонкий слой: вся логика — в `crate::router`.
 
+use std::time::Duration;
+
 use serde::Serialize;
 use serde_json::json;
 use tauri::{AppHandle, Emitter};
@@ -160,9 +162,19 @@ pub async fn ensure_started(app: AppHandle) -> Result<NineRouterStatus, String> 
 /// Остановить сервер 9router.
 #[tauri::command]
 pub fn stop(app: AppHandle) -> NineRouterStatus {
-    let data_dir = config::router_data_dir(&app);
     let cfg = config::load_config(&app);
-    process::stop_server(cfg.port_or_default(), &data_dir);
+    let port = cfg.port_or_default();
+    log::info!("🛑 9router: запрос остановки (порт {})", port);
+    let data_dir = config::router_data_dir(&app);
+    process::stop_server(port, &data_dir);
+    // Ждём реального закрытия сокета, чтобы статус и UI не врали: taskkill
+    // асинхронен, и без ожидания build_status показывал «running» ещё пару
+    // сотен мс после смерти процесса.
+    if process::wait_port_closed(port, Duration::from_secs(3)) {
+        log::info!("✅ 9router остановлен (порт {} закрыт)", port);
+    } else {
+        log::warn!("⚠️ 9router: порт {} не закрылся за 3 сек", port);
+    }
     build_status(&app)
 }
 
@@ -192,24 +204,29 @@ pub fn set_router_dir(app: AppHandle, path: String) -> Result<NineRouterStatus, 
 }
 
 /// Список комбо 9router (только LLM). Если сервер не запущен и установлен —
-/// стартует лениво (открытие 9router-группы в дропдауне = спрос).
+/// стартует лениво (открытие 9router-группы в дропдауне = спрос), но только
+/// когда включён автозапуск `nine_router.auto_start`. Иначе — ошибка: иначе
+/// любой запрос комбо немедленно поднимал бы сервер обратно после «Остановить».
 #[tauri::command]
 pub async fn get_combos(app: AppHandle) -> Result<Vec<client::ComboInfo>, String> {
     let status = build_status(&app);
     if !status.installed {
         return Err("9Router не установлен.".to_string());
     }
+    let cfg = config::load_config(&app);
     if !status.running {
+        if !cfg.auto_start {
+            return Err("9Router остановлен и автозапуск отключён.".to_string());
+        }
         let app_work = app.clone();
+        let cfg_work = cfg.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            let cfg = config::load_config(&app_work);
-            process::start_server(&app_work, &cfg)
+            process::start_server(&app_work, &cfg_work)
         })
         .await
         .map_err(|e| format!("start task join error: {}", e))??;
     }
 
-    let cfg = config::load_config(&app);
     let base = cfg.base_url();
     let api_key = cfg.api_key.clone();
     tauri::async_runtime::spawn_blocking(move || client::get_combos(&base, api_key.as_deref()))

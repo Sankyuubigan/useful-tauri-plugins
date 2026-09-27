@@ -20,6 +20,9 @@ tar = "0.4"
 # Единый движок скачивания (SSOT): Node.js zip + npm tgz + фоллбэки без окон.
 tauri-plugin-downloader = { path = "../tauri-plugin-downloader" }
 
+# Атомарные записи JSON (app_config.json, server.json): tmp->rename + sidecar lock.
+ko-json-store = { path = "../ko-json-store" }
+
 [features]
 default = []
 

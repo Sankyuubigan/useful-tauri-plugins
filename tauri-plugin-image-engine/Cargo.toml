@@ -28,6 +28,9 @@ base64 = "0.22"
 # stall/resume/прогресс `downloader:progress`.
 tauri-plugin-downloader = { path = "../tauri-plugin-downloader" }
 
+# Атомарные записи JSON (app_config.json): tmp->rename + sidecar lock.
+ko-json-store = { path = "../ko-json-store" }
+
 [build-dependencies]
 tauri-plugin = { version = "2", features = ["build"] }
 

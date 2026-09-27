@@ -66,7 +66,7 @@ import { getStatus, getCombos, chatCompletion, onChunk } from '@my-tauri-plugins
 
 Или vanilla (без бандлера): глобал `window.__TAURI__['9router']` + тег
 `<nine-router-panel>` (панель статуса в настройках). JS вшит Tauri из
-`api-iife.js` (см. `PLUGIN_STANDARD.md` §4.4).
+`api-iife.js` (см. `PLUGIN_STANDARD.md` §5.4).
 
 Панель `<nine-router-panel>` позволяет сменить папку установки кнопкой
 «Изменить путь»: выбирается каталог, путь сохраняется в `nine_router.dir`,

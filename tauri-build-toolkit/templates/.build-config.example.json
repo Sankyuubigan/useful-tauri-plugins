@@ -21,6 +21,5 @@
     "password": ""
   },
   "syncPackageJsonVersion": false,
-  "isolateDevData": true,
   "releaseNotesTemplate": "Auto release ${product} ${tag}"
 }

@@ -8,6 +8,7 @@ pub mod image_engine;
 pub mod models_catalog;
 pub mod preflight;
 pub mod process_util;
+pub mod ref_size;
 pub mod sdcpp_installer;
 pub mod sources;
 

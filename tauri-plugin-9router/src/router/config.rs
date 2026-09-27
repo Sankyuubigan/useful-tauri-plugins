@@ -104,24 +104,22 @@ pub fn load_config(app: &AppHandle) -> NineRouterConfig {
 
 /// Сохраняет секцию `nine_router` в `app_config.json` field-preserving merge:
 /// существующие хостовые и движковые ключи НЕ затираются.
-pub fn save_config(app: &AppHandle, config: &NineRouterConfig) {
+pub fn save_config(app: &AppHandle, config: &NineRouterConfig) -> Result<(), String> {
     let path = get_config_path(app);
-    save_config_file(&path, config);
+    save_config_file(&path, config)
 }
 
 /// Расширяемая для тестов версия сохранения (по явному пути).
-pub fn save_config_file(path: &PathBuf, config: &NineRouterConfig) {
-    let mut root: serde_json::Value = fs::read_to_string(path)
-        .ok()
-        .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    let value = serde_json::to_value(config).unwrap_or_else(|_| serde_json::json!({}));
-    if let serde_json::Value::Object(root_map) = &mut root {
-        root_map.insert("nine_router".to_string(), value);
-    }
-    if let Ok(data) = serde_json::to_string_pretty(&root) {
-        let _ = fs::write(path, data);
-    }
+pub fn save_config_file(path: &PathBuf, config: &NineRouterConfig) -> Result<(), String> {
+    let value = serde_json::to_value(config).map_err(|e| e.to_string())?;
+    ko_json_store::update_json(path, move |root: &mut serde_json::Value| {
+        if !root.is_object() {
+            *root = serde_json::json!({});
+        }
+        if let serde_json::Value::Object(root_map) = root {
+            root_map.insert("nine_router".to_string(), value);
+        }
+    })
 }
 
 /// Папка установки 9router: переопределение из конфига или `<exe>/9router`.
@@ -324,7 +322,9 @@ pub fn write_server_record(data_dir: &std::path::Path, pid: u32, port: u16) {
             .as_secs(),
     };
     if let Ok(json) = serde_json::to_string_pretty(&record) {
-        let _ = fs::write(path, json);
+        if let Err(e) = ko_json_store::write_atomic(&path, &json) {
+            log::warn!("9router: ошибка записи server.json: {}", e);
+        }
     }
 }
 

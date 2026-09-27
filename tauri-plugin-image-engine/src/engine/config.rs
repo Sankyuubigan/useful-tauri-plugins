@@ -89,21 +89,19 @@ pub fn load_image_config(app: &AppHandle) -> ImageEngineConfig {
 }
 
 /// Сохраняет image-ключи field-preserving-merge.
-pub fn save_image_config(app: &AppHandle, config: &ImageEngineConfig) {
+pub fn save_image_config(app: &AppHandle, config: &ImageEngineConfig) -> Result<(), String> {
     let path = get_config_path(app);
-    let mut root: serde_json::Value = fs::read_to_string(&path)
-        .ok()
-        .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    let image_value = serde_json::to_value(config).unwrap_or_else(|_| serde_json::json!({}));
-    if let (serde_json::Value::Object(root_map), serde_json::Value::Object(image_map)) =
-        (&mut root, image_value)
-    {
-        for (k, v) in image_map {
-            root_map.insert(k, v);
+    let image_value = serde_json::to_value(config).map_err(|e| e.to_string())?;
+    ko_json_store::update_json(&path, move |root: &mut serde_json::Value| {
+        if !root.is_object() {
+            *root = serde_json::json!({});
         }
-    }
-    if let Ok(data) = serde_json::to_string_pretty(&root) {
-        let _ = fs::write(path, data);
-    }
+        if let (serde_json::Value::Object(root_map), serde_json::Value::Object(image_map)) =
+            (root, image_value)
+        {
+            for (k, v) in image_map {
+                root_map.insert(k, v);
+            }
+        }
+    })
 }

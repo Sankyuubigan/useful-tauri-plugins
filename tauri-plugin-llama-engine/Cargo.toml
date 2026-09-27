@@ -30,6 +30,9 @@ tauri-plugin-logs = { path = "../tauri-plugin-logs", optional = true }
 # stall/resume/прогресс `downloader:progress`. Заменяет старый download_fallback.
 tauri-plugin-downloader = { path = "../tauri-plugin-downloader" }
 
+# Атомарные записи JSON (app_config.json): tmp->rename + sidecar lock.
+ko-json-store = { path = "../ko-json-store" }
+
 [features]
 default = []
 host-logs = ["dep:tauri-plugin-logs"]

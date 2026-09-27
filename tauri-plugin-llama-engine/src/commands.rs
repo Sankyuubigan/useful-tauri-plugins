@@ -104,7 +104,7 @@ pub async fn set_engine_source(app: AppHandle, source: String) -> Result<EngineS
     }
     let mut cfg = engine::load_config(&app);
     cfg.engine_source = Some(source.clone());
-    engine::save_config(&app, &cfg);
+    engine::save_config(&app, &cfg)?;
 
     let dir = engine_dir(&app);
     let variant = llamacpp_installer::resolve_variant(Some(&preferred_variant(&app)));
@@ -247,7 +247,7 @@ pub async fn set_engine_variant(app: AppHandle, variant: String) -> Result<Engin
     } else {
         Some(variant.clone())
     };
-    engine::save_config(&app, &cfg);
+    engine::save_config(&app, &cfg)?;
 
     let dir = engine_dir(&app);
     let source = preferred_source(&app);
@@ -300,7 +300,7 @@ pub fn remove_engine(app: AppHandle) -> Result<EngineStatus, String> {
 pub fn set_engine_dir(app: AppHandle, path: String) -> Result<EngineStatus, String> {
     let mut cfg = engine::load_config(&app);
     cfg.llamacpp_dir = Some(path);
-    engine::save_config(&app, &cfg);
+    engine::save_config(&app, &cfg)?;
     Ok(get_engine_status_blocking(app))
 }
 
@@ -423,7 +423,7 @@ pub async fn auto_download_default_model(app: AppHandle, save_path: String) -> R
             audio: default_entry.audio.unwrap_or(false),
         },
     );
-    engine::save_config(&app, &cfg);
+    engine::save_config(&app, &cfg)?;
 
     Ok(())
 }
@@ -470,7 +470,9 @@ pub fn get_model_params(app: AppHandle, model_path: String) -> engine::ModelPara
     }
 
     cfg.model_params.insert(model_path.clone(), params.clone());
-    engine::save_config(&app, &cfg);
+    if let Err(e) = engine::save_config(&app, &cfg) {
+        log::error!("detect_model_params: ошибка сохранения конфига: {}", e);
+    }
 
     params
 }
@@ -479,14 +481,18 @@ pub fn get_model_params(app: AppHandle, model_path: String) -> engine::ModelPara
 pub fn set_model_params(app: AppHandle, model_path: String, params: engine::ModelParams) {
     let mut cfg = engine::load_config(&app);
     cfg.model_params.insert(model_path, params);
-    engine::save_config(&app, &cfg);
+    if let Err(e) = engine::save_config(&app, &cfg) {
+        log::error!("set_model_params: ошибка сохранения конфига: {}", e);
+    }
 }
 
 #[tauri::command]
 pub fn reset_model_params(app: AppHandle, model_path: String) -> engine::ModelParams {
     let mut cfg = engine::load_config(&app);
     cfg.model_params.remove(&model_path);
-    engine::save_config(&app, &cfg);
+    if let Err(e) = engine::save_config(&app, &cfg) {
+        log::error!("reset_model_params: ошибка сохранения конфига: {}", e);
+    }
     get_model_params(app, model_path) // Пересчитает параметры из GGUF заново
 }
 
@@ -572,7 +578,7 @@ fn add_model_impl(
         cfg.model_meta.insert(path.clone(), f);
     }
 
-    engine::save_config(&app, &cfg);
+    engine::save_config(&app, &cfg)?;
     Ok(AddModelOutcome {
         config: cfg,
         warning,
@@ -588,7 +594,7 @@ pub fn remove_model(app: AppHandle, path: String) -> Result<engine::EngineConfig
     }
     cfg.model_params.remove(&path);
     cfg.mmproj_files.remove(&path);
-    engine::save_config(&app, &cfg);
+    engine::save_config(&app, &cfg)?;
     Ok(cfg)
 }
 
@@ -607,7 +613,7 @@ pub fn delete_model_file(app: AppHandle, path: String) -> Result<engine::EngineC
     cfg.model_params.remove(&path);
     cfg.mmproj_files.remove(&path);
     cfg.model_meta.remove(&path);
-    engine::save_config(&app, &cfg);
+    engine::save_config(&app, &cfg)?;
     Ok(cfg)
 }
 
@@ -622,7 +628,9 @@ pub fn get_mmproj_path(app: AppHandle, model_path: String) -> Option<String> {
     if let Some(mmp) = engine::auto_detect_mmproj(&model_path) {
         let mut cfg = engine::load_config(&app);
         cfg.mmproj_files.insert(model_path.clone(), mmp.clone());
-        engine::save_config(&app, &cfg);
+        if let Err(e) = engine::save_config(&app, &cfg) {
+            log::error!("get_mmproj_path: ошибка сохранения конфига: {}", e);
+        }
         return Some(mmp);
     }
     None

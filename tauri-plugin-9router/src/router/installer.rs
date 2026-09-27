@@ -118,7 +118,7 @@ pub fn install_or_update(
     // ── 3. Фиксируем конфиг ──
     cfg.installed_version = Some(npm_ver.clone());
     cfg.node_version = Some(node_ver.clone());
-    crate::router::config::save_config(app, &cfg);
+    crate::router::config::save_config(app, &cfg)?;
 
     progress("done", 0, 0, &format!("✅ 9router v{} установлен (Node {})", npm_ver, node_ver));
     log::info!("✅ 9router v{} установлен (Node {})", npm_ver, node_ver);

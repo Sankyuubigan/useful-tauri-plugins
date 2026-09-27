@@ -7,6 +7,11 @@
 //!
 //! Вердикт: Fast → молча быстро; Offload → стейджинг + честная запись в лог;
 //! Insufficient → понятная ошибка, а не чёрный квадрат.
+//!
+//! ВАЖНО: вердикт Offload НЕ означает «передать `--offload-to-cpu`». Такой флаг
+//! подставляет `--params-backend '*=cpu'`, а явный `--params-backend` отключает
+//! auto-fit (docs/backend.md) — веса всех модулей остаются в RAM и стримятся по
+//! PCIe на каждом шаге. Разложение весов делает сам auto-fit движка.
 
 use serde::Serialize;
 
@@ -121,7 +126,9 @@ pub fn preflight_check(entry: &ImageBundleEntry) -> (PreflightVerdict, MemoryEst
             PreflightVerdict::Offload,
             est.clone(),
             format!(
-                "Full-resident не влез (~{:.1} ГБ) — включён стейджинг из RAM (offload).",
+                "Бандл не влезает в VRAM целиком (~{:.1} ГБ) — auto-fit разнесёт веса: \
+                 diffusion в VRAM, текст-энкодер/VAE в RAM (их GPU-копии освободятся \
+                 после своей фазы, diffusion останется в VRAM на всех шагах).",
                 est.full_mb / 1024.0
             ),
         )

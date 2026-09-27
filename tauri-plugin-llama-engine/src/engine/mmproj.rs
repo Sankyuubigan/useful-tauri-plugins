@@ -57,7 +57,7 @@ pub async fn ensure_mmproj_for_model(
     if let Some(p) = auto_detect_mmproj(model_path) {
         let mut cfg = load_config(app);
         cfg.mmproj_files.insert(model_path.to_string(), p.clone());
-        save_config(app, &cfg);
+        save_config(app, &cfg)?;
         return Ok(Some(p));
     }
 
@@ -79,13 +79,13 @@ pub async fn ensure_mmproj_for_model(
             if mmp_path.exists() {
                 let mut cfg = load_config(app);
                 cfg.mmproj_files.insert(model_path.to_string(), mmp_path_str.clone());
-                save_config(app, &cfg);
+                save_config(app, &cfg)?;
                 return Ok(Some(mmp_path_str));
             }
             download_model(app.clone(), url.clone(), mmp_path_str.clone()).await?;
             let mut cfg = load_config(app);
             cfg.mmproj_files.insert(model_path.to_string(), mmp_path_str.clone());
-            save_config(app, &cfg);
+            save_config(app, &cfg)?;
             return Ok(Some(mmp_path_str));
         }
     }

@@ -136,7 +136,7 @@ pub async fn set_image_engine_variant(app: AppHandle, variant: String) -> Result
     }
     let mut cfg = engine::load_image_config(&app);
     cfg.image_engine_variant = if variant == sdcpp_installer::VARIANT_AUTO { None } else { Some(variant.clone()) };
-    engine::save_image_config(&app, &cfg);
+    engine::save_image_config(&app, &cfg)?;
 
     let dir = engine_dir(&app);
     let resolved = sdcpp_installer::resolve_variant(Some(&variant));
@@ -174,7 +174,7 @@ pub fn remove_image_engine(app: AppHandle) -> Result<ImageEngineStatus, String> 
 pub fn set_image_engine_dir(app: AppHandle, path: String) -> Result<ImageEngineStatus, String> {
     let mut cfg = engine::load_image_config(&app);
     cfg.sdcpp_dir = Some(path);
-    engine::save_image_config(&app, &cfg);
+    engine::save_image_config(&app, &cfg)?;
     Ok(get_image_engine_status(app))
 }
 
@@ -307,7 +307,7 @@ pub fn set_image_bundle_dir(app: AppHandle, path: String) -> Result<ImageBundleI
     }
     let mut cfg = engine::load_image_config(&app);
     cfg.image_bundle_dir = Some(path);
-    engine::save_image_config(&app, &cfg);
+    engine::save_image_config(&app, &cfg)?;
     get_image_bundle_info(app)
 }
 
@@ -350,8 +350,8 @@ pub async fn download_image_bundle(app: AppHandle, save_dir: String) -> Result<I
     }
     let mut cfg = engine::load_image_config(&app);
     cfg.image_bundle_dir = Some(save_dir);
-    engine::save_image_config(&app, &cfg);
-    on_log("✅ Бандл скачан целиком.".to_string());
+    engine::save_image_config(&app, &cfg)?;
+    on_log("Бандл скачан целиком.".to_string());
     get_image_bundle_info(app)
 }
 

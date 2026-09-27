@@ -183,7 +183,7 @@ pub fn set_router_dir(app: AppHandle, path: String) -> Result<NineRouterStatus, 
     process::stop_server(cfg_curr.port_or_default(), &data_dir);
     let mut cfg = cfg_curr;
     cfg.dir = Some(path);
-    config::save_config(&app, &cfg);
+    config::save_config(&app, &cfg)?;
     log::info!(
         "9router: папка установки изменена: {}",
         cfg.dir.as_deref().unwrap_or("")
@@ -324,7 +324,9 @@ pub async fn chat_completion(
 pub fn set_api_key(app: AppHandle, key: Option<String>) -> NineRouterStatus {
     let mut cfg = config::load_config(&app);
     cfg.api_key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
-    config::save_config(&app, &cfg);
+    if let Err(e) = config::save_config(&app, &cfg) {
+        log::error!("9router: ошибка сохранения API-ключа: {}", e);
+    }
     if cfg.api_key.is_some() {
         log::info!("9router: API-ключ сохранён");
     } else {

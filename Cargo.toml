@@ -8,6 +8,7 @@ members = [
     "tauri-plugin-9router",
     "tauri-plugin-downloader",
     "tauri-plugin-image-engine",
+    "ko-json-store",
 ]
 
 [workspace.dependencies]
@@ -55,3 +56,6 @@ minijinja = "1.0"
 # Сохранение озвучки в MP3 (кодек CrispStrobe glint — тот же, что энкодит
 # response_format=mp3 в CrispASR; чистый Rust-враппер, без системных либ)
 glint-audio = "0.11"
+
+# Атомарные записи JSON + блокировки (ko-json-store)
+fs2 = "0.4"

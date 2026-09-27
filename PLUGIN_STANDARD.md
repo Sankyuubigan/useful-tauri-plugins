@@ -13,7 +13,7 @@
 >
 > **Ключевой принцип:** модуль переиспользуется как **compile-time зависимость** (path-зависимость
 > в `Cargo.toml`), GUI переиспользуется через **Web Component** (фреймворк-агностично). JS-сторона
-> плагина доставляется хосту **двумя каналами из одного источника** — см. §4.4.
+> плагина доставляется хосту **двумя каналами из одного источника** — см. §5.4.
 
 ---
 
@@ -33,7 +33,7 @@ my-tauri-plugins/                      ← отдельный git-репозит
    ├─ guest-js/
    │  ├─ index.ts                      ← типизированный TS-API (invoke) + side-effect import WC
    │  ├─ web-components.ts             ← <logs-panel> (Shadow DOM + CSS-переменные)
-   │  └─ iife-entry.ts                 ← точка входа для esbuild (см. §4.4)
+   │  └─ iife-entry.ts                 ← точка входа для esbuild (см. §5.4)
    ├─ dist-js/                         ← npm-канал (tsc, КОММИТИТСЯ, артефакт)
    └─ api-iife.js                      ← vanilla-канал (esbuild, КОММИТИТСЯ, артефакт)
 
@@ -65,12 +65,13 @@ repos-control/                         ← ХОСТ (vanilla, без npm/бан�
 ```toml
 [workspace]
 resolver = "2"
-members = ["tauri-plugin-about-updates", "tauri-plugin-speech", "tauri-plugin-logs"]
+members = ["tauri-plugin-about-updates", "tauri-plugin-speech", "tauri-plugin-logs", "ko-json-store"]
 
 [workspace.dependencies]
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+fs2 = "0.4"
 # ... остальное общее (gix, chrono, anyhow, аудио-либы speech и т.п.)
 ```
 
@@ -81,7 +82,31 @@ cargo не должен требовать node при сборке хоста.
 
 ---
 
-## 2. Единый источник правды (SSOT) для JS-стороны
+## 2. Записи в `app_data_dir` / `sessions` — только через `ko-json-store`
+
+**Общий крейт `ko-json-store`** (`my-tauri-plugins/ko-json-store`) — обычная библиотека, **НЕ** Tauri-плагин (без `links`/`build.rs`/permissions). Единый механизм атомарных записей JSON для хоста и всех плагинов, чтобы протокол записи не дублировался:
+
+```toml
+[dependencies]
+ko-json-store = { path = "../ko-json-store" }
+```
+
+Два примитива:
+
+- **`write_atomic(path, content)`** — tmp в той же папке → `sync_all` → `rename` → удаление tmp при ошибке. Читатель никогда не видит битый/частичный файл.
+- **`update_json(path, |value| { ... })`** — read-modify-write с эксклюзивной блокировкой на sidecar `<file>.lock` (`fs2::lock_exclusive`, RAII unlock). **Сам JSON файл не лочится** — читатели не блокируются. При ошибке парсинга — `Default` + `log::warn!` (не роняем файл).
+
+**ЗАПРЕЩЕНО** в `app_data_dir`/`sessions`:
+- `fs::write` напрямую;
+- `fs::read_to_string` + `unwrap_or_default()` + `fs::write` (lost update + рваный файл).
+
+**Исключения** (не `app_data_dir`): логи и выводы рядом с exe, sidecar-данные с собственным `DATA_DIR` (например, 9router SQLite) — остаются на прямой записи.
+
+**Тесты** (в `ko-json-store/src/lib.rs`): конкурентные `update_json` без потерь, читатель не видит невалидный JSON, tmp не остаётся при ошибке. Запуск: `cargo test -p ko-json-store --lib` (через `test-plugin.bat ko-json-store`).
+
+---
+
+## 3. Единый источник правды (SSOT) для JS-стороны
 
 **Один источник — `guest-js/` (там правки руками).** Артефакты `dist-js/` и `api-iife.js` —
 **производные**, коммитятся, генерируются сборкой, руками НЕ правятся. Поменял `guest-js/*` →
@@ -93,9 +118,9 @@ cargo не должен требовать node при сборке хоста.
 
 ---
 
-## 3. Rust-часть плагина (КРИТИЧНО — иначе не соберётся/не запустится)
+## 4. Rust-часть плагина (КРИТИЧНО — иначе не соберётся/не запустится)
 
-### 3.1 `Cargo.toml` — обязателен `links` + build-зависимость
+### 4.1 `Cargo.toml` — обязателен `links` + build-зависимость
 
 ```toml
 [package]
@@ -119,21 +144,21 @@ tauri-plugin = { version = "2", features = ["build"] }   # ← для permission
 > ⚠️ Без `links`/`build.rs` permissions не сгенерятся → хост упадёт с
 > `permission "logs:default" not found`. Без `global_api_script_path` не будет vanilla-канала.
 
-### 3.2 `build.rs` — команды + `global_api_script_path` (vanilla-канал)
+### 4.2 `build.rs` — команды + `global_api_script_path` (vanilla-канал)
 
 ```rust
 const COMMANDS: &[&str] = &["get_last_logs_path", "log_frontend_event", /* ... */];
 
 fn main() {
     tauri_plugin::Builder::new(COMMANDS)
-        .global_api_script_path("./api-iife.js")   // ← vanilla-канал (см. §4.4)
+        .global_api_script_path("./api-iife.js")   // ← vanilla-канал (см. §5.4)
         .build();
 }
 ```
 
 `COMMANDS` — **единственный источник правды** для имён команд плагина.
 
-### 3.3 `src/lib.rs` — Config, PluginState, `init`
+### 4.3 `src/lib.rs` — Config, PluginState, `init`
 
 **⚠️ Config ОБЯЗАН переживать `null`.** Если ключа `plugins.<id>` нет в
 `tauri.conf.json` хоста, Tauri передаёт `null`, и наивный
@@ -170,7 +195,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R, Config> {
 }
 ```
 
-### 3.4 Команды — ОБЯЗАНЫ быть дженериками над `Runtime`
+### 4.4 Команды — ОБЯЗАНЫ быть дженериками над `Runtime`
 
 ```rust
 #[tauri::command]
@@ -178,7 +203,7 @@ pub fn get_last_logs_path<R: Runtime>(app: AppHandle<R>) -> String { /* ... */ }
 ```
 Не-дженерик `AppHandle` даёт `E0277` на этапе сборки крейта хоста.
 
-### 3.5 Порядок добавления НОВОЙ команды (чек-лист)
+### 4.5 Порядок добавления НОВОЙ команды (чек-лист)
 
 1. `#[tauri::command] pub fn my_cmd<R: Runtime>(...)` в `commands.rs`;
 2. `"my_cmd"` в `COMMANDS` (`build.rs`) **и** в `generate_handler!` (`lib.rs`);
@@ -188,9 +213,9 @@ pub fn get_last_logs_path<R: Runtime>(app: AppHandle<R>) -> String { /* ... */ }
 
 ---
 
-## 4. Frontend-часть плагина
+## 5. Frontend-часть плагина
 
-### 4.1 `guest-js/index.ts` — типизированный TS-API
+### 5.1 `guest-js/index.ts` — типизированный TS-API
 
 ```ts
 import { invoke } from '@tauri-apps/api/core'
@@ -206,7 +231,7 @@ import './web-components'
 
 > Вызовы идут через `plugin:<identifier>|<command>` — identifier из `Builder::new("logs")`.
 
-### 4.2 `package.json` плагина
+### 5.2 `package.json` плагина
 
 ```json
 {
@@ -225,7 +250,7 @@ import './web-components'
 }
 ```
 
-### 4.3 `tsconfig.json`
+### 5.3 `tsconfig.json`
 
 ```json
 {
@@ -238,7 +263,7 @@ import './web-components'
 }
 ```
 
-### 4.4 vanilla-канал: global API script (`api-iife.js`) — СТАНДАРТ
+### 5.4 vanilla-канал: global API script (`api-iife.js`) — СТАНДАРТ
 
 Этот канал — официальный механизм Tauri v2 для доставки JS плагина в хост **без npm и бандлера**
 (канал всех официальных плагинов Tauri). Конвейер:
@@ -268,7 +293,7 @@ import './web-components'
 
 **Как это уживается с `@tauri-apps/api`:** esbuild-бандл нельзя просто собрать из `guest-js`
 напрямую — он импортирует `@tauri-apps/*`. Поэтому у каждого плагина есть `guest-js/iife-entry.ts`,
-который импортирует код плагина через АЛИАСЫ esbuild (см. §9.3). Механика:
+который импортирует код плагина через АЛИАСЫ esbuild (см. §10.3). Механика:
 - в `guest-js/` рядом с кодом лежат шимы `shims.ts` вида:
   ```ts
   const core = (window as any).__TAURI__?.core ?? (window as any).__TAURI_INTERNALS__;
@@ -294,7 +319,7 @@ export async function saveDialog(): Promise<string | null> {
 > `guest-js/*` → `npm run build:global` плагина (пересобрался `api-iife.js`) → пересборка хоста.
 > Менять/копировать `api-iife.js` в хосте ЗАПРЕЩЕНО.
 
-### 4.5 Стилизация Web Component (САМОЕ ВАЖНОЕ для GUI)
+### 5.5 Стилизация Web Component (САМОЕ ВАЖНОЕ для GUI)
 
 Темизируй компонент через CSS-переменные хоста (`var(--token, fallback)`). Custom properties со
 `:root` хоста проникают сквозь Shadow DOM. **Никогда не хардкодь светлые цвета.** Внешние ссылки —
@@ -302,7 +327,7 @@ export async function saveDialog(): Promise<string | null> {
 
 ---
 
-## 5. Permissions (`permissions/default.toml`)
+## 6. Permissions (`permissions/default.toml`)
 
 ```toml
 "$schema" = "../gen/schemas/acl.json"
@@ -323,17 +348,17 @@ permissions = [ "allow-get-last-logs-path", /* ... */ ]
 
 ---
 
-## 6. Интеграция в хост
+## 7. Интеграция в хост
 
-### 6.1 `src-tauri/Cargo.toml` (путь — именно `../../`)
+### 7.1 `src-tauri/Cargo.toml` (путь — именно `../../`)
 
 ```toml
 [dependencies]
 tauri-plugin-logs = { path = "../../my-tauri-plugins/tauri-plugin-logs" }
 ```
-Плюс зависимости `package.json`/npm НЕ нужны — они только для bundler-хостов (см. §6.5).
+Плюс зависимости `package.json`/npm НЕ нужны — они только для bundler-хостов (см. §7.5).
 
-### 6.2 `src-tauri/src/main.rs` / `lib.rs`
+### 7.2 `src-tauri/src/main.rs` / `lib.rs`
 
 ```rust
 // в цепочке .plugin(...):
@@ -341,7 +366,7 @@ tauri-plugin-logs = { path = "../../my-tauri-plugins/tauri-plugin-logs" }
 // УБРАТЬ из invoke_handler дублирующие команды, которые теперь в плагине.
 ```
 
-### 6.3 `src-tauri/capabilities/default.json`
+### 7.3 `src-tauri/capabilities/default.json`
 
 ```json
 {
@@ -349,7 +374,7 @@ tauri-plugin-logs = { path = "../../my-tauri-plugins/tauri-plugin-logs" }
 }
 ```
 
-### 6.4 `src-tauri/tauri.conf.json`
+### 7.4 `src-tauri/tauri.conf.json`
 
 ```json
 {
@@ -358,7 +383,7 @@ tauri-plugin-logs = { path = "../../my-tauri-plugins/tauri-plugin-logs" }
 }
 ```
 
-### 6.5 Фронтенд — ДВА канала (выбери один для своего хоста)
+### 7.5 Фронтенд — ДВА канала (выбери один для своего хоста)
 
 **A. Хост с npm/бандлером** — npm-канал: `package.json` хоста
 `"@my-tauri-plugins/plugin-logs": "file:../my-tauri-plugins/tauri-plugin-logs"`, затем
@@ -374,7 +399,7 @@ JS плагина вшит в бинарник Тauri и вставлен до �
 
 ---
 
-## 7. Сборка
+## 8. Сборка
 
 - **Плагин** (при правке `guest-js/*`): в папке плагина `npm install` → **`npm run build`**
   (→ `dist-js`) **и `npm run build:global`** (→ `api-iife.js`), коммит обоих артефактов.
@@ -384,7 +409,7 @@ JS плагина вшит в бинарник Тauri и вставлен до �
 
 ---
 
-## 8. Чек-лист создания/переноса плагина
+## 9. Чек-лист создания/переноса плагина
 
 1. Создать папку `tauri-plugin-<name>/` как member workspace `my-tauri-plugins`.
 2. `Cargo.toml`: `links` + `[build-dependencies] tauri-plugin`.
@@ -395,7 +420,7 @@ JS плагина вшит в бинарник Тauri и вставлен до �
 7. `package.json`/`tsconfig.json`: scripts `build` (tsc) + `build:global` (esbuild), devDeps
    `typescript` + `esbuild`.
 8. `guest-js/index.ts` (`plugin:<id>|<cmd>`) + `web-components.ts` (WC, `var(--token)`).
-9. `guest-js/iife-entry.ts` + шимы `@tauri-apps/*` (глобалы `window.__TAURI__.*`) — §4.4, §9.3.
+9. `guest-js/iife-entry.ts` + шимы `@tauri-apps/*` (глобалы `window.__TAURI__.*`) — §5.4, §10.3.
 10. Собрать и закоммитить `dist-js/` И `api-iife.js`.
 11. Хост: path-зависимость `../../`, `.plugin(...)`, capability `<id>:default`, `plugins.<id>`
     в конфиге; фронтенд — тег WC (vanilla) или `import` (npm).
@@ -403,7 +428,7 @@ JS плагина вшит в бинарник Тauri и вставлен до �
 
 ---
 
-## 9. Подводные камни
+## 10. Подводные камни
 
 - **camelCase, НЕ snake**: `fn tts_list_models(models_dir)` ждёт от JS `{ modelsDir }`.
 - **Debug-бинарь грузит `devUrl`, а не `frontendDist`** — standalone только через `tauri build`
@@ -425,7 +450,7 @@ JS плагина вшит в бинарник Тauri и вставлен до �
 
 ---
 
-## 10. Планы (следующие модули)
+## 11. Планы (следующие модули)
 
 `tauri-plugin-llama-engine` (GUI + логика движка llama.cpp) и др. — те же принципы: Rust-крейт +
 Web Component + **два JS-канала** (npm `dist-js` + vanilla `api-iife.js`).

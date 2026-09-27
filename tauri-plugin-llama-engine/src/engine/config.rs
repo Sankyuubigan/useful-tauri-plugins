@@ -180,28 +180,26 @@ pub fn load_config(app: &AppHandle) -> EngineConfig {
 
 /// Сохраняет движковые ключи в `app_config.json` field-preserving-merge:
 /// существующие хостовые ключи (theme, allow_error_reports, …) НЕ затираются.
-pub fn save_config(app: &AppHandle, config: &EngineConfig) {
+pub fn save_config(app: &AppHandle, config: &EngineConfig) -> Result<(), String> {
     let path = get_config_path(app);
-    save_engine_config_file(&path, config);
+    save_engine_config_file(&path, config)
 }
 
 /// Расширяемая для тестов версия сохранения (по явному пути).
-pub fn save_engine_config_file(path: &Path, config: &EngineConfig) {
-    let mut root: serde_json::Value = fs::read_to_string(path)
-        .ok()
-        .and_then(|d| serde_json::from_str(&d).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    let engine_value = serde_json::to_value(config).unwrap_or_else(|_| serde_json::json!({}));
-    if let (serde_json::Value::Object(root_map), serde_json::Value::Object(engine_map)) =
-        (&mut root, engine_value)
-    {
-        for (k, v) in engine_map {
-            root_map.insert(k, v);
+pub fn save_engine_config_file(path: &Path, config: &EngineConfig) -> Result<(), String> {
+    let engine_value = serde_json::to_value(config).map_err(|e| e.to_string())?;
+    ko_json_store::update_json(path, move |root: &mut serde_json::Value| {
+        if !root.is_object() {
+            *root = serde_json::json!({});
         }
-    }
-    if let Ok(data) = serde_json::to_string_pretty(&root) {
-        let _ = fs::write(path, data);
-    }
+        if let (serde_json::Value::Object(root_map), serde_json::Value::Object(engine_map)) =
+            (root, engine_value)
+        {
+            for (k, v) in engine_map {
+                root_map.insert(k, v);
+            }
+        }
+    })
 }
 
 // ─────────────────────────────── Каталог моделей ─────────────────────────────

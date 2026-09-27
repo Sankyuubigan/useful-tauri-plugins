@@ -65,14 +65,12 @@ function launchApp(cfg, exePath, opts = {}) {
     //    %LOCALAPPDATA%\<имя exe>\EBWebView → конфликт при параллельной работе.
     env.WEBVIEW2_USER_DATA_FOLDER = path.join(cfg.projectRoot, 'src-tauri', 'target', 'webview2-dev');
 
-    // 3. APPDATA — изоляция данных (app_config.json, sessions/, плагины).
-    //    По умолчанию включено: тесты dev-сборки не трогают рабочие данные
-    //    релизной копии. Отключается .build-config.json → "isolateDevData": false.
-    if (cfg.isolateDevData !== false) {
-        const devData = path.join(cfg.projectRoot, 'src-tauri', 'target', 'dev-appdata');
-        try { fs.mkdirSync(devData, { recursive: true }); } catch (e) { /* не критично */ }
-        env.APPDATA = devData;
-    }
+    // 3. APPDATA НЕ подменяем: app_data_dir() хоста резолвится через WinAPI
+    //    (SHGetKnownFolderPath) и игнорирует env APPDATA, а плагины читают
+    //    std::env::var_os("APPDATA") — подмена ломала плагины (инцидент
+    //    «Движок изображений не установлен»). Dev и релиз делят один
+    //    %APPDATA%\<app>\ — это осознанно: записи атомарны (ko-json-store).
+    //    Stale target/dev-appdata не удаляем автоматически (мусор в target).
 
     const p = spawn(exePath, [], { cwd: exeDir, detached: true, stdio: 'ignore', env });
     return new Promise((resolve) => {

@@ -1,0 +1,16 @@
+[package]
+name = "ko-json-store"
+version = "0.1.0"
+edition = "2021"
+description = "Atomic JSON writes (tmp->sync->rename) + sidecar-lock update_json for app_data_dir/sessions"
+license = "MIT"
+
+[lib]
+name = "ko_json_store"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+fs2 = { workspace = true }
+log = { workspace = true }

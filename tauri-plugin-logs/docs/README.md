@@ -71,7 +71,7 @@ node cli.cjs init --with-logs --project <корень-проекта>
    ```
    В HTML: `<logs-panel></logs-panel>`, стили — в вашем `style.css`.
 6. **Vanilla-хост (без npm/бандлера)** — официальный стандарт global API script
-   (см. `PLUGIN_STANDARD.md` §4.4): никакого npm/`file:`-депа и бандлера не нужно.
+   (см. `PLUGIN_STANDARD.md` §5.4): никакого npm/`file:`-депа и бандлера не нужно.
    Плагин коммитит `api-iife.js`, `build.rs` регистрирует `.global_api_script_path("./api-iife.js")`,
    Tauri вшивает его в бинарник и вставляет до кода хоста (`withGlobalTauri: true`):
    `<logs-panel></logs-panel>` работает «из коробки», API доступен как `window.__TAURI__.logs`

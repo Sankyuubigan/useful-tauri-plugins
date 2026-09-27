@@ -1,8 +1,11 @@
 //! ImageEngine — генерация/редактирование через ОТДЕЛЬНЫЙ процесс `sd-server.exe`.
 //!
 //! Контракт (проверен по исходникам leejet/stable-diffusion.cpp):
-//! - запуск: `sd-server --diffusion-model … --vae … --llm … [--llm-vision …]
-//!   --listen-ip 127.0.0.1 --listen-port <rand> --offload-to-cpu --diffusion-fa`
+//! - запуск: `sd-server --diffusion-model … --vae … --llm … [--llm_vision …]
+//!   --listen-ip 127.0.0.1 --listen-port <rand> --fa --diffusion-fa --auto-fit on
+//!   --max-vram -1 --model-args qwen_image_2_1_prefix_cache_type=q8_0`
+//!   (БЕЗ `--offload-to-cpu` — он выключает auto-fit и роняет скорость
+//!   деноизинга в разы, см. комментарий у spawn);
 //!   (модель грузится ДО listen — готовность = успешный HTTP-ответ);
 //! - генерация: `POST /sdcpp/v1/img_gen` (нативный async API) → 202 `{id, poll_url}` →
 //!   poll `GET /sdcpp/v1/jobs/{id}` до `completed` → `result.images[0].b64_json`;
@@ -26,7 +29,7 @@ use crate::engine::preflight::{preflight_check, PreflightVerdict};
 use crate::engine::process_util::{
     assign_child_to_kill_job, kill_process_tree, register_engine_pid, unregister_engine_pid,
 };
-use crate::engine::sdcpp_installer;
+use crate::engine::{ref_size, sdcpp_installer};
 
 /// Диапазон портов image-движка (не пересекается с llama 17800..19300).
 const PORT_MIN: u16 = 19400;
@@ -192,35 +195,51 @@ impl ImageEngine {
         }
         cmd.args(["--listen-ip", "127.0.0.1"]);
         cmd.args(["--listen-port", &port.to_string()]);
-        // Память: стейджинг весов из RAM + flash attention diffusion (CUDA быстрее и меньше VRAM).
-        cmd.args(["--offload-to-cpu", "--diffusion-fa", "--auto-fit", "on"]);
+        // Память/скорость. КРИТИЧНО: НЕ передаём `--offload-to-cpu`.
+        // Он подставляет `--params-backend '*=cpu'`, а ЛЮБОЙ явный `--params-backend`
+        // ОТКЛЮЧАЕТ auto-fit (docs/backend.md: "Explicit --params-backend assignments
+        // disable auto-fit"). Без auto-fit все веса (diffusion + text-encoder +
+        // mmproj + VAE) живут в RAM, GPU-копии вытесняются на каждом шаге, и
+        // деноизинг идёт через сегментированное исполнение со стримингом весов
+        // по PCIe — на 4070 Ti SUPER это ~10 сек на шаг вместо ~1.
+        // С auto-fit планировщик сам кладёт diffusion в VRAM (приоритет 1),
+        // а TE/VAE уводит в RAM и освобождает их GPU-копии после своей фазы,
+        // так что diffusion остаётся резидентным на всех шагах.
+        cmd.args([
+            "--fa",
+            "--diffusion-fa",
+            "--auto-fit",
+            "on",
+            // Зарезервировать ~1 ГБ от стартового свободного VRAM (документированная
+            // рекомендация sd.cpp для «модели, которая влезает в карту»): авто-fit
+            // не посчитает TE/VAE резидентными и оставит запас под prefix-кэш.
+            "--max-vram",
+            "-1",
+            // Prefix KV-кэш (текст + vision-токены референсов) в 8 бит: вдвое меньше
+            // VRAM, чем f16 (1.06 ГБ против 2 ГБ на префикс ~4096 токенов), при
+            // сохранении ускорения «посчитать кондиционирование один раз».
+            "--model-args",
+            "qwen_image_2_1_prefix_cache_type=q8_0",
+        ]);
         cmd.current_dir(engine_dir);
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW — без мелькания консоли
         }
+        cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
 
         let mut child = cmd.spawn().map_err(|e| format!("Не удалось запустить sd-server: {}", e))?;
         register_engine_pid(child.id());
         assign_child_to_kill_job(&child);
 
-        // stderr сервера — в лог хоста отдельным потоком (CUDA/ggml-ошибки).
-        if let Some(stderr) = child.stderr.take() {
-            std::thread::spawn(move || {
-                let mut reader = std::io::BufReader::new(stderr);
-                let mut line = String::new();
-                use std::io::BufRead;
-                while reader.read_line(&mut line).is_ok() {
-                    if line.is_empty() {
-                        break;
-                    }
-                    log::info!("[sd-server] {}", line.trim_end());
-                    line.clear();
-                }
-            });
-        }
+        // ОБА потока сервера — в лог хоста. sd.cpp пишет в stdout ВСЮ диагностику
+        // (auto-fit plan, compute buffer / число сегментов, префикс-кэш, время
+        // сэмплирования); stderr содержит только ggml/CUDA. Если слушать лишь
+        // stderr, в логе остаются 4 строки и диагностировать пайплайн нечем.
+        pipe_log(child.stdout.take(), "sd-server");
+        pipe_log(child.stderr.take(), "sd-server");
 
         let client = reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(5))
@@ -400,6 +419,36 @@ fn round32(v: u32) -> u32 {
     ((v + 31) / 32 * 32).max(32)
 }
 
+/// Перелить построчный лог процесса движка в лог хоста (`[sd-server] …`).
+fn pipe_log<R>(stream: Option<R>, tag: &str)
+where
+    R: std::io::Read + Send + 'static,
+{
+    let Some(stream) = stream else { return };
+    let tag = tag.to_string();
+    std::thread::spawn(move || {
+        use std::io::{BufRead, BufReader};
+        let mut reader = BufReader::new(stream);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+            let text = line.trim_end();
+            if text.is_empty() {
+                continue;
+            }
+            if text.contains("[ERROR]") || text.contains("error:") {
+                log::error!("[{}] {}", tag, text);
+            } else {
+                log::info!("[{}] {}", tag, text);
+            }
+        }
+    });
+}
+
 fn base64_decode(s: &str) -> Result<Vec<u8>, String> {
     use base64::Engine;
     // Принимаем и чистый base64, и data-URL.
@@ -433,6 +482,14 @@ where
 }
 
 /// One-shot edit: референсы читаются с диска В ПОРЯДКЕ массива → ref_images[].
+///
+/// Canvas (width/height) подстраивается под пропорции ПЕРВОГО референса
+/// (`<image 1>` — тот, чья композиция должна выжить): та же площадь, что в
+/// пресете каталога, но стороны кратны 32. Официальный ComfyUI-шаблон
+/// Qwen-Image-2.1: «custom_size off: canvas comes from the encode latent
+/// (image_1)» и «Keep it close to the resized image_1 size, or the edit can
+/// shift». Пресет 1024x1024 у портретного референса тянул бы и искажение
+/// композиции, и лишние вычисления.
 pub fn edit_image_files<L>(
     engine_dir: &Path,
     bundle_dir: &Path,
@@ -460,8 +517,30 @@ where
         use base64::Engine;
         refs_b64.push(base64::engine::general_purpose::STANDARD.encode(&buf));
     }
+    let (canvas_w, canvas_h) = ref_paths
+        .first()
+        .and_then(|first| ref_size::dimensions_from_path(Path::new(first)))
+        .map(|dims| ref_size::canvas_for_ref((width, height), dims))
+        .unwrap_or((width, height));
+    if (canvas_w, canvas_h) != (width, height) {
+        log_cb(format!(
+            "ℹ️ Canvas по пропорциям <image 1>: {}x{} → {}x{}.",
+            width, height, canvas_w, canvas_h
+        ));
+    }
     let engine = ImageEngine::new(engine_dir, bundle_dir, entry, variant_pref, log_cb.clone())?;
-    engine.generate(prompt, width, height, steps, cfg_scale, seed, &refs_b64, out_path, cancel_flag, log_cb)
+    engine.generate(
+        prompt,
+        canvas_w,
+        canvas_h,
+        steps,
+        cfg_scale,
+        seed,
+        &refs_b64,
+        out_path,
+        cancel_flag,
+        log_cb,
+    )
 }
 
 #[cfg(test)]

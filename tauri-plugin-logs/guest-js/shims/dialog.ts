@@ -1,5 +1,5 @@
 // Шим '@tauri-apps/plugin-dialog' для vanilla-канала.
-// Диалог плагина вхосте доступен как window.__TAURI__.dialog (см. PLUGIN_STANDARD.md §4.4).
+// Диалог плагина вхосте доступен как window.__TAURI__.dialog (см. PLUGIN_STANDARD.md §5.4).
 // Воспроизводится только save(): единственная используемая функция lогового панели.
 const g = window as unknown as {
   __TAURI__?: { dialog?: { save?: (opts?: unknown) => Promise<string | null> } }

@@ -137,11 +137,6 @@ function loadProjectConfig(projectArg, cwd) {
         syncPackageJsonVersion: cfgRaw.syncPackageJsonVersion === true,
         releaseNotesTemplate: cfgRaw.releaseNotesTemplate || 'Auto release ${product} ${tag}',
 
-        // Изолировать данные dev-сборки (APPDATA) от данных установленной
-        // релизной копии. По умолчанию ВКЛ: иначе тесты dev ломают рабочие
-        // сессии/конфиг. Выключается `"isolateDevData": false`.
-        isolateDevData: cfgRaw.isolateDevData !== false,
-
         latestJsonPath: path.join(projectRoot, 'latest.json'),
     };
 }

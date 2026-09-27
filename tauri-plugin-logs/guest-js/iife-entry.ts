@@ -1,4 +1,4 @@
-// Точка входа vanilla-канала плагина (esbuild -> api-iife.js, см. PLUGIN_STANDARD.md §4.4).
+// Точка входа vanilla-канала плагина (esbuild -> api-iife.js, см. PLUGIN_STANDARD.md §5.4).
 // Не содержит голых импортов '@tauri-apps/*' — они заменены алиасами esbuild на shims/,
 // которые биндятся на window.__TAURI__ (вшит Tauri при withGlobalTauri: true).
 import {

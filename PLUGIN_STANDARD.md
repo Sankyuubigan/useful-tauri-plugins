@@ -165,7 +165,7 @@ fn main() {
 `#[derive(Deserialize)]` паникует на старте хоста:
 `invalid type: null, expected struct Config`. Поэтому **всегда** пишем
 кастомный `Deserialize`, который через `Option::<...>::deserialize`
-трактует `null` как `Default::default()` (см. `tauri-plugin-9router` /
+трактует `null` как `Default::default()` (см. `tauri-plugin-cloud-routers` /
 `tauri-plugin-downloader`). Не добавляйте плагин в хост без этой защиты.
 
 ```rust
@@ -447,6 +447,96 @@ JS плагина вшит в бинарник Тauri и вставлен до �
   `global_api_script_path`, ИЛИ у хоста выключен `withGlobalTauri`.
 - **Порядок iife при связанных плагинах** (напр. logs зависит от dialog): главный скрипт биндится на
   глобал зависимого плагина **в момент вызова**, а не при загрузке → связь по порядку не критична.
+
+---
+
+## 11. Кодировка файлов исходного кода (КРИТИЧНО)
+
+**Все файлы `.rs`, `.ts`, `.json`, `.toml`, `.md` в репозитории `my-tauri-plugins` ОБЯЗАНЫ храниться в UTF-8 без BOM.**
+
+### Почему это критично
+- Rust-компилятор (`rustc`) требует UTF-8. Если файл содержит русский текст в CP1251 с UTF-8 BOM, `rustc` не выдаёт ошибку, а компилирует кракозябры прямо в бинарник.
+- TypeScript-компилятор (`tsc`) также требует UTF-8.
+- Нет никакого механизма, который бы автоматически обнаружил и исправил неправильную кодировку.
+
+### Как предотвратить
+1. **Настройте редактор:** Убедитесь, что ваш редактор (VS Code, Notepad++, etc.) сохраняет файлы в UTF-8 без BOM.
+2. **Проверка перед коммитом:** Запустите проверку на наличие кракозябр перед коммитом:
+   ```powershell
+   # Поиск типичных кракозябр в файлах
+   Get-ChildItem -Path . -Recurse -Include *.rs,*.ts,*.json,*.toml | ForEach-Object {
+     $txt = [System.IO.File]::ReadAllText($_.FullName, [System.Text.Encoding]::UTF8)
+     if ($txt -match 'Р[°±²іґµ¶·ё№є»јЅѕїА-Яа-я]|вЂ|В«|В»') {
+       Write-Host "MOJIBAKE: $($_.FullName)"
+     }
+   }
+   ```
+3. **Автоматическая проверка в build-toolkit:** В `tauri-build-toolkit` добавлен скрипт проверки mojibake, который запускается на шаге `prep` и останавливает сборку при обнаружении кракозябр.
+
+---
+
+## 12. Обработка ошибок и логирование (КРИТИЧНО)
+
+### 12.1 На бэкенде (Rust)
+
+**Каждая Tauri-команда при возврате `Err` ОБЯЗАНА писать в лог:**
+
+```rust
+#[tauri::command]
+pub async fn my_command(app: AppHandle, ...) -> Result<T, String> {
+    match some_operation() {
+        Ok(result) => {
+            log::info!("my_command: успешно");
+            Ok(result)
+        }
+        Err(e) => {
+            log::error!("my_command: ошибка: {}", e);
+            Err(format!("Ошибка: {}", e))
+        }
+    }
+}
+```
+
+### 12.2 На фронтенде (TypeScript)
+
+**Любой `catch (e)` в Web Component ОБЯЗАН:**
+1. Показывать пользователю тост: `toast(msg, 'error')`
+2. Логировать ошибку в системный лог: `logPlugin(msg)`
+
+```ts
+try {
+  await someOperation()
+} catch (e) {
+  const msg = `Ошибка операции: ${String(e)}`
+  logPlugin(`[my-plugin] ${msg}`)
+  toast(msg, 'error')
+}
+```
+
+### 12.3 Автономные функции в Web Component
+
+**Каждый Web Component плагина ДОЛЖЕН содержать автономные функции `toast` и `logPlugin` без импорта из хост-приложения:**
+
+```ts
+function toast(msg: string, kind: 'success' | 'error' = 'success'): void {
+  const el = document.createElement('div')
+  el.textContent = msg
+  el.style.cssText =
+    `position:fixed; right:16px; bottom:16px; z-index:5000; max-width:420px; padding:10px 14px;` +
+    `border-radius:8px; font:13px var(--font, system-ui, sans-serif); box-shadow:0 3px 14px rgba(0,0,0,.4);` +
+    `background:${kind === 'success' ? 'var(--primary, #4a90d9)' : 'var(--danger, #b54242)'}; color:#fff;`
+  document.body.appendChild(el)
+  setTimeout(() => el.remove(), 3500)
+}
+
+function logPlugin(msg: string): void {
+  void invoke('plugin:logs|log_frontend_event', { level: 'FE', msg }).catch(() => {})
+}
+```
+
+### 12.4 Почему нельзя использовать `console.error`
+
+`console.error` пишет **только в консоль Chromium DevTools (F12)**, которая закрыта у пользователя в релизе. В UI-вкладку «Логи» и файл `king_orch.log` сообщение не отправляется, и красная плашка-тост пользователю не показывается. Для юзера это выглядит как «нажал, ничего не произошло и тишина».
 
 ---
 

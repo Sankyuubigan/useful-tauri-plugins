@@ -35,6 +35,37 @@ function runNpmInstall(cfg) {
     sh(cfg, 'npm', args, { echo: true });
 }
 
+// Автосборка локальных file: плагинов перед сборкой хоста.
+// Плагины подключены через "file:../my-tauri-plugins/..." — npm копирует их
+// в node_modules при install, но НЕ компилирует guest-js → dist-js.
+// Без этого шага хост подтягивает старый скомпилированный dist-js.
+function buildLocalPlugins(cfg) {
+    const pkgPath = path.join(cfg.projectRoot, 'package.json');
+    if (!fs.existsSync(pkgPath)) return;
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+    const fileDeps = Object.entries(allDeps)
+        .filter(([, v]) => typeof v === 'string' && v.startsWith('file:'))
+        .map(([name, v]) => ({ name, dir: path.resolve(cfg.projectRoot, v.slice(5)) }));
+
+    for (const { name, dir } of fileDeps) {
+        const pluginPkgPath = path.join(dir, 'package.json');
+        if (!fs.existsSync(pluginPkgPath)) continue;
+        const pluginPkg = JSON.parse(fs.readFileSync(pluginPkgPath, 'utf8'));
+        const scripts = pluginPkg.scripts || {};
+        if (!scripts.build && !scripts['build:global']) continue;
+
+        console.log(`\n[plugins] Building local plugin: ${name} (${dir})`);
+        if (scripts.build) {
+            sh(cfg, 'npm', ['run', 'build'], { cwd: dir, echo: true });
+        }
+        if (scripts['build:global']) {
+            sh(cfg, 'npm', ['run', 'build:global'], { cwd: dir, echo: true });
+        }
+        console.log(`[plugins] Plugin ${name} built.`);
+    }
+}
+
 // Dev-оверрайд записывается ОТДЕЛЬНЫМ файлом и подмешивается через
 // `npx tauri build --config <override>` — коммиченный tauri.conf.json не
 // трогается (как в эталоне). bundle отключается только для dev; окно —
@@ -82,6 +113,7 @@ function prep(cfg) {
     const newVersion = bumpVersion(cfg.projectRoot, { syncPackageJson: cfg.syncPackageJsonVersion });
     console.log(`Version: ${oldVersion} -> ${newVersion}`);
     syncConfiguredResources(cfg);
+    buildLocalPlugins(cfg);
     runNpmInstall(cfg);
     return ensureIcons(cfg);
 }
@@ -125,6 +157,7 @@ module.exports = {
     run,
     prep,
     buildDevOverride,
+    buildLocalPlugins,
     ensureBundleActive,
     checkExeFresh,
     getExePath,

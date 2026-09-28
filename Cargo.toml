@@ -5,7 +5,7 @@ members = [
     "tauri-plugin-speech",
     "tauri-plugin-logs",
     "tauri-plugin-llama-engine",
-    "tauri-plugin-9router",
+    "tauri-plugin-cloud-routers",
     "tauri-plugin-downloader",
     "tauri-plugin-image-engine",
     "ko-json-store",

@@ -70,6 +70,18 @@
     const parts = p.split(/[/\\]/);
     return parts[parts.length - 1] || p;
   }
+  function fileStem(p) {
+    return fileName(p).replace(/\.gguf$/i, "").toLowerCase();
+  }
+  function catalogFileStem(url) {
+    const raw = url.split("?")[0];
+    let name = raw.split("/").pop() || "";
+    try {
+      name = decodeURIComponent(name);
+    } catch {
+    }
+    return name.replace(/\.gguf$/i, "").toLowerCase();
+  }
   function formatBytes(n) {
     if (!isFinite(n) || n <= 0) return "0 B";
     const units = ["B", "KB", "MB", "GB"];
@@ -597,6 +609,7 @@
       this.pendingAction = null;
       this.pendingPath = "";
       this.capMap = {};
+      this.catalog = null;
       this.onChangedBound = () => {
         void this.refresh();
       };
@@ -639,6 +652,14 @@
     disconnectedCallback() {
       document.removeEventListener("llama:models-changed", this.onChangedBound);
     }
+    isCatalogModel(path) {
+      if (!this.catalog) return true;
+      const stem = fileStem(path);
+      return this.catalog.some((entry) => {
+        const stems = [entry.download_url, entry.mmproj_url].filter((url) => !!url);
+        return stems.some((url) => catalogFileStem(url) === stem);
+      });
+    }
     async refresh() {
       let cfg;
       try {
@@ -650,6 +671,11 @@
         this.capMap = await getAllCapabilities();
       } catch {
         this.capMap = {};
+      }
+      try {
+        this.catalog = await getModelsCatalog();
+      } catch {
+        this.catalog = null;
       }
       const list = this.root.getElementById("list");
       list.innerHTML = "";
@@ -669,6 +695,9 @@
         const name = document.createElement("div");
         name.style.cssText = "font-weight:600; color:var(--text,#eee); word-break:break-all;";
         name.textContent = (cfg.last_model === m ? "\u25CF " : "") + fileName(m);
+        if (!this.isCatalogModel(m)) {
+          name.appendChild(span("\u0421\u0442\u043E\u0440\u043E\u043D\u043D\u044F\u044F \u043C\u043E\u0434\u0435\u043B\u044C", "\u0424\u0430\u0439\u043B \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D \u0432 \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u0435 \u043C\u043E\u0434\u0435\u043B\u0435\u0439"));
+        }
         const meta = this.capMap[m];
         if (meta) {
           if (meta.uncen) {

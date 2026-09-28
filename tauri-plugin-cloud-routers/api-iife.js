@@ -22,6 +22,24 @@
     return event.listen(name, (e) => cb(e));
   }
 
+  // guest-js/updates.ts
+  var state = { hasUpdate: false };
+  var subs = /* @__PURE__ */ new Set();
+  function getUpdateState() {
+    return state;
+  }
+  function onUpdateState(fn) {
+    subs.add(fn);
+    fn(state);
+    return () => {
+      subs.delete(fn);
+    };
+  }
+  function setUpdateState(next) {
+    state = next;
+    subs.forEach((fn) => fn(state));
+  }
+
   // guest-js/shims/dialog.ts
   var g3 = window;
   async function open(opts) {
@@ -54,6 +72,8 @@
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-muted, #777); flex: 0 0 auto; }
   .dot.on { background: var(--success, #3fa45b); }
   .dot.warn { background: var(--warning, #d8a13a); }
+  .update-badge { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                  background: #4caf50; margin-left: 6px; box-shadow: 0 0 6px #4caf50; }
   .muted { color: var(--text-muted, #999); font-size: 12px; }
   .path { color: var(--text-muted, #999); font-size: 12px; word-break: break-all; }
   .progress-container { display: none; margin-top: 10px; }
@@ -99,6 +119,7 @@
     }
     connectedCallback() {
       this.render();
+      this.unsubUpdate = onUpdateState((s) => this.renderUpdateState(s));
       void this.refresh();
       onProgress((p) => {
         if (p.router === this.router) this.onProgress(p.text, p.done, p.total);
@@ -109,6 +130,7 @@
       this.refreshTimer = window.setInterval(() => void this.refresh(), 15e3);
     }
     disconnectedCallback() {
+      this.unsubUpdate?.();
       this.offProgress?.();
       this.offProgress = null;
       this.visibilityObserver?.disconnect();
@@ -299,6 +321,7 @@
     }
     async onInstallUpdate() {
       await this.onInstall();
+      setUpdateState({ hasUpdate: false });
       const updateBtn = this.root.querySelector(".install-update");
       if (updateBtn) updateBtn.style.display = "none";
     }
@@ -327,6 +350,7 @@
       <div class="status">
         <span class="${dotClass}"></span>
         <span>${message}</span>
+        <span id="updateBadge" class="update-badge" style="display:none;"></span>
       </div>
       <div class="row muted">
         <span>${this.router}: ${version}</span>
@@ -372,6 +396,17 @@
       this.root.querySelector(".refresh")?.addEventListener("click", () => void this.onShowCombos());
       this.root.querySelector(".open")?.addEventListener("click", () => void this.onOpen());
       this.root.querySelector(".setdir")?.addEventListener("click", () => void this.onSetDir());
+      this.renderUpdateState(getUpdateState());
+    }
+    renderUpdateState(s) {
+      const badge = this.root.querySelector("#updateBadge");
+      const updateBtn = this.root.querySelector(".install-update");
+      if (s.hasUpdate) {
+        if (badge) badge.style.display = "inline-block";
+        if (updateBtn) updateBtn.style.display = "inline-block";
+      } else if (badge) {
+        badge.style.display = "none";
+      }
     }
   };
   if (!customElements.get("cloud-routers-panel")) {

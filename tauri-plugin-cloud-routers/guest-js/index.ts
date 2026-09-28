@@ -158,3 +158,12 @@ export function onChunk(cb: (c: ChunkPayload) => void): Promise<() => void> {
 
 // Side-effect: импорт пакета регистрирует Web Component <cloud-routers-panel>.
 import './web-components'
+
+export {
+  getUpdateState,
+  onUpdateState,
+  setUpdateState,
+  checkUpdate,
+  initUpdateWatcher,
+} from './updates'
+export type { PluginUpdateState } from './updates'

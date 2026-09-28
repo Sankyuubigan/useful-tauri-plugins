@@ -46,19 +46,41 @@
 
 pub mod commands;
 pub mod engine;
+pub mod generate;
 
 use serde::Deserialize;
 use tauri::plugin::{Builder, TauriPlugin};
 use tauri::{RunEvent, Wry};
 
 /// Конфиг плагина (`plugins.llama-engine` в `tauri.conf.json` хоста).
-#[derive(Deserialize, Clone, Default)]
-#[serde(default)]
+///
+/// Устойчив к отсутствию секции: если ключа `llama-engine` в `plugins` нет,
+/// Tauri передаёт `null`, и наивная десериализация в структуру паникует на
+/// старте хоста ("invalid type: null, expected struct Config"). Здесь `null`
+/// трактуется как конфиг по умолчанию (как у tauri-plugin-cloud-routers).
+#[derive(Clone, Default)]
 pub struct Config {
     /// Имя папки app-data (например `com.kingorch.app`); применяется до первой
     /// блокировки файла конфига. Пусто — остаётся значение хоста из
     /// `set_app_data_dir_name` (или fallback `com.kingorch.app`).
     pub data_dir_name: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ConfigInner {
+    data_dir_name: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for Config {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(Option::<ConfigInner>::deserialize(deserializer)?
+            .map(|c| Config { data_dir_name: c.data_dir_name })
+            .unwrap_or_default())
+    }
 }
 
 /// Инициализация плагина: `.plugin(tauri_plugin_llama_engine::init())`.
@@ -105,6 +127,7 @@ pub fn init() -> TauriPlugin<Wry, Config> {
             commands::set_model_params,
             commands::reset_model_params,
             engine::downloader::download_model,
+            generate::generate_text,
         ])
         .build()
 }

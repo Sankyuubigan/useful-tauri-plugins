@@ -102,6 +102,7 @@ permissions = [
   "allow-validate-image-bundle-dir",
   "allow-set-image-bundle-dir",
   "allow-remove-image-bundle",
+  "allow-remove-image-bundle-from-list",
   "allow-estimate-image-memory",
   "allow-generate-image",
   "allow-edit-image",

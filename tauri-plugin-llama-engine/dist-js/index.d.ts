@@ -79,6 +79,16 @@ export interface ModelCapabilities {
     audio: boolean;
     uncen: boolean;
 }
+export interface LlmMessage {
+    role: string;
+    content: string;
+}
+export interface GenerateTextRequest {
+    modelPath?: string | null;
+    messages: LlmMessage[];
+    maxTokens?: number;
+    temperature?: number;
+}
 export interface AutoDownloadInfo {
     model_name: string;
     model_url: string;
@@ -126,4 +136,11 @@ export declare function estimatePromptMemory(modelPath: string, contextSize: num
 export declare function getModelParams(modelPath: string): Promise<ModelParams>;
 export declare function setModelParams(modelPath: string, params: ModelParams): Promise<void>;
 export declare function resetModelParams(modelPath: string): Promise<ModelParams>;
+/**
+ * Одноразовая генерация текста через движок llama.cpp (без чата).
+ * modelPath — путь к GGUF; если не указан, берётся last_model из конфига.
+ */
+export declare function generateText(req: GenerateTextRequest): Promise<string>;
 import './web-components';
+export { getUpdateState, onUpdateState, setUpdateState, checkUpdate, initUpdateWatcher, } from './updates';
+export type { PluginUpdateState } from './updates';

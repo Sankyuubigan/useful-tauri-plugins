@@ -92,6 +92,18 @@ export interface ModelCapabilities {
   uncen: boolean
 }
 
+export interface LlmMessage {
+  role: string
+  content: string
+}
+
+export interface GenerateTextRequest {
+  modelPath?: string | null
+  messages: LlmMessage[]
+  maxTokens?: number
+  temperature?: number
+}
+
 export interface AutoDownloadInfo {
   model_name: string
   model_url: string
@@ -240,5 +252,31 @@ export function resetModelParams(modelPath: string): Promise<ModelParams> {
   return invoke<ModelParams>('plugin:llama-engine|reset_model_params', { modelPath })
 }
 
+// ─────────────────────── Разовая текстовая генерация ───────────────────────
+
+/**
+ * Одноразовая генерация текста через движок llama.cpp (без чата).
+ * modelPath — путь к GGUF; если не указан, берётся last_model из конфига.
+ */
+export function generateText(req: GenerateTextRequest): Promise<string> {
+  return invoke<string>('plugin:llama-engine|generate_text', {
+    req: {
+      modelPath: req.modelPath ?? null,
+      messages: req.messages,
+      maxTokens: req.maxTokens,
+      temperature: req.temperature,
+    },
+  })
+}
+
 // Регистрируем Web Components при импорте пакета.
 import './web-components'
+
+export {
+  getUpdateState,
+  onUpdateState,
+  setUpdateState,
+  checkUpdate,
+  initUpdateWatcher,
+} from './updates'
+export type { PluginUpdateState } from './updates'

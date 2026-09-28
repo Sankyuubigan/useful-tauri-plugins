@@ -367,6 +367,17 @@ pub fn remove_image_bundle(app: AppHandle) -> Result<ImageBundleInfo, String> {
                 .map_err(|e| format!("Не удалось удалить {}: {}", p.display(), e))?;
         }
     }
+    let mut cfg = engine::load_image_config(&app);
+    cfg.image_bundle_dir = None;
+    engine::save_image_config(&app, &cfg)?;
+    Ok(get_image_bundle_info(app)?)
+}
+
+#[tauri::command]
+pub fn remove_image_bundle_from_list(app: AppHandle) -> Result<ImageBundleInfo, String> {
+    let mut cfg = engine::load_image_config(&app);
+    cfg.image_bundle_dir = None;
+    engine::save_image_config(&app, &cfg)?;
     Ok(get_image_bundle_info(app)?)
 }
 

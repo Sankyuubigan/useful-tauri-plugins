@@ -14,6 +14,24 @@
     return coreInvoke(cmd, args ?? {});
   }
 
+  // guest-js/updates.ts
+  var state = { hasUpdate: false };
+  var subs = /* @__PURE__ */ new Set();
+  function getUpdateState() {
+    return state;
+  }
+  function onUpdateState(fn) {
+    subs.add(fn);
+    fn(state);
+    return () => {
+      subs.delete(fn);
+    };
+  }
+  function setUpdateState(next) {
+    state = next;
+    subs.forEach((fn) => fn(state));
+  }
+
   // guest-js/shims/dialog.ts
   var g2 = window;
   async function open(opts) {
@@ -54,6 +72,8 @@
   .progress-bar { height: 100%; width: 0%; background: var(--primary, #4a90d9); transition: width .1s linear; }
   .bar-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
   .badge { font-size: 12px; vertical-align: middle; cursor: help; }
+  .update-badge { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                  background: #4caf50; margin-left: 6px; box-shadow: 0 0 6px #4caf50; }
   .hint { color: var(--text-muted, #999); font-size: 12px; white-space: pre-line; }
   .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; align-items: center;
              justify-content: center; z-index: 2000; }
@@ -112,7 +132,7 @@
       this.root.innerHTML = `
       <style>${STYLE}</style>
       <div>
-        <div class="row"><label>\u0421\u0442\u0430\u0442\u0443\u0441:</label><span id="status" class="hint">\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430\u2026</span></div>
+        <div class="row"><label>\u0421\u0442\u0430\u0442\u0443\u0441:</label><span id="status" class="hint">\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430\u2026</span><span id="updateBadge" class="update-badge" style="display:none;"></span></div>
         <div class="row"><label>GPU:</label><span id="gpu" class="hint"></span></div>
         <div class="row"><label>\u041F\u0443\u0442\u044C:</label><span id="path" class="hint" style="word-break:break-all; flex:1;"></span></div>
         <div class="row" style="margin-top:8px;">
@@ -168,6 +188,7 @@
         void this.onRemove();
       });
       this.root.getElementById("setDir").addEventListener("click", () => this.onSetDir());
+      this.unsubUpdate = onUpdateState((s) => this.renderUpdateState(s));
       void this.refresh();
       void listen("downloader:progress", (e) => {
         const p = e.payload;
@@ -188,6 +209,7 @@
       });
     }
     disconnectedCallback() {
+      this.unsubUpdate?.();
       this.unlisten?.();
     }
     setStatus(s) {
@@ -268,6 +290,17 @@
       this.root.getElementById("apply").style.display = sel.value === prev ? "none" : sel.value === this.applied ? "none" : "inline-block";
       this.applyButtonStates(st);
       void prevSource;
+      this.renderUpdateState(getUpdateState());
+    }
+    renderUpdateState(s) {
+      const badge = this.root.getElementById("updateBadge");
+      if (s.hasUpdate) {
+        this.setStatus(`\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0434\u0432\u0438\u0436\u043A\u0430: ${s.tag ?? ""}`);
+        this.root.getElementById("installUpdate").style.display = "inline-block";
+        if (badge) badge.style.display = "inline-block";
+      } else if (badge) {
+        badge.style.display = "none";
+      }
     }
     async onSourceChange() {
       const sel = this.root.getElementById("source");
@@ -401,7 +434,7 @@
       this.root.getElementById("progressStatus").textContent = "\u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435\u2026";
       try {
         await installEngineUpdate();
-        this.root.getElementById("installUpdate").style.display = "none";
+        setUpdateState({ hasUpdate: false });
         await this.refresh();
         toast("\u0414\u0432\u0438\u0436\u043E\u043A llamacpp \u043E\u0431\u043D\u043E\u0432\u043B\u0451\u043D.", "success");
       } catch (e) {
@@ -897,6 +930,16 @@
   function resetModelParams(modelPath) {
     return invoke("plugin:llama-engine|reset_model_params", { modelPath });
   }
+  function generateText(req) {
+    return invoke("plugin:llama-engine|generate_text", {
+      req: {
+        modelPath: req.modelPath ?? null,
+        messages: req.messages,
+        maxTokens: req.maxTokens,
+        temperature: req.temperature
+      }
+    });
+  }
 
   // guest-js/iife-entry.ts
   var g4 = window;
@@ -929,7 +972,8 @@
           resetModelParams,
           setEngineDir,
           setEngineVariant,
-          setModelParams
+          setModelParams,
+          generateText
         }
       });
     }

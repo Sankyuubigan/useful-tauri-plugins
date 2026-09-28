@@ -133,6 +133,13 @@ identifier = "allow-download-model"
 description = "Allow downloading a file (used internally for models/mmproj)."
 commands.allow = ["download_model"]
 
+# ── Разовая текстовая генерация ──
+
+[[permission]]
+identifier = "allow-generate-text"
+description = "Allow one-shot text generation via the llama.cpp engine (commit messages, summaries)."
+commands.allow = ["generate_text"]
+
 [default]
 description = "Default permissions for the llama-engine plugin."
 permissions = [
@@ -161,4 +168,5 @@ permissions = [
   "allow-set-model-params",
   "allow-reset-model-params",
   "allow-download-model",
+  "allow-generate-text",
 ]

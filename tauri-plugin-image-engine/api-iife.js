@@ -14,6 +14,24 @@
     return coreInvoke(cmd, args ?? {});
   }
 
+  // guest-js/updates.ts
+  var state = { hasUpdate: false };
+  var subs = /* @__PURE__ */ new Set();
+  function getUpdateState() {
+    return state;
+  }
+  function onUpdateState(fn) {
+    subs.add(fn);
+    fn(state);
+    return () => {
+      subs.delete(fn);
+    };
+  }
+  function setUpdateState(next) {
+    state = next;
+    subs.forEach((fn) => fn(state));
+  }
+
   // guest-js/shims/dialog.ts
   var g2 = window;
   async function open(opts) {
@@ -55,6 +73,8 @@
   .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; align-items: center;
              justify-content: center; z-index: 2000; }
   .overlay.open { display: flex; }
+  .update-badge { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                  background: #4caf50; margin-left: 6px; box-shadow: 0 0 6px #4caf50; }
   .box { background: var(--bg-elevated, #1c1c1c); border: 1px solid var(--border, #333); border-radius: 12px;
          padding: 20px; max-width: 520px; width: 90%; }
   .box h3 { margin: 0 0 12px; font-size: 16px; }
@@ -93,7 +113,7 @@
       this.root.innerHTML = `
       <style>${STYLE}</style>
       <div>
-        <div class="row"><label>\u0421\u0442\u0430\u0442\u0443\u0441:</label><span id="status" class="hint">\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430\u2026</span></div>
+        <div class="row"><label>\u0421\u0442\u0430\u0442\u0443\u0441:</label><span id="status" class="hint">\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430\u2026</span><span id="updateBadge" class="update-badge" style="display:none;"></span></div>
         <div class="row"><label>GPU:</label><span id="gpu" class="hint"></span></div>
         <div class="row"><label>\u041F\u0443\u0442\u044C:</label><span id="path" class="hint" style="word-break:break-all; flex:1;"></span></div>
         <div class="row" style="margin-top:8px;">
@@ -140,6 +160,7 @@
         void this.onRemove();
       });
       this.root.getElementById("setDir").addEventListener("click", () => this.onSetDir());
+      this.unsubUpdate = onUpdateState((s) => this.renderUpdateState(s));
       void this.refresh();
       void listen("downloader:progress", (e) => {
         const p = e.payload;
@@ -154,6 +175,7 @@
       });
     }
     disconnectedCallback() {
+      this.unsubUpdate?.();
       this.unlisten?.();
     }
     setStatus(s) {
@@ -211,6 +233,17 @@
       this.root.getElementById("variantHint").textContent = this.hintText(st, sel.value);
       this.root.getElementById("apply").style.display = sel.value === this.applied ? "none" : "inline-block";
       this.applyButtonStates(st);
+      this.renderUpdateState(getUpdateState());
+    }
+    renderUpdateState(s) {
+      const badge = this.root.getElementById("updateBadge");
+      if (s.hasUpdate) {
+        this.setStatus(`\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0434\u0432\u0438\u0436\u043A\u0430: ${s.tag ?? ""}`);
+        this.root.getElementById("installUpdate").style.display = "inline-block";
+        if (badge) badge.style.display = "inline-block";
+      } else if (badge) {
+        badge.style.display = "none";
+      }
     }
     applyButtonStates(st) {
       const installed = st.installed;
@@ -299,7 +332,7 @@
       this.root.getElementById("progressStatus").textContent = "\u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435\u2026";
       try {
         await installImageEngineUpdate();
-        this.root.getElementById("installUpdate").style.display = "none";
+        setUpdateState({ hasUpdate: false });
         await this.refresh();
         toast("\u0414\u0432\u0438\u0436\u043E\u043A \u0438\u0437\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u0439 \u043E\u0431\u043D\u043E\u0432\u043B\u0451\u043D.", "success");
       } catch (e) {
@@ -481,6 +514,7 @@
     constructor() {
       super(...arguments);
       this.busy = false;
+      this.pendingAction = null;
       this.onChangedBound = () => {
         void this.refresh();
       };
@@ -497,14 +531,30 @@
         <div class="row" style="margin-top:10px;">
           <button id="add" class="secondary">+ \u0414\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u043D\u0430\u0431\u043E\u0440</button>
           <button id="resume" class="primary" style="display:none;">\u0414\u043E\u043A\u0430\u0447\u0430\u0442\u044C \u0444\u0430\u0439\u043B\u044B</button>
+          <button id="removeFromList" class="secondary" style="display:none;">\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0438\u0437 \u0441\u043F\u0438\u0441\u043A\u0430</button>
+          <button id="deleteFiles" class="danger" style="display:none;">\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0444\u0430\u0439\u043B\u044B</button>
         </div>
         <div id="progress" class="progress-container">
           <div class="progress-status" id="progressStatus">0 MB / 0 MB</div>
           <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
         </div>
+      </div>
+      <div id="overlay" class="overlay">
+        <div class="box">
+          <h3 id="overlayTitle">\u0423\u0434\u0430\u043B\u0438\u0442\u044C</h3>
+          <p id="overlayMsg"></p>
+          <div class="overlay-buttons">
+            <button id="modalCancel" class="secondary">\u041E\u0442\u043C\u0435\u043D\u0430</button>
+            <button id="modalOk" class="danger">\u0423\u0434\u0430\u043B\u0438\u0442\u044C</button>
+          </div>
+        </div>
       </div>`;
       this.root.getElementById("add").addEventListener("click", () => this.onAdd());
       this.root.getElementById("resume").addEventListener("click", () => this.onResume());
+      this.root.getElementById("removeFromList").addEventListener("click", () => this.confirm("remove"));
+      this.root.getElementById("deleteFiles").addEventListener("click", () => this.confirm("delete"));
+      this.root.getElementById("modalCancel").addEventListener("click", () => this.cancel());
+      this.root.getElementById("modalOk").addEventListener("click", () => void this.doAction());
       document.addEventListener("image:bundle-changed", this.onChangedBound);
       void this.refresh();
       void listen("downloader:progress", (e) => {
@@ -560,6 +610,57 @@
       const resumeBtn = this.root.getElementById("resume");
       if (resumeBtn) {
         resumeBtn.style.display = info.fully_downloaded ? "none" : "inline-block";
+      }
+      const removeBtn = this.root.getElementById("removeFromList");
+      if (removeBtn) {
+        removeBtn.style.display = info.save_dir ? "inline-block" : "none";
+      }
+      const deleteBtn = this.root.getElementById("deleteFiles");
+      if (deleteBtn) {
+        deleteBtn.style.display = info.save_dir ? "inline-block" : "none";
+      }
+    }
+    confirm(action) {
+      this.pendingAction = action;
+      const title = this.root.getElementById("overlayTitle");
+      const msg = this.root.getElementById("overlayMsg");
+      const ok = this.root.getElementById("modalOk");
+      if (action === "remove") {
+        title.textContent = "\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u043D\u0430\u0431\u043E\u0440 \u0438\u0437 \u0441\u043F\u0438\u0441\u043A\u0430?";
+        msg.textContent = "\u0424\u0430\u0439\u043B\u044B \u043D\u0430 \u0434\u0438\u0441\u043A\u0435 \u043D\u0435 \u0431\u0443\u0434\u0443\u0442 \u0443\u0434\u0430\u043B\u0435\u043D\u044B.";
+        ok.className = "secondary";
+        ok.textContent = "\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0438\u0437 \u0441\u043F\u0438\u0441\u043A\u0430";
+      } else {
+        title.textContent = "\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0444\u0430\u0439\u043B\u044B \u043D\u0430\u0431\u043E\u0440\u0430?";
+        msg.textContent = "\u0424\u0430\u0439\u043B\u044B \u0441 \u0434\u0438\u0441\u043A\u0430 \u0431\u0443\u0434\u0443\u0442 \u0443\u0434\u0430\u043B\u0435\u043D\u044B \u0411\u0415\u0417\u0412\u041E\u0417\u0412\u0420\u0410\u0422\u041D\u041E. \u0417\u0430\u043F\u0438\u0441\u044C \u0442\u043E\u0436\u0435 \u0438\u0441\u0447\u0435\u0437\u043D\u0435\u0442 \u0438\u0437 \u0441\u043F\u0438\u0441\u043A\u0430.";
+        ok.className = "danger";
+        ok.textContent = "\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0444\u0430\u0439\u043B\u044B";
+      }
+      this.root.getElementById("overlay").classList.add("open");
+    }
+    cancel() {
+      this.pendingAction = null;
+      this.root.getElementById("overlay").classList.remove("open");
+    }
+    async doAction() {
+      if (this.busy || !this.pendingAction) return;
+      this.busy = true;
+      const action = this.pendingAction;
+      this.cancel();
+      try {
+        if (action === "remove") {
+          await removeImageBundleFromList();
+          toast("\u041D\u0430\u0431\u043E\u0440 \u0443\u0434\u0430\u043B\u0451\u043D \u0438\u0437 \u0441\u043F\u0438\u0441\u043A\u0430.");
+        } else {
+          await removeImageBundle();
+          toast("\u0424\u0430\u0439\u043B\u044B \u043D\u0430\u0431\u043E\u0440\u0430 \u0443\u0434\u0430\u043B\u0435\u043D\u044B.");
+        }
+        notifyBundleChanged();
+        await this.refresh();
+      } catch (e) {
+        toast(`\u041E\u0448\u0438\u0431\u043A\u0430: ${e}`, "error");
+      } finally {
+        this.busy = false;
       }
     }
     async onResume() {
@@ -670,6 +771,9 @@
   function removeImageBundle() {
     return invoke("plugin:image-engine|remove_image_bundle");
   }
+  function removeImageBundleFromList() {
+    return invoke("plugin:image-engine|remove_image_bundle_from_list");
+  }
   function estimateImageMemory() {
     return invoke("plugin:image-engine|estimate_image_memory");
   }
@@ -717,6 +821,7 @@
           installImageEngineUpdate,
           notifyBundleChanged,
           removeImageBundle,
+          removeImageBundleFromList,
           removeImageEngine,
           setImageBundleDir,
           setImageEngineDir,

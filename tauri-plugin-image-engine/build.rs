@@ -14,6 +14,7 @@ const COMMANDS: &[&str] = &[
     "set_image_bundle_dir",
     "download_image_bundle",
     "remove_image_bundle",
+    "remove_image_bundle_from_list",
     "estimate_image_memory",
     // ── Генерация ──
     "generate_image",

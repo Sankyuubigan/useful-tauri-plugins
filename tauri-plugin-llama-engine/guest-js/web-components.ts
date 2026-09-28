@@ -21,6 +21,7 @@ import {
   type EngineConfig,
   type EngineStatus,
 } from './index'
+import { getUpdateState, onUpdateState, setUpdateState } from './updates'
 import { open as openDialog, save } from '@tauri-apps/plugin-dialog'
 import { listen } from '@tauri-apps/api/event'
 
@@ -42,6 +43,8 @@ const STYLE = `
   .progress-bar { height: 100%; width: 0%; background: var(--primary, #4a90d9); transition: width .1s linear; }
   .bar-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
   .badge { font-size: 12px; vertical-align: middle; cursor: help; }
+  .update-badge { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                  background: #4caf50; margin-left: 6px; box-shadow: 0 0 6px #4caf50; }
   .hint { color: var(--text-muted, #999); font-size: 12px; white-space: pre-line; }
   .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; align-items: center;
              justify-content: center; z-index: 2000; }
@@ -105,6 +108,7 @@ class LlamaEnginePanel extends HTMLElement {
   private applied = 'auto'
   private appliedSource = 'ggml-org'
   private unlisten?: () => void
+  private unsubUpdate?: () => void
 
   connectedCallback() {
     if (this.root) return
@@ -112,7 +116,7 @@ class LlamaEnginePanel extends HTMLElement {
     this.root.innerHTML = `
       <style>${STYLE}</style>
       <div>
-        <div class="row"><label>Статус:</label><span id="status" class="hint">Проверка…</span></div>
+        <div class="row"><label>Статус:</label><span id="status" class="hint">Проверка…</span><span id="updateBadge" class="update-badge" style="display:none;"></span></div>
         <div class="row"><label>GPU:</label><span id="gpu" class="hint"></span></div>
         <div class="row"><label>Путь:</label><span id="path" class="hint" style="word-break:break-all; flex:1;"></span></div>
         <div class="row" style="margin-top:8px;">
@@ -170,6 +174,7 @@ class LlamaEnginePanel extends HTMLElement {
     })
     this.root.getElementById('setDir')!.addEventListener('click', () => this.onSetDir())
 
+    this.unsubUpdate = onUpdateState((s) => this.renderUpdateState(s))
     void this.refresh()
     // Единый прогресс-событие tauri-plugin-downloader (kind: engine/model/mmproj).
     void listen('downloader:progress', (e) => {
@@ -188,6 +193,7 @@ class LlamaEnginePanel extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this.unsubUpdate?.()
     this.unlisten?.()
   }
 
@@ -279,6 +285,18 @@ class LlamaEnginePanel extends HTMLElement {
     this.root.getElementById('apply')!.style.display = sel.value === prev ? 'none' : sel.value === this.applied ? 'none' : 'inline-block'
     this.applyButtonStates(st)
     void prevSource
+    this.renderUpdateState(getUpdateState())
+  }
+
+  private renderUpdateState(s: { hasUpdate: boolean; tag?: string }) {
+    const badge = this.root.getElementById('updateBadge') as HTMLElement | null
+    if (s.hasUpdate) {
+      this.setStatus(`Доступно обновление движка: ${s.tag ?? ''}`)
+      this.root.getElementById('installUpdate')!.style.display = 'inline-block'
+      if (badge) badge.style.display = 'inline-block'
+    } else if (badge) {
+      badge.style.display = 'none'
+    }
   }
 
   private async onSourceChange() {
@@ -417,7 +435,7 @@ class LlamaEnginePanel extends HTMLElement {
     this.root.getElementById('progressStatus')!.textContent = 'Обновление…'
     try {
       await installEngineUpdate()
-      this.root.getElementById('installUpdate')!.style.display = 'none'
+      setUpdateState({ hasUpdate: false })
       await this.refresh()
       toast('Движок llamacpp обновлён.', 'success')
     } catch (e) {

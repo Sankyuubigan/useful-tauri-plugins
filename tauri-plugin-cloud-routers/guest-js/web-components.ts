@@ -12,6 +12,7 @@ import {
   type NineRouterStatus,
   type RouterId,
 } from './index'
+import { getUpdateState, onUpdateState, setUpdateState } from './updates'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -38,6 +39,8 @@ const STYLE = `
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-muted, #777); flex: 0 0 auto; }
   .dot.on { background: var(--success, #3fa45b); }
   .dot.warn { background: var(--warning, #d8a13a); }
+  .update-badge { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+                  background: #4caf50; margin-left: 6px; box-shadow: 0 0 6px #4caf50; }
   .muted { color: var(--text-muted, #999); font-size: 12px; }
   .path { color: var(--text-muted, #999); font-size: 12px; word-break: break-all; }
   .progress-container { display: none; margin-top: 10px; }
@@ -84,6 +87,7 @@ export class CloudRoutersPanel extends HTMLElement {
   private visibilityObserver: MutationObserver | null = null
   private refreshTimer: number | null = null
   private root: ShadowRoot
+  private unsubUpdate?: () => void
 
   constructor() {
     super()
@@ -92,6 +96,7 @@ export class CloudRoutersPanel extends HTMLElement {
 
   connectedCallback() {
     this.render()
+    this.unsubUpdate = onUpdateState((s) => this.renderUpdateState(s))
     void this.refresh()
     onProgress((p) => {
       if (p.router === this.router) this.onProgress(p.text, p.done, p.total)
@@ -103,6 +108,7 @@ export class CloudRoutersPanel extends HTMLElement {
   }
 
   disconnectedCallback() {
+    this.unsubUpdate?.()
     this.offProgress?.()
     this.offProgress = null
     this.visibilityObserver?.disconnect()
@@ -306,6 +312,7 @@ export class CloudRoutersPanel extends HTMLElement {
 
   private async onInstallUpdate() {
     await this.onInstall()
+    setUpdateState({ hasUpdate: false })
     const updateBtn = this.root.querySelector<HTMLButtonElement>('.install-update')
     if (updateBtn) updateBtn.style.display = 'none'
   }
@@ -337,6 +344,7 @@ export class CloudRoutersPanel extends HTMLElement {
       <div class="status">
         <span class="${dotClass}"></span>
         <span>${message}</span>
+        <span id="updateBadge" class="update-badge" style="display:none;"></span>
       </div>
       <div class="row muted">
         <span>${this.router}: ${version}</span>
@@ -389,6 +397,18 @@ export class CloudRoutersPanel extends HTMLElement {
     this.root.querySelector('.refresh')?.addEventListener('click', () => void this.onShowCombos())
     this.root.querySelector('.open')?.addEventListener('click', () => void this.onOpen())
     this.root.querySelector('.setdir')?.addEventListener('click', () => void this.onSetDir())
+    this.renderUpdateState(getUpdateState())
+  }
+
+  private renderUpdateState(s: { hasUpdate: boolean; tag?: string }) {
+    const badge = this.root.querySelector<HTMLElement>('#updateBadge')
+    const updateBtn = this.root.querySelector<HTMLElement>('.install-update')
+    if (s.hasUpdate) {
+      if (badge) badge.style.display = 'inline-block'
+      if (updateBtn) updateBtn.style.display = 'inline-block'
+    } else if (badge) {
+      badge.style.display = 'none'
+    }
   }
 }
 

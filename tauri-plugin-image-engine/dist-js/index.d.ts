@@ -109,6 +109,7 @@ export interface ImageBundleValidate {
 export declare function validateImageBundleDir(path: string): Promise<ImageBundleValidate>;
 export declare function setImageBundleDir(path: string): Promise<ImageBundleInfo>;
 export declare function removeImageBundle(): Promise<ImageBundleInfo>;
+export declare function removeImageBundleFromList(): Promise<ImageBundleInfo>;
 export declare function estimateImageMemory(): Promise<ImageMemoryInfo>;
 export interface GenerateOptions {
     prompt: string;
@@ -125,3 +126,5 @@ export interface EditOptions extends GenerateOptions {
 }
 export declare function editImage(opts: EditOptions): Promise<ImageGenResult>;
 import './web-components';
+export { getUpdateState, onUpdateState, setUpdateState, checkUpdate, initUpdateWatcher, } from './updates';
+export type { PluginUpdateState } from './updates';

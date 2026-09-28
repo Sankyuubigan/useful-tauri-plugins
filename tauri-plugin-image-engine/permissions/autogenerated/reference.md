@@ -17,6 +17,7 @@ Default permissions for the image-engine plugin.
 - `allow-validate-image-bundle-dir`
 - `allow-set-image-bundle-dir`
 - `allow-remove-image-bundle`
+- `allow-remove-image-bundle-from-list`
 - `allow-estimate-image-memory`
 - `allow-generate-image`
 - `allow-edit-image`
@@ -312,6 +313,32 @@ Enables the remove_image_bundle command without any pre-configured scope.
 <td>
 
 Denies the remove_image_bundle command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-remove-image-bundle-from-list`
+
+</td>
+<td>
+
+Enables the remove_image_bundle_from_list command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:deny-remove-image-bundle-from-list`
+
+</td>
+<td>
+
+Denies the remove_image_bundle_from_list command without any pre-configured scope.
 
 </td>
 </tr>

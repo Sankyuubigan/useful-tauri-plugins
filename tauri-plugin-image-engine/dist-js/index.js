@@ -48,6 +48,9 @@ export function setImageBundleDir(path) {
 export function removeImageBundle() {
     return invoke('plugin:image-engine|remove_image_bundle');
 }
+export function removeImageBundleFromList() {
+    return invoke('plugin:image-engine|remove_image_bundle_from_list');
+}
 export function estimateImageMemory() {
     return invoke('plugin:image-engine|estimate_image_memory');
 }
@@ -76,3 +79,4 @@ export function editImage(opts) {
 }
 // Регистрируем Web Components при импорте пакета.
 import './web-components';
+export { getUpdateState, onUpdateState, setUpdateState, checkUpdate, initUpdateWatcher, } from './updates';

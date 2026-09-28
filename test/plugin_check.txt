@@ -1,0 +1,152 @@
+VS=D:\Programs\Microsoft Visual Studio\2022\BuildTools
+   Compiling tauri-plugin-llama-engine v0.1.0 (D:\Projects\my-tauri-plugins\tauri-plugin-llama-engine)
+warning: value assigned to `engine_child` is never read
+   --> tauri-plugin-llama-engine\src\engine\llm.rs:620:17
+    |
+620 |         let mut engine_child: Option<std::process::Child> = None;
+    |                 ^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` on by default
+
+warning: variable does not need to be mutable
+   --> tauri-plugin-llama-engine\src\engine\llm.rs:643:17
+    |
+643 |             let mut deadline = Instant::now() + HEALTH_TIMEOUT;
+    |                 ----^^^^^^^^
+    |                 |
+    |                 help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` on by default
+
+warning: variable does not need to be mutable
+   --> tauri-plugin-llama-engine\src\engine\llm.rs:742:13
+    |
+742 |         let mut engine = Self {
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> tauri-plugin-llama-engine\src\generate.rs:62:9
+   |
+62 |     let mut engine = engine::LlamaEngine::new(
+   |         ----^^^^^^
+   |         |
+   |         help: remove this `mut`
+
+warning: `tauri-plugin-llama-engine` (lib test) generated 4 warnings (run `cargo fix --lib -p tauri-plugin-llama-engine --tests` to apply 3 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.14s
+     Running unittests src\lib.rs (target\debug\deps\tauri_plugin_llama_engine-ed05ea201fee6da7.exe)
+
+running 106 tests
+test engine::detokenizer::tests::both_empty ... ok
+test engine::detokenizer::tests::identical_empty_diff ... ok
+test engine::detokenizer::tests::completely_different ... ok
+test engine::detokenizer::tests::cyrillic_token_splitting ... ok
+test engine::detokenizer::tests::normal_grow ... ok
+test engine::detokenizer::tests::prev_empty ... ok
+test engine::detokenizer::tests::single_char_append ... ok
+test engine::detokenizer::tests::utf8_replacement_after_valid_text ... ok
+test engine::detokenizer::tests::utf8_replacement_in_middle ... ok
+test engine::detokenizer::tests::utf8_replacement_resolved_multiple ... ok
+test engine::detokenizer::tests::utf8_replacement_resolved_single ... ok
+test engine::engine_liveness::engine_liveness::engine_liveness_hello ... ignored
+test engine::gpu_detector::tests::blackwell_requires_cuda13 ... ok
+test engine::gpu_detector::tests::no_gpu_or_old_driver_means_cpu ... ok
+test engine::gpu_detector::tests::rtx30_40_requires_cuda12 ... ok
+test engine::gpu_detector::tests::rtx40_with_cuda13_driver_prefers_cuda13 ... ok
+test engine::gpu_detector::tests::unknown_compute_cap_falls_back_to_cuda12 ... ok
+test engine::llamacpp_installer::tests::cpu_finds_exact_cpu_asset ... ok
+test engine::llamacpp_installer::tests::beellama_cudart_none_when_only_main_bin ... ok
+test engine::llamacpp_installer::tests::cpu_does_not_fall_back_to_cudart_archive ... ok
+test engine::llamacpp_installer::tests::beellama_cudart_never_returns_main_bin ... ok
+test engine::llamacpp_installer::tests::cudart_supplement_ignores_non_cuda_variants ... ok
+test engine::llamacpp_installer::tests::cudart_supplement_none_when_release_lacks_it ... ok
+test engine::llamacpp_installer::tests::exact_match_keeps_requested_variant ... ok
+test engine::llamacpp_installer::tests::family_from_variant ... ok
+test engine::llamacpp_installer::tests::family_lookup_skips_cudart_archive ... ok
+test engine::llamacpp_installer::tests::find_engine_asset_resilient_to_renamed_tag ... ok
+test engine::llamacpp_installer::tests::finds_asset_by_cuda13_family_when_minor_differs ... ok
+test engine::llamacpp_installer::tests::finds_beellama_asset_by_prefix ... ok
+test engine::llamacpp_installer::tests::finds_cudart_supplement_by_family_when_minor_differs ... ok
+test engine::llamacpp_installer::tests::finds_cudart_supplement_exact_match ... ok
+test engine::llamacpp_installer::tests::finds_hip_asset_by_family ... ok
+test engine::llamacpp_installer::tests::finds_vulkan_asset_by_family ... ok
+test engine::llamacpp_installer::tests::first_release_none_when_no_binary_release ... ok
+test engine::llamacpp_installer::tests::first_release_picks_hip_rocm_variant ... ok
+test engine::llamacpp_installer::tests::first_release_picks_vulkan_variant ... ok
+test engine::llamacpp_installer::tests::first_release_skips_source_only_stable_and_picks_nightly ... ok
+test engine::llamacpp_installer::tests::ggml_cudart_never_returns_main_bin ... ok
+test engine::llamacpp_installer::tests::no_asset_returns_none ... ok
+test engine::llamacpp_installer::tests::prefer_stable_skips_preview_releases ... ok
+test engine::llamacpp_installer::tests::migrate_flat_backends_to_source_level ... ok
+test engine::llamacpp_installer::tests::per_variant_layout_and_migration ... ok
+test engine::llamacpp_installer::tests::variant_from_asset_name_parses_old_and_new_formats ... ok
+test engine::llamacpp_installer::tests::lift_server_files_moves_nested_binaries ... ok
+test engine::llamacpp_installer::tests::variant_labels_and_notes_are_user_friendly ... ok
+test engine::llm::tests::cuda_fallback_diagnosis_empty_on_clean_log ... ok
+test engine::llm::tests::cuda_oom_reason_is_friendly ... ok
+test engine::llm::tests::cuda_fallback_diagnosis_finds_no_kernel_image ... ok
+test engine::llm::tests::cuda_oom_reason_passthrough_when_not_oom ... ok
+test engine::llm::tests::cuda_oom_text_detects_only_oom_markers ... ok
+test engine::llm::tests::is_sane_rate_rejects_llama_fallback_and_garbage ... ok
+test engine::llm::tests::log_tail_prioritizes_errors_and_keeps_recent_lines ... ok
+test engine::llm::tests::oom_ngl_step_logic ... ok
+test engine::llm::tests::silent_death_detects_stream_breaks_but_not_plain_errors ... ok
+test engine::llamacpp_installer::tests::side_by_side_sources_do_not_collide ... ok
+test engine::llm::tests::stream_retry_marker_is_added_only_before_first_token ... ok
+test engine::llm::tests::stream_retry_policy_respects_cancel_and_attempt_limit ... ok
+test engine::llm::tests::vram_peak_parsed_from_error_text ... ok
+test engine::llm_gguf::tests::block_count_mismatch_fails ... ok
+test engine::llm_gguf::tests::estimate_vram_gemma4_without_pattern_falls_back_to_smaller_head_swa ... ok
+test engine::llm_gguf::tests::estimate_vram_falls_back_to_llama_prefix ... ok
+test engine::llm_gguf::tests::estimate_vram_total_includes_buffers_minus_kv ... ok
+test engine::llm_gguf::tests::estimate_vram_per_layer_kv_array_gemma4 ... ok
+test engine::llm_gguf::tests::extract_arch_and_keys_with_arch_prefix ... ok
+test engine::llm_gguf::tests::extract_i64_array_scalar_key_returns_none ... ok
+test engine::llm_gguf::tests::estimate_vram_uses_arch_prefixed_gqa_hybrid_kv ... ok
+test engine::llm_gguf::tests::extract_i64_array_with_arch_falls_back_to_llama_prefix ... ok
+test engine::llm_gguf::tests::extract_i64_array_with_arch_reads_array_key ... ok
+test engine::llm_gguf::tests::extract_u32_with_arch_without_arch_uses_llama_only ... ok
+test engine::llm_gguf::tests::extract_u32_with_arch_falls_back_to_llama_prefix ... ok
+test engine::llm_gguf::tests::missing_token_embd_fails ... ok
+test engine::llm_gguf::tests::non_monotonic_offsets_fail ... ok
+test engine::llm_gguf::tests::not_gguf_fails ... ok
+test engine::llm_gguf::tests::truncated_file_fails ... ok
+test engine::llm_gguf::tests::valid_gguf_passes ... ok
+test engine::llm_types::tests::base_grammar_none_for_auto ... ok
+test engine::llm_types::tests::base_grammar_some_for_chatml_and_json_rules ... ok
+test engine::llm_types::tests::json_only_grammar_root_is_object ... ok
+test engine::llm_types::tests::key_exact_grammar_empty_falls_back_to_object ... ok
+test engine::llm_types::tests::key_exact_grammar_lists_keys_without_options ... ok
+test engine::llm_types::tests::llm_history_keeps_content_references_without_sub_calls ... ok
+test engine::llm_types::tests::llm_history_skips_thoughts_and_signals ... ok
+test engine::mem_profiler::tests::peak_line_contains_all_metrics ... ok
+test engine::mem_profiler::tests::peak_line_marks_vram_unavailable ... ok
+test engine::mem_profiler::tests::peak_line_saturating_delta_when_vram_dropped ... ok
+test engine::mem_profiler::tests::sampler_stops_without_hanging_on_drop ... ok
+test engine::sources::tests::available_sources_lists_with_default_flag ... ok
+test engine::sources::tests::registry_parses_and_has_two_sources ... ok
+test engine::sources::tests::releases_url_points_at_source_repo ... ok
+test engine::sources::tests::resolve_source_defaults_and_respects_user ... ok
+test engine::stream_diagnostics::tests::diagnostics_format_contains_only_safe_fields ... ok
+test engine::stream_diagnostics::tests::response_meta_ignores_untrusted_and_secret_headers ... ok
+test engine::stream_diagnostics::tests::server_trace_is_bounded_and_prioritizes_errors ... ok
+test engine::vram::tests::notify_publishes_vram_notice_to_bus ... ok
+test engine::vram_estimate::tests::cache_type_bytes_parses_kvarn_and_standards ... ok
+test engine::vram_estimate::tests::estimate_kvarn_kv_smaller_than_fp16 ... ok
+test engine::vram_estimate::tests::estimate_vram_bool_wrapper_matches_spec_api ... ok
+test engine::vram_estimate::tests::kv_bytes_quant_ratio ... ok
+test engine::vram_estimate::tests::kv_spec_from_source_prefers_beellama_kvarn_over_flags ... ok
+test engine::vram_estimate::tests::max_fitting_ngl_computes_floor_of_budget ... ok
+test engine::vram_estimate::tests::max_fitting_ngl_kvarn_allows_more_layers_than_fp16 ... ok
+test engine::vram_estimate::tests::swa_cells_uses_windows_not_full_ctx ... ok
+test engine::vram_estimate::tests::vram_for_ngl_scales_linearly_by_layers ... ok
+test engine::llm::tests::estimate_vram_mb_smoke_ternary_qwen35 ... ok
+test engine::llamacpp_installer::tests::resolve_variant_respects_user_preference ... ok
+test engine::mem_profiler::tests::sampler_collects_app_rss_and_stops ... ok
+
+test result: ok. 105 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.52s
+
+EXIT=0

@@ -26,6 +26,8 @@ const COMMANDS: &[&str] = &[
     "reset_model_params",
     // ── Скачивание (инструмент) ──
     "download_model",
+    // ── Разовая текстовая генерация (хосты без чата) ──
+    "generate_text",
 ];
 
 fn main() {

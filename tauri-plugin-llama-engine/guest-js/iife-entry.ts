@@ -10,6 +10,7 @@ import {
   downloadModel,
   ensureMmproj,
   estimatePromptMemory,
+  generateText,
   getAllCapabilities,
   getAutoDownloadInfo,
   getEngineConfig,
@@ -61,6 +62,7 @@ if ('__TAURI__' in window) {
         setEngineDir,
         setEngineVariant,
         setModelParams,
+        generateText,
       },
     })
   }

@@ -98,3 +98,5 @@ export declare function onProgress(cb: (p: ProgressPayload) => void): Promise<()
 /** Подписка на порции стриминга чата. Возвращает функцию отписки. */
 export declare function onChunk(cb: (c: ChunkPayload) => void): Promise<() => void>;
 import './web-components';
+export { getUpdateState, onUpdateState, setUpdateState, checkUpdate, initUpdateWatcher, } from './updates';
+export type { PluginUpdateState } from './updates';

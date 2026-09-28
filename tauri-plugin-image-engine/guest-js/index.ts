@@ -172,6 +172,10 @@ export function removeImageBundle(): Promise<ImageBundleInfo> {
   return invoke<ImageBundleInfo>('plugin:image-engine|remove_image_bundle')
 }
 
+export function removeImageBundleFromList(): Promise<ImageBundleInfo> {
+  return invoke<ImageBundleInfo>('plugin:image-engine|remove_image_bundle_from_list')
+}
+
 export function estimateImageMemory(): Promise<ImageMemoryInfo> {
   return invoke<ImageMemoryInfo>('plugin:image-engine|estimate_image_memory')
 }
@@ -219,3 +223,12 @@ export function editImage(opts: EditOptions): Promise<ImageGenResult> {
 
 // Регистрируем Web Components при импорте пакета.
 import './web-components'
+
+export {
+  getUpdateState,
+  onUpdateState,
+  setUpdateState,
+  checkUpdate,
+  initUpdateWatcher,
+} from './updates'
+export type { PluginUpdateState } from './updates'

@@ -29,6 +29,7 @@ Default permissions for the llama-engine plugin.
 - `allow-set-model-params`
 - `allow-reset-model-params`
 - `allow-download-model`
+- `allow-generate-text`
 
 ## Permission Table
 
@@ -217,6 +218,32 @@ Enables the estimate_prompt_memory command without any pre-configured scope.
 <td>
 
 Denies the estimate_prompt_memory command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llama-engine:allow-generate-text`
+
+</td>
+<td>
+
+Enables the generate_text command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llama-engine:deny-generate-text`
+
+</td>
+<td>
+
+Denies the generate_text command without any pre-configured scope.
 
 </td>
 </tr>
@@ -1010,6 +1037,19 @@ Allow resetting sampling parameters (re-derived from gguf).
 <td>
 
 Allow downloading a file (used internally for models/mmproj).
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llama-engine:allow-generate-text`
+
+</td>
+<td>
+
+Allow one-shot text generation via the llama.cpp engine (commit messages, summaries).
 
 </td>
 </tr>

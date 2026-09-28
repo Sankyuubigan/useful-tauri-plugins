@@ -6,6 +6,7 @@ export declare class CloudRoutersPanel extends HTMLElement {
     private visibilityObserver;
     private refreshTimer;
     private root;
+    private unsubUpdate?;
     constructor();
     connectedCallback(): void;
     disconnectedCallback(): void;
@@ -24,4 +25,5 @@ export declare class CloudRoutersPanel extends HTMLElement {
     private onInstallUpdate;
     private switchRouter;
     private render;
+    private renderUpdateState;
 }

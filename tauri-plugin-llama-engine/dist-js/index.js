@@ -94,5 +94,21 @@ export function setModelParams(modelPath, params) {
 export function resetModelParams(modelPath) {
     return invoke('plugin:llama-engine|reset_model_params', { modelPath });
 }
+// ─────────────────────── Разовая текстовая генерация ───────────────────────
+/**
+ * Одноразовая генерация текста через движок llama.cpp (без чата).
+ * modelPath — путь к GGUF; если не указан, берётся last_model из конфига.
+ */
+export function generateText(req) {
+    return invoke('plugin:llama-engine|generate_text', {
+        req: {
+            modelPath: req.modelPath ?? null,
+            messages: req.messages,
+            maxTokens: req.maxTokens,
+            temperature: req.temperature,
+        },
+    });
+}
 // Регистрируем Web Components при импорте пакета.
 import './web-components';
+export { getUpdateState, onUpdateState, setUpdateState, checkUpdate, initUpdateWatcher, } from './updates';

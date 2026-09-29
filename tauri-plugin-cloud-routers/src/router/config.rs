@@ -68,23 +68,6 @@ pub fn set_app_data_dir_name(name: &str) {
     let _ = APP_DATA_DIR_NAME.set(name.to_string());
 }
 
-fn app_data_dir_name() -> &'static str {
-    APP_DATA_DIR_NAME
-        .get()
-        .map(|s| s.as_str())
-        .unwrap_or("com.kingorch.app")
-}
-
-/// Папка данных приложения без AppHandle (APPDATA/<name>).
-pub fn app_data_dir_early() -> PathBuf {
-    let base = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join(app_data_dir_name())
-}
-
 /// Путь к `app_config.json` (runtime, через AppHandle).
 pub fn get_config_path(app: &AppHandle) -> PathBuf {
     let base = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
@@ -169,128 +152,20 @@ pub fn server_script(dist: &std::path::Path, router_id: RouterId) -> PathBuf {
     dist.join(rel)
 }
 
-// ────────────────────────────── Каталог данных и миграция ──────────────────────────────
+// ────────────────────────────── Каталог данных ──────────────────────────────
 
-/// Папка данных роутера относительно каталога данных приложения (<app_data>/cloud_routers/<id>).
-pub fn data_dir_under(app_data: &std::path::Path, router_id: RouterId) -> PathBuf {
-    app_data.join("cloud_routers").join(router_id.dir_name())
-}
-
-/// Путь к каталогу данных роутера для текущего AppHandle (<app_data_dir>/cloud_routers/<id>).
-pub fn router_data_dir(app: &AppHandle, router_id: RouterId) -> PathBuf {
-    let base = app.path().app_data_dir().unwrap_or_else(|_| app_data_dir_early());
-    let data_dir = data_dir_under(&base, router_id);
+/// Путь к каталогу данных роутера: единый для всех приложений (%APPDATA%/<id>).
+pub fn router_data_dir(_app: &AppHandle, router_id: RouterId) -> PathBuf {
+    let base = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let data_dir = base.join(router_id.dir_name());
     if !data_dir.exists() {
         let _ = fs::create_dir_all(&data_dir);
     }
     data_dir
-}
-
-/// Вычисляет legacy-каталог данных роутера (старый %APPDATA%/9router без привязки к app_data).
-pub fn legacy_dir_under(app_data: &std::path::Path, router_id: RouterId) -> Option<PathBuf> {
-    let parent = app_data.parent()?;
-    let legacy = parent.join(router_id.dir_name());
-    if legacy == app_data || legacy == data_dir_under(app_data, router_id) {
-        return None;
-    }
-    let backup_db = legacy.join("db-copy-backup").join("data.sqlite");
-    let main_db = legacy.join("db").join("data.sqlite");
-    if backup_db.exists() || main_db.exists() {
-        Some(legacy)
-    } else {
-        None
-    }
-}
-
-/// Рекурсивное копирование каталога (игнорирует отсутствие исходного пути).
-pub fn copy_dir_allow_missing(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<u64> {
-    if !src.exists() {
-        return Ok(0);
-    }
-    let mut total_bytes = 0u64;
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let entry_type = entry.file_type()?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-
-        if entry_type.is_dir() {
-            total_bytes += copy_dir_allow_missing(&src_path, &dst_path)?;
-        } else if entry_type.is_file() {
-            total_bytes += fs::copy(&src_path, &dst_path)?;
-        }
-    }
-    Ok(total_bytes)
-}
-
-/// Выполняет одноразовую миграцию данных из src в dst.
-pub fn migrate_into(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<bool> {
-    let marker = dst.join(".migrated-from-legacy");
-    if marker.exists() || dst.join("db").join("data.sqlite").exists() {
-        return Ok(false);
-    }
-
-    let backup_db = src.join("db-copy-backup").join("data.sqlite");
-    let main_db = src.join("db").join("data.sqlite");
-    if !backup_db.exists() && !main_db.exists() {
-        return Ok(false);
-    }
-
-    fs::create_dir_all(dst)?;
-
-    let lock = dst.join(".migrate.lock");
-    if fs::OpenOptions::new().write(true).create_new(true).open(&lock).is_err() {
-        log::warn!("cloud-routers: файл блокировки миграции уже существует, пропуск");
-        return Ok(false);
-    }
-    let mut bytes_copied = 0u64;
-
-    let dst_db_dir = dst.join("db");
-    fs::create_dir_all(&dst_db_dir)?;
-
-    let src_db_dir = if backup_db.exists() {
-        src.join("db-copy-backup")
-    } else {
-        src.join("db")
-    };
-    bytes_copied += copy_dir_allow_missing(&src_db_dir, &dst_db_dir)?;
-
-    bytes_copied += copy_dir_allow_missing(&src.join("auth"), &dst.join("auth"))?;
-    bytes_copied += copy_dir_allow_missing(&src.join("runtime"), &dst.join("runtime"))?;
-
-    for secret_file in &["jwt-secret", "machine-id"] {
-        let f_src = src.join(secret_file);
-        let f_dst = dst.join(secret_file);
-        if f_src.exists() && !f_dst.exists() {
-            if let Ok(b) = fs::copy(&f_src, &f_dst) {
-                bytes_copied += b;
-            }
-        }
-    }
-
-    let _ = fs::remove_file(&lock);
-    let _ = fs::write(&marker, src.to_string_lossy().as_bytes());
-    log::info!(
-        "cloud-routers: данные перенесены из {} → {} (всего {} байт)",
-        src.display(),
-        dst.display(),
-        bytes_copied
-    );
-    Ok(true)
-}
-
-/// Авто-миграция legacy данных для AppHandle.
-pub fn migrate_legacy_data_dir(app: &AppHandle, router_id: RouterId) {
-    let base = app.path().app_data_dir().unwrap_or_else(|_| app_data_dir_early());
-    let dst = data_dir_under(&base, router_id);
-    if let Some(src) = legacy_dir_under(&base, router_id) {
-        match migrate_into(&src, &dst) {
-            Ok(true) => log::info!("cloud-routers: миграция legacy-данных завершена"),
-            Ok(false) => {}
-            Err(e) => log::warn!("cloud-routers: ошибка миграции legacy-данных: {}", e),
-        }
-    }
 }
 
 // ────────────────────────────── ServerRecord (server.json) ──────────────────────────────
@@ -367,13 +242,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_data_dir_under() {
-        let base = PathBuf::from("C:\\Roaming\\App");
-        let d = data_dir_under(&base, RouterId::NineRouter);
-        assert_eq!(d, PathBuf::from("C:\\Roaming\\App\\cloud_routers\\9router"));
-    }
-
-    #[test]
     fn test_default_ports() {
         assert_eq!(RouterId::NineRouter.default_port(), 20128);
         assert_eq!(RouterId::ExtremeRouter.default_port(), 20129);
@@ -388,32 +256,25 @@ mod tests {
     }
 
     #[test]
-    fn test_migrate_into_and_server_record() {
-        let tmp = std::env::temp_dir().join("cloud_routers_test_migrate");
+    fn test_server_script_paths() {
+        let dist = PathBuf::from("D:\\test\\dist");
+        assert_eq!(server_script(&dist, RouterId::NineRouter), dist.join("app/custom-server.js"));
+        assert_eq!(server_script(&dist, RouterId::ExtremeRouter), dist.join("app/custom-server.js"));
+        assert_eq!(server_script(&dist, RouterId::OmniRoute), dist.join("dist/server.js"));
+    }
+
+    #[test]
+    fn test_server_record() {
+        let tmp = std::env::temp_dir().join("cloud_routers_test_server_record");
         let _ = fs::remove_dir_all(&tmp);
-        let src = tmp.join("legacy");
-        let dst = tmp.join("new");
+        fs::create_dir_all(&tmp).unwrap();
 
-        let src_db = src.join("db");
-        let _ = fs::create_dir_all(&src_db);
-        let _ = fs::write(src_db.join("data.sqlite"), "sqlite-data");
-        let _ = fs::write(src.join("jwt-secret"), "secret123");
-
-        let migrated = migrate_into(&src, &dst).unwrap();
-        assert!(migrated);
-        assert!(dst.join("db").join("data.sqlite").exists());
-        assert_eq!(fs::read_to_string(dst.join("jwt-secret")).unwrap(), "secret123");
-        assert!(dst.join(".migrated-from-legacy").exists());
-
-        let migrated_again = migrate_into(&src, &dst).unwrap();
-        assert!(!migrated_again);
-
-        write_server_record(&dst, 1234, 20128);
-        let rec = read_server_record(&dst).unwrap();
+        write_server_record(&tmp, 1234, 20128);
+        let rec = read_server_record(&tmp).unwrap();
         assert_eq!(rec.pid, 1234);
         assert_eq!(rec.port, 20128);
-        clear_server_record(&dst);
-        assert!(read_server_record(&dst).is_none());
+        clear_server_record(&tmp);
+        assert!(read_server_record(&tmp).is_none());
 
         let _ = fs::remove_dir_all(&tmp);
     }

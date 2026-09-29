@@ -218,16 +218,17 @@ pub fn start_server(app: &AppHandle, router_id: RouterId, cfg: &RouterConfig) ->
         ));
     }
 
+    let server_parent = server.parent().unwrap_or(&dist).to_path_buf();
     let mut cmd = std::process::Command::new(&node);
     cmd.args(["--dns-result-order=ipv4first", "--max-old-space-size=6144"])
         .arg(&server)
         .arg("--port")
         .arg(port.to_string())
-        .current_dir(dist.join("app"))
+        .current_dir(&server_parent)
         .env("PORT", port.to_string())
         .env("HOSTNAME", "127.0.0.1")
         .env("DATA_DIR", &data_dir)
-        .env("NODE_PATH", bundled_node_modules(&dist, &data_dir));
+        .env("NODE_PATH", bundled_node_modules(&server_parent, &data_dir));
 
     #[cfg(windows)]
     {
@@ -265,11 +266,17 @@ pub fn start_server(app: &AppHandle, router_id: RouterId, cfg: &RouterConfig) ->
     Ok(pid)
 }
 
-fn bundled_node_modules(dist: &Path, data_dir: &Path) -> String {
+fn bundled_node_modules(server_parent: &Path, data_dir: &Path) -> String {
     let mut parts: Vec<String> = Vec::new();
-    let bundled = dist.join("app").join("node_modules");
+    let bundled = server_parent.join("node_modules");
     if bundled.exists() {
         parts.push(bundled.to_string_lossy().to_string());
+    }
+    if let Some(parent) = server_parent.parent() {
+        let parent_modules = parent.join("node_modules");
+        if parent_modules.exists() {
+            parts.push(parent_modules.to_string_lossy().to_string());
+        }
     }
     let runtime = data_dir.join("runtime").join("node_modules");
     if runtime.exists() {

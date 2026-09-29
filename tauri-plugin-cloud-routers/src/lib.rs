@@ -91,7 +91,6 @@ pub fn init() -> TauriPlugin<Wry, Config> {
             router::config::migrate_legacy_config(&handle);
             for router_id in [RouterId::NineRouter, RouterId::ExtremeRouter, RouterId::OmniRoute] {
                 router::process::reconcile_server_state(&handle, router_id);
-                router::config::migrate_legacy_data_dir(&handle, router_id);
             }
             Ok(())
         })

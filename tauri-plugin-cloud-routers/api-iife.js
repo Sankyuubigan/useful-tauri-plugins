@@ -336,7 +336,7 @@
       const s = this.status;
       const installed = s?.installed ?? false;
       const running = s?.running ?? false;
-      const dotClass = running ? "dot on" : installed ? "dot warn" : "dot";
+      const dotClass = installed && running ? "dot on" : installed ? "dot warn" : "dot";
       const message = s?.message ?? "\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430...";
       const version = s?.version ? `v${s.version}` : "\u2014";
       const nodeVersion = s?.node_version ? `Node ${s.node_version}` : "Node \u2014";
@@ -369,10 +369,10 @@
         <button class="setdir">\u0418\u0437\u043C\u0435\u043D\u0438\u0442\u044C \u043F\u0443\u0442\u044C</button>
       </div>
       <div class="row muted">
-        <span>\u0414\u0430\u043D\u043D\u044B\u0435: ${s?.data_dir ? esc(s.data_dir) : "\u2014"}</span>
+        <span>\u041A\u0430\u0442\u0430\u043B\u043E\u0433 \u0431\u0430\u0437\u044B \u0434\u0430\u043D\u043D\u044B\u0445: ${s?.data_dir ? esc(s.data_dir) : "\u2014"}</span>
       </div>
       <div class="row muted">
-        <span>\u0411\u0430\u0437\u0430: ${s?.db_present ? "\u043D\u0430\u0439\u0434\u0435\u043D\u0430" : "\u26A0 \u0411\u0414 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430"}</span>
+        <span>\u0421\u0442\u0430\u0442\u0443\u0441 \u0411\u0414: ${s?.db_present ? "\u043D\u0430\u0439\u0434\u0435\u043D\u0430" : "\u26A0 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430"}</span>
       </div>
       ${!installed && (s?.node_present || s?.server_present) ? '<div class="muted warn-hint">\u0427\u0430\u0441\u0442\u0438\u0447\u043D\u0430\u044F \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0430: \u043D\u0430\u0439\u0434\u0435\u043D\u044B \u043D\u0435 \u0432\u0441\u0435 \u043A\u043E\u043C\u043F\u043E\u043D\u0435\u043D\u0442\u044B. \u041D\u0430\u0436\u043C\u0438\u0442\u0435 \xAB\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C\xBB, \u0447\u0442\u043E\u0431\u044B \u043F\u043E\u0447\u0438\u043D\u0438\u0442\u044C.</div>' : ""}
       <div class="progress-container">
@@ -384,7 +384,7 @@
         (c) => `<div class="combo"><div class="name">${esc(c.name)}</div><div class="models">${esc(c.models.join(", "))}</div></div>`
       ).join("")}
       </div>
-      <div class="row path">${s?.path ? esc(s.path) : ""}</div>
+      <div class="row path">\u041F\u0443\u0442\u044C \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0438 \u043F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u044B: ${s?.path ? esc(s.path) : "\u2014"}</div>
     `;
       this.root.querySelectorAll(".tabs button").forEach((b) => {
         b.addEventListener("click", () => this.switchRouter(b.dataset.router));

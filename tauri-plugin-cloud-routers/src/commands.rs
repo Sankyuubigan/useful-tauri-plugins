@@ -1,5 +1,7 @@
 ﻿//! Tauri-команды плагина cloud-routers. Тонкий слой: вся логика — в `crate::router`.
 
+use std::fs;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use serde::Serialize;
@@ -55,11 +57,32 @@ impl RouterId {
         }
     }
 
+    /// Нужен ли `npm install` поверх распакованного tgz?
+    ///
+    /// 9router/extremerouter — standalone: все зависимости вшиты в пакет.
+    /// OmniRoute — Next.js-приложение: `server.js` делает `require('next')`,
+    /// поэтому зависимости обязаны быть в `dist/node_modules`.
+    pub fn needs_npm_deps(&self) -> bool {
+        match self {
+            RouterId::NineRouter | RouterId::ExtremeRouter => false,
+            RouterId::OmniRoute => true,
+        }
+    }
+
+    /// Индекс роутера в массиве мьютексов установки.
+    pub fn lock_index(&self) -> usize {
+        match self {
+            RouterId::NineRouter => 0,
+            RouterId::ExtremeRouter => 1,
+            RouterId::OmniRoute => 2,
+        }
+    }
+
     pub fn server_script_relative(&self) -> &'static str {
         match self {
             RouterId::NineRouter => "app/custom-server.js",
             RouterId::ExtremeRouter => "app/custom-server.js",
-            RouterId::OmniRoute => "server.js",
+            RouterId::OmniRoute => "dist/server.js",
         }
     }
 }
@@ -116,13 +139,27 @@ fn build_status(app: &AppHandle, router_id: RouterId) -> RouterStatus {
         || data_dir.join("omniroute.db").exists();
     let node_present = node_exe(&dir).exists();
     let server_present = server_script(&dist_dir(&dir), router_id).exists();
-    let installed = node_present && server_present;
+    // node.exe + server.js НЕ означают «установлено»: у OmniRoute зависимости
+    // ставятся отдельным `npm install`, и прерванная установка оставляет
+    // server.js без `next`. Без этой проверки UI врал бы «установлено»,
+    // а get_combos поднимал бы заведомо падающий сервер.
+    let deps_ok = installer::deps_present(&dir, router_id);
+    let installed = node_present && server_present && deps_ok;
     let port = cfg.port_or_default(router_id);
     let gw = process::gateway_state(port, &dir, &data_dir);
-    let running = gw == process::GatewayState::OursRunning;
+    let running = installed && gw == process::GatewayState::OursRunning;
 
     let message = if !installed {
-        format!("{} не установлен. Нажмите «Установить».", router_id)
+        if node_present && server_present && !deps_ok {
+            // Не «не установлен», а «установка неполная» — разные действия
+            // пользователя, значит и сообщение должно быть разным (§2.2 «no lies»).
+            format!(
+                "{}: установка неполная — зависимости не установлены. Нажмите «Установить» заново.",
+                router_id
+            )
+        } else {
+            format!("{} не установлен. Нажмите «Установить».", router_id)
+        }
     } else if running {
         format!(
             "Активен на порту {}{}",
@@ -192,6 +229,9 @@ pub async fn install_or_update(app: AppHandle, router: String, force: Option<boo
     let router_id_clone = router_id.clone();
     let router_id_for_closure = router_id.clone();
     let info = tauri::async_runtime::spawn_blocking(move || {
+        // Держим блокировку установки весь прогон: сервер не должен
+        // стартовать поверх полураспакованного dist.
+        let _guard = installer::install_guard(router_id_clone);
         let progress: installer::ProgressFn = Box::new(move |stage: &str, done: u64, total: u64, text: &str| {
             let _ = app_evt.emit(
                 "cloud-routers-progress",
@@ -222,6 +262,9 @@ pub async fn ensure_started(app: AppHandle, router: String) -> Result<RouterStat
     let app_work = app.clone();
     let router_id_clone = router_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        // Ждём завершения установки, если она идёт: иначе сервер поднимется
+        // на неполном dist и упадёт с MODULE_NOT_FOUND.
+        let _guard = installer::install_guard(router_id_clone);
         let cfg = config::load_config(&app_work, router_id_clone);
         process::start_server(&app_work, router_id_clone, &cfg)
     })
@@ -248,18 +291,36 @@ pub fn stop(app: AppHandle, router: String) -> Result<RouterStatus, String> {
     Ok(build_status(&app, router_id))
 }
 
+/// Нормализует пользовательский путь: гарантирует, что последний компонент
+/// совпадает с именем папки роутера (регистронезависимо). Если пользователь
+/// выбрал родительскую папку — добавляет подпапку роутера. Создаёт папку.
+fn normalize_router_dir(path: &str, router_id: RouterId) -> Result<PathBuf, String> {
+    if path.trim().is_empty() {
+        return Err("Путь установки не может быть пустым".to_string());
+    }
+    let mut buf = PathBuf::from(path);
+    let needs_subdir = buf
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| !n.eq_ignore_ascii_case(router_id.dir_name()))
+        .unwrap_or(true);
+    if needs_subdir {
+        buf.push(router_id.dir_name());
+    }
+    fs::create_dir_all(&buf).map_err(|e| format!("Не удалось создать папку установки: {}", e))?;
+    Ok(buf)
+}
+
 /// Сменить папку установки роутера (по умолчанию `<exe>/cloud_routers/<id>`).
 #[tauri::command]
 pub fn set_router_dir(app: AppHandle, router: String, path: String) -> Result<RouterStatus, String> {
     let router_id = router.parse::<RouterId>()?;
-    if path.trim().is_empty() {
-        return Err("Путь установки не может быть пустым".to_string());
-    }
+    let normalized = normalize_router_dir(&path, router_id)?;
     let data_dir = config::router_data_dir(&app, router_id);
     let cfg_curr = config::load_config(&app, router_id);
     process::stop_server(cfg_curr.port_or_default(router_id), &data_dir);
     let mut cfg = cfg_curr;
-    cfg.dir = Some(path);
+    cfg.dir = Some(normalized.to_string_lossy().to_string());
     config::save_config(&app, router_id, &cfg)?;
     log::info!("{}: папка установки изменена: {}", router_id, cfg.dir.as_deref().unwrap_or(""));
     Ok(build_status(&app, router_id))
@@ -286,6 +347,7 @@ pub async fn get_combos(app: AppHandle, router: String) -> Result<Vec<client::Co
         let router_id_clone = router_id.clone();
         let cfg_work = cfg.clone();
         tauri::async_runtime::spawn_blocking(move || {
+            let _guard = installer::install_guard(router_id_clone);
             process::start_server(&app_work, router_id_clone, &cfg_work)
         })
         .await
@@ -333,6 +395,7 @@ pub async fn open_dashboard(app: AppHandle, router: String) -> Result<(), String
             let app_work = app.clone();
             let router_id_clone = router_id.clone();
             tauri::async_runtime::spawn_blocking(move || {
+                let _guard = installer::install_guard(router_id_clone);
                 let cfg = config::load_config(&app_work, router_id_clone);
                 process::start_server(&app_work, router_id_clone, &cfg)
             })
@@ -388,6 +451,7 @@ pub async fn chat_completion(
     let app_work = app.clone();
     let router_id_clone = router_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _guard = installer::install_guard(router_id_clone);
         let cfg_inner = config::load_config(&app_work, router_id_clone);
         process::start_server(&app_work, router_id_clone, &cfg_inner)
     })
@@ -453,5 +517,55 @@ fn open_in_browser(url: &str) {
     #[cfg(all(unix, not(target_os = "macos")))]
     {
         let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_router_dir_appends_subdir_for_parent_path() {
+        let tmp = std::env::temp_dir().join("cr_test_parent");
+        let _ = fs::remove_dir_all(&tmp);
+        let result = normalize_router_dir(tmp.to_str().unwrap(), RouterId::OmniRoute).unwrap();
+        assert_eq!(result, tmp.join("omniroute"));
+        assert!(result.exists());
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn normalize_router_dir_keeps_correct_subdir() {
+        let tmp = std::env::temp_dir().join("cr_test_correct");
+        let _ = fs::remove_dir_all(&tmp);
+        let target = tmp.join("omniroute");
+        fs::create_dir_all(&target).unwrap();
+        let result = normalize_router_dir(target.to_str().unwrap(), RouterId::OmniRoute).unwrap();
+        assert_eq!(result, target);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn normalize_router_dir_case_insensitive() {
+        let tmp = std::env::temp_dir().join("cr_test_case");
+        let _ = fs::remove_dir_all(&tmp);
+        let target = tmp.join("OMNIROUTE");
+        fs::create_dir_all(&target).unwrap();
+        let result = normalize_router_dir(target.to_str().unwrap(), RouterId::OmniRoute).unwrap();
+        assert_eq!(result, target);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn normalize_router_dir_empty_path_errors() {
+        assert!(normalize_router_dir("", RouterId::OmniRoute).is_err());
+        assert!(normalize_router_dir("   ", RouterId::OmniRoute).is_err());
+    }
+
+    #[test]
+    fn server_script_relative_paths() {
+        assert_eq!(RouterId::NineRouter.server_script_relative(), "app/custom-server.js");
+        assert_eq!(RouterId::ExtremeRouter.server_script_relative(), "app/custom-server.js");
+        assert_eq!(RouterId::OmniRoute.server_script_relative(), "dist/server.js");
     }
 }

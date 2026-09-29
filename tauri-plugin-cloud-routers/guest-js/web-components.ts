@@ -329,7 +329,7 @@ export class CloudRoutersPanel extends HTMLElement {
     const s = this.status
     const installed = s?.installed ?? false
     const running = s?.running ?? false
-    const dotClass = running ? 'dot on' : installed ? 'dot warn' : 'dot'
+    const dotClass = installed && running ? 'dot on' : installed ? 'dot warn' : 'dot'
     const message = s?.message ?? 'Загрузка...'
     const version = s?.version ? `v${s.version}` : '—'
     const nodeVersion = s?.node_version ? `Node ${s.node_version}` : 'Node —'
@@ -363,10 +363,10 @@ export class CloudRoutersPanel extends HTMLElement {
         <button class="setdir">Изменить путь</button>
       </div>
       <div class="row muted">
-        <span>Данные: ${s?.data_dir ? esc(s.data_dir) : '—'}</span>
+        <span>Каталог базы данных: ${s?.data_dir ? esc(s.data_dir) : '—'}</span>
       </div>
       <div class="row muted">
-        <span>База: ${s?.db_present ? 'найдена' : '⚠ БД не найдена'}</span>
+        <span>Статус БД: ${s?.db_present ? 'найдена' : '⚠ не найдена'}</span>
       </div>
       ${!installed && (s?.node_present || s?.server_present)
         ? '<div class="muted warn-hint">Частичная установка: найдены не все компоненты. Нажмите «Установить», чтобы починить.</div>'
@@ -384,7 +384,7 @@ export class CloudRoutersPanel extends HTMLElement {
           )
           .join('')}
       </div>
-      <div class="row path">${s?.path ? esc(s.path) : ''}</div>
+      <div class="row path">Путь установки программы: ${s?.path ? esc(s.path) : '—'}</div>
     `
 
     this.root.querySelectorAll<HTMLButtonElement>('.tabs button').forEach((b) => {

@@ -107,11 +107,16 @@ function getExePath(cfg) {
 }
 
 // --- prep: version bump + sync resources + npm install + icons. ---
-function prep(cfg) {
+function prep(cfg, opts = {}) {
     console.log('=== prep ===');
-    const oldVersion = readVersion(cfg.projectRoot);
-    const newVersion = bumpVersion(cfg.projectRoot, { syncPackageJson: cfg.syncPackageJsonVersion });
-    console.log(`Version: ${oldVersion} -> ${newVersion}`);
+    const bump = opts.bump !== false;
+    if (bump) {
+        const oldVersion = readVersion(cfg.projectRoot);
+        const newVersion = bumpVersion(cfg.projectRoot, { syncPackageJson: cfg.syncPackageJsonVersion });
+        console.log(`Version: ${oldVersion} -> ${newVersion}`);
+    } else {
+        console.log(`Version: ${readVersion(cfg.projectRoot)} (kept)`);
+    }
     syncConfiguredResources(cfg);
     buildLocalPlugins(cfg);
     runNpmInstall(cfg);
@@ -121,8 +126,9 @@ function prep(cfg) {
 // --- build (dev) ---
 async function run(cfg, opts = {}) {
     const prepOnly = opts.prepOnly === true;
+    const bump = opts.bump !== undefined ? opts.bump : prepOnly;
 
-    await prep(cfg);
+    await prep(cfg, { bump });
     if (prepOnly) {
         console.log('\n[prep] done. Run `installer` or `release` next.');
         return { skipped: true };

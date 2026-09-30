@@ -1,9 +1,11 @@
 const COMMANDS: &[&str] = &[
     "get_last_logs_path",
     "get_log_file_path",
+    "read_log_tail",
     "log_frontend_event",
     "track_event",
     "track_error",
+    "dump_frontend_error",
     "set_reporting_enabled",
     "save_logs_file",
 ];

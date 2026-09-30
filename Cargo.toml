@@ -8,6 +8,7 @@ members = [
     "tauri-plugin-cloud-routers",
     "tauri-plugin-downloader",
     "tauri-plugin-image-engine",
+    "tauri-plugin-ytdlp",
     "ko-json-store",
 ]
 

@@ -6,9 +6,11 @@ Default permissions for the logs plugin.
 
 - `allow-get-last-logs-path`
 - `allow-get-log-file-path`
+- `allow-read-log-tail`
 - `allow-log-frontend-event`
 - `allow-track-event`
 - `allow-track-error`
+- `allow-dump-frontend-error`
 - `allow-set-reporting-enabled`
 - `allow-save-logs-file`
 
@@ -20,6 +22,32 @@ Default permissions for the logs plugin.
 <th>Description</th>
 </tr>
 
+
+<tr>
+<td>
+
+`logs:allow-dump-frontend-error`
+
+</td>
+<td>
+
+Enables the dump_frontend_error command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`logs:deny-dump-frontend-error`
+
+</td>
+<td>
+
+Denies the dump_frontend_error command without any pre-configured scope.
+
+</td>
+</tr>
 
 <tr>
 <td>
@@ -95,6 +123,32 @@ Enables the log_frontend_event command without any pre-configured scope.
 <td>
 
 Denies the log_frontend_event command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`logs:allow-read-log-tail`
+
+</td>
+<td>
+
+Enables the read_log_tail command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`logs:deny-read-log-tail`
+
+</td>
+<td>
+
+Denies the read_log_tail command without any pre-configured scope.
 
 </td>
 </tr>
@@ -232,6 +286,19 @@ Allow reading the resolved app log file path (king_orch.log).
 <tr>
 <td>
 
+`logs:allow-read-log-tail`
+
+</td>
+<td>
+
+Allow reading the tail of the current session log for the Logs panel.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `logs:allow-log-frontend-event`
 
 </td>
@@ -264,6 +331,19 @@ Allow sending an anonymized analytics event to the reporting backend.
 <td>
 
 Allow sending an error report to the reporting backend.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`logs:allow-dump-frontend-error`
+
+</td>
+<td>
+
+Allow dumping unhandled frontend errors to crash_dump.log.
 
 </td>
 </tr>

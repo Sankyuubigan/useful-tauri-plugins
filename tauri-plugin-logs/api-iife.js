@@ -103,11 +103,50 @@
         if (p) this.root.getElementById("hint").textContent = `\u0424\u0430\u0439\u043B: ${p}`;
       }).catch(() => {
       });
+      void this.loadHistory();
       void onLogMessage((line) => this.appendLine(line)).then((u) => {
         this.unlisten = u;
       }).catch((e) => {
         logFront(`[logs-panel] \u043D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u0434\u043F\u0438\u0441\u0430\u0442\u044C\u0441\u044F \u043D\u0430 \u043B\u043E\u0433: ${String(e)}`);
       });
+    }
+    /**
+     * Подтягивает строки, записанные ДО подписки (pre-Tauri старт, setup) —
+     * иначе вкладка «Логи» выглядит пустой (core §2.5). Подписка идёт первой,
+     * поэтому live-строки уже лежат в буфере; пересечение с хвостом файла
+     * (максимальный суффикс history, совпадающий с префиксом буфера) вырезается,
+     * чтобы не задвоить строки.
+     */
+    async loadHistory() {
+      let history;
+      try {
+        history = (await readLogTail(this.maxLines)).split("\n").filter((l) => l.trim() !== "");
+      } catch (e) {
+        logFront(`[logs-panel] \u043D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u0438\u0441\u0442\u043E\u0440\u0438\u044E \u043B\u043E\u0433\u0430: ${String(e)}`);
+        return;
+      }
+      if (history.length === 0) return;
+      let overlap = 0;
+      const maxOverlap = Math.min(history.length, this.lines.length);
+      for (let n = maxOverlap; n > 0; n--) {
+        if (history.slice(history.length - n).join("\n") === this.lines.slice(0, n).join("\n")) {
+          overlap = n;
+          break;
+        }
+      }
+      this.lines = history.concat(this.lines.slice(overlap));
+      this.nearBottom = true;
+      this.renderLines();
+    }
+    renderLines() {
+      const area = this.root.getElementById("area");
+      if (!area) return;
+      if (this.lines.length > this.maxLines) {
+        this.lines = this.lines.slice(this.lines.length - this.maxLines);
+      }
+      area.value = this.lines.length ? `${this.lines.join("\n")}
+` : "";
+      area.scrollTop = area.scrollHeight;
     }
     appendLine(line) {
       this.lines.push(line);
@@ -163,6 +202,9 @@
   }
   function getLastLogsPath() {
     return invoke("plugin:logs|get_last_logs_path");
+  }
+  function readLogTail(maxLines) {
+    return invoke("plugin:logs|read_log_tail", { maxLines });
   }
   function logFront(msg) {
     void invoke("plugin:logs|log_frontend_event", { level: "FE", msg }).catch(() => {

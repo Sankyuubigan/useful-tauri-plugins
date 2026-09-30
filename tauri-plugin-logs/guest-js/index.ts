@@ -25,6 +25,14 @@ export function getLogFilePath(): Promise<string | null> {
   return invoke<string | null>('plugin:logs|get_log_file_path')
 }
 
+/**
+ * Хвост лога текущей сессии (последние `maxLines` строк). Нужен вкладке «Логи»:
+ * к моменту подключения панели события `logs:message` ещё не содержат старт сессии.
+ */
+export function readLogTail(maxLines: number): Promise<string> {
+  return invoke<string>('plugin:logs|read_log_tail', { maxLines })
+}
+
 /** Запись строки лога из frontend через единый логгер (level по умолчанию «FE»). */
 export function logFront(msg: string): void {
   void invoke('plugin:logs|log_frontend_event', { level: 'FE', msg }).catch(() => {})

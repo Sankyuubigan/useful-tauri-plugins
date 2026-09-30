@@ -11,6 +11,11 @@ description = "Allow reading the resolved app log file path (king_orch.log)."
 commands.allow = ["get_log_file_path"]
 
 [[permission]]
+identifier = "allow-read-log-tail"
+description = "Allow reading the tail of the current session log for the Logs panel."
+commands.allow = ["read_log_tail"]
+
+[[permission]]
 identifier = "allow-log-frontend-event"
 description = "Allow writing a frontend log line through the unified logger."
 commands.allow = ["log_frontend_event"]
@@ -24,6 +29,11 @@ commands.allow = ["track_event"]
 identifier = "allow-track-error"
 description = "Allow sending an error report to the reporting backend."
 commands.allow = ["track_error"]
+
+[[permission]]
+identifier = "allow-dump-frontend-error"
+description = "Allow dumping unhandled frontend errors to crash_dump.log."
+commands.allow = ["dump_frontend_error"]
 
 [[permission]]
 identifier = "allow-set-reporting-enabled"
@@ -40,9 +50,11 @@ description = "Default permissions for the logs plugin."
 permissions = [
   "allow-get-last-logs-path",
   "allow-get-log-file-path",
+  "allow-read-log-tail",
   "allow-log-frontend-event",
   "allow-track-event",
   "allow-track-error",
+  "allow-dump-frontend-error",
   "allow-set-reporting-enabled",
   "allow-save-logs-file",
 ]

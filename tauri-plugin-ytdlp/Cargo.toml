@@ -1,0 +1,28 @@
+[package]
+name = "tauri-plugin-ytdlp"
+version = "0.1.0"
+edition = "2021"
+links = "tauri-plugin-ytdlp"
+description = "Reusable yt-dlp engine: install/update yt-dlp binary, download YouTube videos with progress tracking"
+license = "MIT"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+tauri = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "rustls-tls-native-roots", "stream", "blocking"], default-features = false }
+zip = { workspace = true }
+sha2 = "0.10"
+futures-util = "0.3"
+regex = "1"
+lazy_static = "1"
+ko-json-store = { path = "../ko-json-store" }
+
+[lib]
+name = "tauri_plugin_ytdlp"
+path = "src/lib.rs"

@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-read-log-tail"
+description = "Enables the read_log_tail command without any pre-configured scope."
+commands.allow = ["read_log_tail"]
+
+[[permission]]
+identifier = "deny-read-log-tail"
+description = "Denies the read_log_tail command without any pre-configured scope."
+commands.deny = ["read_log_tail"]

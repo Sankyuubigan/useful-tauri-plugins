@@ -2,6 +2,7 @@ import {
   getLastLogsPath,
   logFront,
   onLogMessage,
+  readLogTail,
   saveLogsToFile,
 } from './index'
 import type { UnlistenFn } from '@tauri-apps/api/event'
@@ -93,6 +94,8 @@ class LogsPanel extends HTMLElement {
       })
       .catch(() => {})
 
+    void this.loadHistory()
+
     void onLogMessage((line) => this.appendLine(line))
       .then((u) => {
         this.unlisten = u
@@ -100,6 +103,46 @@ class LogsPanel extends HTMLElement {
       .catch((e) => {
         logFront(`[logs-panel] не удалось подписаться на лог: ${String(e)}`)
       })
+  }
+
+  /**
+   * Подтягивает строки, записанные ДО подписки (pre-Tauri старт, setup) —
+   * иначе вкладка «Логи» выглядит пустой (core §2.5). Подписка идёт первой,
+   * поэтому live-строки уже лежат в буфере; пересечение с хвостом файла
+   * (максимальный суффикс history, совпадающий с префиксом буфера) вырезается,
+   * чтобы не задвоить строки.
+   */
+  private async loadHistory() {
+    let history: string[]
+    try {
+      history = (await readLogTail(this.maxLines)).split('\n').filter((l) => l.trim() !== '')
+    } catch (e) {
+      logFront(`[logs-panel] не удалось загрузить историю лога: ${String(e)}`)
+      return
+    }
+    if (history.length === 0) return
+
+    let overlap = 0
+    const maxOverlap = Math.min(history.length, this.lines.length)
+    for (let n = maxOverlap; n > 0; n--) {
+      if (history.slice(history.length - n).join('\n') === this.lines.slice(0, n).join('\n')) {
+        overlap = n
+        break
+      }
+    }
+    this.lines = history.concat(this.lines.slice(overlap))
+    this.nearBottom = true
+    this.renderLines()
+  }
+
+  private renderLines() {
+    const area = this.root.getElementById('area') as HTMLTextAreaElement | null
+    if (!area) return
+    if (this.lines.length > this.maxLines) {
+      this.lines = this.lines.slice(this.lines.length - this.maxLines)
+    }
+    area.value = this.lines.length ? `${this.lines.join('\n')}\n` : ''
+    area.scrollTop = area.scrollHeight
   }
 
   private appendLine(line: string) {

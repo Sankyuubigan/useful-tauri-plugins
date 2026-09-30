@@ -12,6 +12,11 @@ export declare function onLogMessage(cb: (line: string) => void): Promise<Unlist
 export declare function getLastLogsPath(): Promise<string>;
 /** Путь exe-файла лога (например king_orch.log) или null. */
 export declare function getLogFilePath(): Promise<string | null>;
+/**
+ * Хвост лога текущей сессии (последние `maxLines` строк). Нужен вкладке «Логи»:
+ * к моменту подключения панели события `logs:message` ещё не содержат старт сессии.
+ */
+export declare function readLogTail(maxLines: number): Promise<string>;
 /** Запись строки лога из frontend через единый логгер (level по умолчанию «FE»). */
 export declare function logFront(msg: string): void;
 /** Запись строки лога с произвольным уровнем (FE/WARN/ERROR…). Никогда не бросает. */

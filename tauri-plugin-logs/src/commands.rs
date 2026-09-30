@@ -14,6 +14,13 @@ pub(crate) fn get_last_logs_path() -> String {
         .unwrap_or_default()
 }
 
+/// Хвост лога текущей сессии (последние `max_lines` непустых строк) — историю
+/// для вкладки «Логи», которая появилась раньше, чем подписался вебвью.
+#[command]
+pub(crate) fn read_log_tail(max_lines: usize) -> String {
+    crate::logger::read_tail(max_lines)
+}
+
 /// Путь exe-файла лога (`king_orch.log`) или null.
 #[command]
 pub(crate) fn get_log_file_path() -> Option<String> {

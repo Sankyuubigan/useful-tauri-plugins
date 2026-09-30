@@ -107,6 +107,23 @@ pub fn last_logs_path() -> Option<std::path::PathBuf> {
     LAST_LOGS.get().cloned()
 }
 
+/// Хвост лога текущей сессии (последние `max_lines` строк) — источник для
+/// вкладки «Логи»: на момент подключения панели большая часть сессии уже
+/// записана (pre-Tauri старт, setup), и live-события `logs:message` её не
+/// содержат. Без этого вкладка выглядит пустой (core §2.5).
+pub fn read_tail(max_lines: usize) -> String {
+    let path = LAST_LOGS.get().or_else(|| LOG_FILE.get());
+    let Some(path) = path else {
+        return String::new();
+    };
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return String::new();
+    };
+    let lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+    let start = lines.len().saturating_sub(max_lines);
+    lines[start..].join("\n")
+}
+
 /// Exe-файл лога (`king_orch.log`, если настроен): настраиваем ОДИН раз. Каждый
 /// запуск начинается с чистого файла (truncate), как и `test/last_logs.txt`
 /// (core rules §2.5.1) — исключается неконтролируемый рост между сессиями.

@@ -1,0 +1,66 @@
+"$schema" = "../gen/schemas/acl.json"
+
+[[permission]]
+identifier = "allow-get-ytdlp-status"
+description = "Allow reading yt-dlp status (installed, version, path, ffmpeg, deno)."
+commands.allow = ["get_ytdlp_status"]
+
+[[permission]]
+identifier = "allow-install-ytdlp"
+description = "Allow installing/downloading yt-dlp binary."
+commands.allow = ["install_ytdlp"]
+
+[[permission]]
+identifier = "allow-check-ytdlp-update"
+description = "Allow checking for yt-dlp updates."
+commands.allow = ["check_ytdlp_update"]
+
+[[permission]]
+identifier = "allow-install-ytdlp-update"
+description = "Allow updating yt-dlp binary."
+commands.allow = ["install_ytdlp_update"]
+
+[[permission]]
+identifier = "allow-set-ytdlp-dir"
+description = "Allow overriding the yt-dlp directory."
+commands.allow = ["set_ytdlp_dir"]
+
+[[permission]]
+identifier = "allow-set-ffmpeg-path"
+description = "Allow setting custom ffmpeg path."
+commands.allow = ["set_ffmpeg_path"]
+
+[[permission]]
+identifier = "allow-install-deno"
+description = "Allow installing Deno runtime for YouTube n-sig extraction."
+commands.allow = ["install_deno"]
+
+[[permission]]
+identifier = "allow-fetch-video-info"
+description = "Allow fetching video metadata via yt-dlp."
+commands.allow = ["fetch_video_info"]
+
+[[permission]]
+identifier = "allow-download-video"
+description = "Allow downloading YouTube videos via yt-dlp."
+commands.allow = ["download_video"]
+
+[[permission]]
+identifier = "allow-cancel-download"
+description = "Allow cancelling active yt-dlp download."
+commands.allow = ["cancel_download"]
+
+[default]
+description = "Default permissions for the ytdlp plugin."
+permissions = [
+  "allow-get-ytdlp-status",
+  "allow-install-ytdlp",
+  "allow-check-ytdlp-update",
+  "allow-install-ytdlp-update",
+  "allow-set-ytdlp-dir",
+  "allow-set-ffmpeg-path",
+  "allow-install-deno",
+  "allow-fetch-video-info",
+  "allow-download-video",
+  "allow-cancel-download",
+]

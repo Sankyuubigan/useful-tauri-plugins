@@ -96,6 +96,7 @@ pub fn init() -> TauriPlugin<Wry, Config> {
         .invoke_handler(tauri::generate_handler![
             commands::get_last_logs_path,
             commands::get_log_file_path,
+            commands::read_log_tail,
             commands::log_frontend_event,
             commands::track_event,
             commands::track_error,

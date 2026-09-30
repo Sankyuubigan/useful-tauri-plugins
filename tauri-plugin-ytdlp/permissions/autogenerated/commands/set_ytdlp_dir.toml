@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-set-ytdlp-dir"
+description = "Enables the set_ytdlp_dir command without any pre-configured scope."
+commands.allow = ["set_ytdlp_dir"]
+
+[[permission]]
+identifier = "deny-set-ytdlp-dir"
+description = "Denies the set_ytdlp_dir command without any pre-configured scope."
+commands.deny = ["set_ytdlp_dir"]

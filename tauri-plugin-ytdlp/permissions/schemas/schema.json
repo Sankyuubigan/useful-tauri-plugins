@@ -295,172 +295,190 @@
       "type": "string",
       "oneOf": [
         {
-          "description": "Enables the dump_frontend_error command without any pre-configured scope.",
+          "description": "Enables the cancel_download command without any pre-configured scope.",
           "type": "string",
-          "const": "allow-dump-frontend-error",
-          "markdownDescription": "Enables the dump_frontend_error command without any pre-configured scope."
+          "const": "allow-cancel-download",
+          "markdownDescription": "Enables the cancel_download command without any pre-configured scope."
         },
         {
-          "description": "Denies the dump_frontend_error command without any pre-configured scope.",
+          "description": "Denies the cancel_download command without any pre-configured scope.",
           "type": "string",
-          "const": "deny-dump-frontend-error",
-          "markdownDescription": "Denies the dump_frontend_error command without any pre-configured scope."
+          "const": "deny-cancel-download",
+          "markdownDescription": "Denies the cancel_download command without any pre-configured scope."
         },
         {
-          "description": "Enables the get_last_logs_path command without any pre-configured scope.",
+          "description": "Enables the check_ytdlp_update command without any pre-configured scope.",
           "type": "string",
-          "const": "allow-get-last-logs-path",
-          "markdownDescription": "Enables the get_last_logs_path command without any pre-configured scope."
+          "const": "allow-check-ytdlp-update",
+          "markdownDescription": "Enables the check_ytdlp_update command without any pre-configured scope."
         },
         {
-          "description": "Denies the get_last_logs_path command without any pre-configured scope.",
+          "description": "Denies the check_ytdlp_update command without any pre-configured scope.",
           "type": "string",
-          "const": "deny-get-last-logs-path",
-          "markdownDescription": "Denies the get_last_logs_path command without any pre-configured scope."
+          "const": "deny-check-ytdlp-update",
+          "markdownDescription": "Denies the check_ytdlp_update command without any pre-configured scope."
         },
         {
-          "description": "Enables the get_log_file_path command without any pre-configured scope.",
+          "description": "Enables the download_video command without any pre-configured scope.",
           "type": "string",
-          "const": "allow-get-log-file-path",
-          "markdownDescription": "Enables the get_log_file_path command without any pre-configured scope."
+          "const": "allow-download-video",
+          "markdownDescription": "Enables the download_video command without any pre-configured scope."
         },
         {
-          "description": "Denies the get_log_file_path command without any pre-configured scope.",
+          "description": "Denies the download_video command without any pre-configured scope.",
           "type": "string",
-          "const": "deny-get-log-file-path",
-          "markdownDescription": "Denies the get_log_file_path command without any pre-configured scope."
+          "const": "deny-download-video",
+          "markdownDescription": "Denies the download_video command without any pre-configured scope."
         },
         {
-          "description": "Enables the log_frontend_event command without any pre-configured scope.",
+          "description": "Enables the fetch_video_info command without any pre-configured scope.",
           "type": "string",
-          "const": "allow-log-frontend-event",
-          "markdownDescription": "Enables the log_frontend_event command without any pre-configured scope."
+          "const": "allow-fetch-video-info",
+          "markdownDescription": "Enables the fetch_video_info command without any pre-configured scope."
         },
         {
-          "description": "Denies the log_frontend_event command without any pre-configured scope.",
+          "description": "Denies the fetch_video_info command without any pre-configured scope.",
           "type": "string",
-          "const": "deny-log-frontend-event",
-          "markdownDescription": "Denies the log_frontend_event command without any pre-configured scope."
+          "const": "deny-fetch-video-info",
+          "markdownDescription": "Denies the fetch_video_info command without any pre-configured scope."
         },
         {
-          "description": "Enables the read_log_tail command without any pre-configured scope.",
+          "description": "Enables the get_ytdlp_status command without any pre-configured scope.",
           "type": "string",
-          "const": "allow-read-log-tail",
-          "markdownDescription": "Enables the read_log_tail command without any pre-configured scope."
+          "const": "allow-get-ytdlp-status",
+          "markdownDescription": "Enables the get_ytdlp_status command without any pre-configured scope."
         },
         {
-          "description": "Denies the read_log_tail command without any pre-configured scope.",
+          "description": "Denies the get_ytdlp_status command without any pre-configured scope.",
           "type": "string",
-          "const": "deny-read-log-tail",
-          "markdownDescription": "Denies the read_log_tail command without any pre-configured scope."
+          "const": "deny-get-ytdlp-status",
+          "markdownDescription": "Denies the get_ytdlp_status command without any pre-configured scope."
         },
         {
-          "description": "Enables the save_logs_file command without any pre-configured scope.",
+          "description": "Enables the install_deno command without any pre-configured scope.",
           "type": "string",
-          "const": "allow-save-logs-file",
-          "markdownDescription": "Enables the save_logs_file command without any pre-configured scope."
+          "const": "allow-install-deno",
+          "markdownDescription": "Enables the install_deno command without any pre-configured scope."
         },
         {
-          "description": "Denies the save_logs_file command without any pre-configured scope.",
+          "description": "Denies the install_deno command without any pre-configured scope.",
           "type": "string",
-          "const": "deny-save-logs-file",
-          "markdownDescription": "Denies the save_logs_file command without any pre-configured scope."
+          "const": "deny-install-deno",
+          "markdownDescription": "Denies the install_deno command without any pre-configured scope."
         },
         {
-          "description": "Enables the set_reporting_enabled command without any pre-configured scope.",
+          "description": "Enables the install_ytdlp command without any pre-configured scope.",
           "type": "string",
-          "const": "allow-set-reporting-enabled",
-          "markdownDescription": "Enables the set_reporting_enabled command without any pre-configured scope."
+          "const": "allow-install-ytdlp",
+          "markdownDescription": "Enables the install_ytdlp command without any pre-configured scope."
         },
         {
-          "description": "Denies the set_reporting_enabled command without any pre-configured scope.",
+          "description": "Denies the install_ytdlp command without any pre-configured scope.",
           "type": "string",
-          "const": "deny-set-reporting-enabled",
-          "markdownDescription": "Denies the set_reporting_enabled command without any pre-configured scope."
+          "const": "deny-install-ytdlp",
+          "markdownDescription": "Denies the install_ytdlp command without any pre-configured scope."
         },
         {
-          "description": "Enables the track_error command without any pre-configured scope.",
+          "description": "Enables the install_ytdlp_update command without any pre-configured scope.",
           "type": "string",
-          "const": "allow-track-error",
-          "markdownDescription": "Enables the track_error command without any pre-configured scope."
+          "const": "allow-install-ytdlp-update",
+          "markdownDescription": "Enables the install_ytdlp_update command without any pre-configured scope."
         },
         {
-          "description": "Denies the track_error command without any pre-configured scope.",
+          "description": "Denies the install_ytdlp_update command without any pre-configured scope.",
           "type": "string",
-          "const": "deny-track-error",
-          "markdownDescription": "Denies the track_error command without any pre-configured scope."
+          "const": "deny-install-ytdlp-update",
+          "markdownDescription": "Denies the install_ytdlp_update command without any pre-configured scope."
         },
         {
-          "description": "Enables the track_event command without any pre-configured scope.",
+          "description": "Enables the set_ffmpeg_path command without any pre-configured scope.",
           "type": "string",
-          "const": "allow-track-event",
-          "markdownDescription": "Enables the track_event command without any pre-configured scope."
+          "const": "allow-set-ffmpeg-path",
+          "markdownDescription": "Enables the set_ffmpeg_path command without any pre-configured scope."
         },
         {
-          "description": "Denies the track_event command without any pre-configured scope.",
+          "description": "Denies the set_ffmpeg_path command without any pre-configured scope.",
           "type": "string",
-          "const": "deny-track-event",
-          "markdownDescription": "Denies the track_event command without any pre-configured scope."
+          "const": "deny-set-ffmpeg-path",
+          "markdownDescription": "Denies the set_ffmpeg_path command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the logs plugin.\n#### This default permission set includes:\n\n- `allow-get-last-logs-path`\n- `allow-get-log-file-path`\n- `allow-read-log-tail`\n- `allow-log-frontend-event`\n- `allow-track-event`\n- `allow-track-error`\n- `allow-dump-frontend-error`\n- `allow-set-reporting-enabled`\n- `allow-save-logs-file`",
+          "description": "Enables the set_ytdlp_dir command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-ytdlp-dir",
+          "markdownDescription": "Enables the set_ytdlp_dir command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_ytdlp_dir command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-ytdlp-dir",
+          "markdownDescription": "Denies the set_ytdlp_dir command without any pre-configured scope."
+        },
+        {
+          "description": "Default permissions for the ytdlp plugin.\n#### This default permission set includes:\n\n- `allow-get-ytdlp-status`\n- `allow-install-ytdlp`\n- `allow-check-ytdlp-update`\n- `allow-install-ytdlp-update`\n- `allow-set-ytdlp-dir`\n- `allow-set-ffmpeg-path`\n- `allow-install-deno`\n- `allow-fetch-video-info`\n- `allow-download-video`\n- `allow-cancel-download`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the logs plugin.\n#### This default permission set includes:\n\n- `allow-get-last-logs-path`\n- `allow-get-log-file-path`\n- `allow-read-log-tail`\n- `allow-log-frontend-event`\n- `allow-track-event`\n- `allow-track-error`\n- `allow-dump-frontend-error`\n- `allow-set-reporting-enabled`\n- `allow-save-logs-file`"
+          "markdownDescription": "Default permissions for the ytdlp plugin.\n#### This default permission set includes:\n\n- `allow-get-ytdlp-status`\n- `allow-install-ytdlp`\n- `allow-check-ytdlp-update`\n- `allow-install-ytdlp-update`\n- `allow-set-ytdlp-dir`\n- `allow-set-ffmpeg-path`\n- `allow-install-deno`\n- `allow-fetch-video-info`\n- `allow-download-video`\n- `allow-cancel-download`"
         },
         {
-          "description": "Allow reading the resolved dev mirror path (test/last_logs.txt).",
+          "description": "Allow reading yt-dlp status (installed, version, path, ffmpeg, deno).",
           "type": "string",
-          "const": "allow-get-last-logs-path",
-          "markdownDescription": "Allow reading the resolved dev mirror path (test/last_logs.txt)."
+          "const": "allow-get-ytdlp-status",
+          "markdownDescription": "Allow reading yt-dlp status (installed, version, path, ffmpeg, deno)."
         },
         {
-          "description": "Allow reading the resolved app log file path (king_orch.log).",
+          "description": "Allow installing/downloading yt-dlp binary.",
           "type": "string",
-          "const": "allow-get-log-file-path",
-          "markdownDescription": "Allow reading the resolved app log file path (king_orch.log)."
+          "const": "allow-install-ytdlp",
+          "markdownDescription": "Allow installing/downloading yt-dlp binary."
         },
         {
-          "description": "Allow reading the tail of the current session log for the Logs panel.",
+          "description": "Allow checking for yt-dlp updates.",
           "type": "string",
-          "const": "allow-read-log-tail",
-          "markdownDescription": "Allow reading the tail of the current session log for the Logs panel."
+          "const": "allow-check-ytdlp-update",
+          "markdownDescription": "Allow checking for yt-dlp updates."
         },
         {
-          "description": "Allow writing a frontend log line through the unified logger.",
+          "description": "Allow updating yt-dlp binary.",
           "type": "string",
-          "const": "allow-log-frontend-event",
-          "markdownDescription": "Allow writing a frontend log line through the unified logger."
+          "const": "allow-install-ytdlp-update",
+          "markdownDescription": "Allow updating yt-dlp binary."
         },
         {
-          "description": "Allow sending an anonymized analytics event to the reporting backend.",
+          "description": "Allow overriding the yt-dlp directory.",
           "type": "string",
-          "const": "allow-track-event",
-          "markdownDescription": "Allow sending an anonymized analytics event to the reporting backend."
+          "const": "allow-set-ytdlp-dir",
+          "markdownDescription": "Allow overriding the yt-dlp directory."
         },
         {
-          "description": "Allow sending an error report to the reporting backend.",
+          "description": "Allow setting custom ffmpeg path.",
           "type": "string",
-          "const": "allow-track-error",
-          "markdownDescription": "Allow sending an error report to the reporting backend."
+          "const": "allow-set-ffmpeg-path",
+          "markdownDescription": "Allow setting custom ffmpeg path."
         },
         {
-          "description": "Allow dumping unhandled frontend errors to crash_dump.log.",
+          "description": "Allow installing Deno runtime for YouTube n-sig extraction.",
           "type": "string",
-          "const": "allow-dump-frontend-error",
-          "markdownDescription": "Allow dumping unhandled frontend errors to crash_dump.log."
+          "const": "allow-install-deno",
+          "markdownDescription": "Allow installing Deno runtime for YouTube n-sig extraction."
         },
         {
-          "description": "Allow toggling cloud error/analytics reporting at runtime.",
+          "description": "Allow fetching video metadata via yt-dlp.",
           "type": "string",
-          "const": "allow-set-reporting-enabled",
-          "markdownDescription": "Allow toggling cloud error/analytics reporting at runtime."
+          "const": "allow-fetch-video-info",
+          "markdownDescription": "Allow fetching video metadata via yt-dlp."
         },
         {
-          "description": "Allow writing the log text to a user-selected file path.",
+          "description": "Allow downloading YouTube videos via yt-dlp.",
           "type": "string",
-          "const": "allow-save-logs-file",
-          "markdownDescription": "Allow writing the log text to a user-selected file path."
+          "const": "allow-download-video",
+          "markdownDescription": "Allow downloading YouTube videos via yt-dlp."
+        },
+        {
+          "description": "Allow cancelling active yt-dlp download.",
+          "type": "string",
+          "const": "allow-cancel-download",
+          "markdownDescription": "Allow cancelling active yt-dlp download."
         }
       ]
     }

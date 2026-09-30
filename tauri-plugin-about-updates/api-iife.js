@@ -35,6 +35,12 @@
   }
 
   // guest-js/web-components.ts
+  function errorText(e) {
+    if (typeof e === "string") return e;
+    if (e instanceof Error) return e.message || String(e);
+    if (e && typeof e === "object" && "message" in e) return String(e.message);
+    return String(e);
+  }
   var AboutUpdatesPanel = class extends HTMLElement {
     constructor() {
       super(...arguments);
@@ -112,7 +118,7 @@
           this.setStatus("\u0423 \u0432\u0430\u0441 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u044F\u044F \u0432\u0435\u0440\u0441\u0438\u044F.");
         }
       } catch (e) {
-        this.setStatus("\u041E\u0448\u0438\u0431\u043A\u0430: " + e.message);
+        this.setStatus("\u041E\u0448\u0438\u0431\u043A\u0430: " + errorText(e));
       } finally {
         this.busy = false;
       }
@@ -157,13 +163,14 @@
         rollbackBtn.addEventListener("click", async () => {
           const selected = select.selectedOptions[0];
           const url = selected?.dataset.url;
-          if (!url || this.busy) return;
+          const version = selected?.value;
+          if (!url || !version || this.busy) return;
           this.busy = true;
-          this.setStatus(`\u041E\u0442\u043A\u0430\u0442 \u043D\u0430 ${selected.value}\u2026`);
+          this.setStatus(`\u041E\u0442\u043A\u0430\u0442 \u043D\u0430 ${version}\u2026`);
           try {
-            await installRelease(url);
+            await installRelease(url, version);
           } catch (e) {
-            this.setStatus("\u041E\u0448\u0438\u0431\u043A\u0430 \u043E\u0442\u043A\u0430\u0442\u0430: " + e.message);
+            this.setStatus("\u041E\u0448\u0438\u0431\u043A\u0430 \u043E\u0442\u043A\u0430\u0442\u0430: " + errorText(e));
           } finally {
             this.busy = false;
           }
@@ -182,7 +189,7 @@
         }
         this.setStatus("");
       } catch (e) {
-        this.setStatus("\u041E\u0448\u0438\u0431\u043A\u0430: " + e.message);
+        this.setStatus("\u041E\u0448\u0438\u0431\u043A\u0430: " + errorText(e));
       } finally {
         this.busy = false;
       }
@@ -196,8 +203,8 @@
   async function getReleaseHistory() {
     return invoke("plugin:about-updates|get_release_history");
   }
-  async function installRelease(downloadUrl) {
-    return invoke("plugin:about-updates|install_release", { downloadUrl });
+  async function installRelease(downloadUrl, version) {
+    return invoke("plugin:about-updates|install_release", { downloadUrl, version });
   }
   async function getAppVersion() {
     return invoke("plugin:about-updates|get_app_version");

@@ -1,6 +1,26 @@
 import { getAppVersion, getReleaseHistory, installRelease, checkForUpdate, downloadAndInstallUpdate, getSupportUrl, } from './index';
 import { open } from '@tauri-apps/plugin-shell';
 /**
+ * Текст ошибки из reject-значения `invoke`.
+ *
+ * Tauri v2 реджектит промис СЫРОЙ строкой, когда команда вернула `Err(String)`.
+ * Поэтому `(e as Error).message` у такой ошибки равен `undefined` — юзер видел
+ * «Ошибка отката: undefined» вместо реальной причины. Приводим любую форму
+ * (строка / Error / объект с message) к читаемому тексту.
+ *
+ * Дублировать лог здесь не нужно: каждая ветка `Err` на стороне Rust уже
+ * пишется через `log::error!` (core rules §2.5 — дубли логов запрещены).
+ */
+function errorText(e) {
+    if (typeof e === 'string')
+        return e;
+    if (e instanceof Error)
+        return e.message || String(e);
+    if (e && typeof e === 'object' && 'message' in e)
+        return String(e.message);
+    return String(e);
+}
+/**
  * <about-updates-panel repo="owner/repo"></about-updates-panel>
  *
  * Фреймворк-агностичная плашка «О приложении»: версия, проверка обновлений,
@@ -92,7 +112,7 @@ class AboutUpdatesPanel extends HTMLElement {
             }
         }
         catch (e) {
-            this.setStatus('Ошибка: ' + e.message);
+            this.setStatus('Ошибка: ' + errorText(e));
         }
         finally {
             this.busy = false;
@@ -140,15 +160,16 @@ class AboutUpdatesPanel extends HTMLElement {
             rollbackBtn.addEventListener('click', async () => {
                 const selected = select.selectedOptions[0];
                 const url = selected?.dataset.url;
-                if (!url || this.busy)
+                const version = selected?.value;
+                if (!url || !version || this.busy)
                     return;
                 this.busy = true;
-                this.setStatus(`Откат на ${selected.value}…`);
+                this.setStatus(`Откат на ${version}…`);
                 try {
-                    await installRelease(url);
+                    await installRelease(url, version);
                 }
                 catch (e) {
-                    this.setStatus('Ошибка отката: ' + e.message);
+                    this.setStatus('Ошибка отката: ' + errorText(e));
                 }
                 finally {
                     this.busy = false;
@@ -169,7 +190,7 @@ class AboutUpdatesPanel extends HTMLElement {
             this.setStatus('');
         }
         catch (e) {
-            this.setStatus('Ошибка: ' + e.message);
+            this.setStatus('Ошибка: ' + errorText(e));
         }
         finally {
             this.busy = false;

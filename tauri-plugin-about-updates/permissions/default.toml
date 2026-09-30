@@ -11,6 +11,11 @@ description = "Allow installing/rolling back to a specific GitHub release."
 commands.allow = ["install_release"]
 
 [[permission]]
+identifier = "allow-get-install-report"
+description = "Allow reading the result of the last release installation (rollback/update)."
+commands.allow = ["get_install_report"]
+
+[[permission]]
 identifier = "allow-get-app-version"
 description = "Allow reading the host application version."
 commands.allow = ["get_app_version"]
@@ -25,6 +30,7 @@ description = "Default permissions for the about-updates plugin."
 permissions = [
   "allow-get-release-history",
   "allow-install-release",
+  "allow-get-install-report",
   "allow-get-app-version",
   "allow-get-support-url"
 ]

@@ -6,6 +6,7 @@ Default permissions for the about-updates plugin.
 
 - `allow-get-release-history`
 - `allow-install-release`
+- `allow-get-install-report`
 - `allow-get-app-version`
 - `allow-get-support-url`
 
@@ -40,6 +41,32 @@ Enables the get_app_version command without any pre-configured scope.
 <td>
 
 Denies the get_app_version command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`about-updates:allow-get-install-report`
+
+</td>
+<td>
+
+Enables the get_install_report command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`about-updates:deny-get-install-report`
+
+</td>
+<td>
+
+Denies the get_install_report command without any pre-configured scope.
 
 </td>
 </tr>
@@ -144,6 +171,19 @@ Allow querying the GitHub release history for rollback.
 <td>
 
 Allow installing/rolling back to a specific GitHub release.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`about-updates:allow-get-install-report`
+
+</td>
+<td>
+
+Allow reading the result of the last release installation (rollback/update).
 
 </td>
 </tr>

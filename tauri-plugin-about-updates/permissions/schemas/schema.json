@@ -307,6 +307,18 @@
           "markdownDescription": "Denies the get_app_version command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_install_report command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-install-report",
+          "markdownDescription": "Enables the get_install_report command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_install_report command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-install-report",
+          "markdownDescription": "Denies the get_install_report command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_release_history command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-release-history",
@@ -343,10 +355,10 @@
           "markdownDescription": "Denies the install_release command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the about-updates plugin.\n#### This default permission set includes:\n\n- `allow-get-release-history`\n- `allow-install-release`\n- `allow-get-app-version`\n- `allow-get-support-url`",
+          "description": "Default permissions for the about-updates plugin.\n#### This default permission set includes:\n\n- `allow-get-release-history`\n- `allow-install-release`\n- `allow-get-install-report`\n- `allow-get-app-version`\n- `allow-get-support-url`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the about-updates plugin.\n#### This default permission set includes:\n\n- `allow-get-release-history`\n- `allow-install-release`\n- `allow-get-app-version`\n- `allow-get-support-url`"
+          "markdownDescription": "Default permissions for the about-updates plugin.\n#### This default permission set includes:\n\n- `allow-get-release-history`\n- `allow-install-release`\n- `allow-get-install-report`\n- `allow-get-app-version`\n- `allow-get-support-url`"
         },
         {
           "description": "Allow querying the GitHub release history for rollback.",
@@ -359,6 +371,12 @@
           "type": "string",
           "const": "allow-install-release",
           "markdownDescription": "Allow installing/rolling back to a specific GitHub release."
+        },
+        {
+          "description": "Allow reading the result of the last release installation (rollback/update).",
+          "type": "string",
+          "const": "allow-get-install-report",
+          "markdownDescription": "Allow reading the result of the last release installation (rollback/update)."
         },
         {
           "description": "Allow reading the host application version.",

@@ -4,9 +4,19 @@ import { check } from '@tauri-apps/plugin-updater';
 export async function getReleaseHistory() {
     return invoke('plugin:about-updates|get_release_history');
 }
-/** Откат на конкретный релиз по его URL установщика. */
-export async function installRelease(downloadUrl) {
-    return invoke('plugin:about-updates|install_release', { downloadUrl });
+/**
+ * Откат на конкретный релиз по его URL установщика.
+ *
+ * `version` обязателен: бэкенд пишет отчёт об установке и на следующем старте
+ * сверяет его с фактически установленной версией — без запрошенной версии
+ * «откат сработал / не сработал» нечем подтвердить.
+ */
+export async function installRelease(downloadUrl, version) {
+    return invoke('plugin:about-updates|install_release', { downloadUrl, version });
+}
+/** Отчёт о последней установке (откат/обновление) с вердиктом, либо null. */
+export async function getInstallReport() {
+    return invoke('plugin:about-updates|get_install_report');
 }
 /** Версия хост-приложения. */
 export async function getAppVersion() {

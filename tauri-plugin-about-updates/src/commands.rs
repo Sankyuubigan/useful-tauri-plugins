@@ -1,8 +1,6 @@
-use std::path::PathBuf;
-use std::process::Command;
-
 use tauri::{AppHandle, Manager, Runtime};
 
+use crate::install_report::{self, InstallKind, InstallReport};
 use crate::models::ReleaseInfo;
 use crate::PluginState;
 
@@ -15,26 +13,38 @@ pub async fn get_release_history<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Re
     let client = reqwest::Client::builder()
         .user_agent("tauri-plugin-about-updates")
         .build()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            log::error!("[about-updates] HTTP-клиент: {}", e);
+            format!("Ошибка создания HTTP-клиента: {}", e)
+        })?;
 
+    let url = format!("https://api.github.com/repos/{repo}/releases?per_page=100");
     let resp = client
-        .get(format!(
-            "https://api.github.com/repos/{repo}/releases?per_page=100"
-        ))
+        .get(&url)
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            log::error!("[about-updates] запрос истории релизов не удался: {}", e);
+            format!("Ошибка запроса GitHub: {}", e)
+        })?;
 
     if !resp.status().is_success() {
+        log::error!("[about-updates] GitHub API вернул HTTP {}", resp.status());
         return Err(format!("GitHub API error: {}", resp.status()));
     }
 
-    let releases: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+    let releases: serde_json::Value = resp.json().await.map_err(|e| {
+        log::error!("[about-updates] ответ GitHub API не распознан: {}", e);
+        format!("Некорректный ответ GitHub API: {}", e)
+    })?;
     let current = app.package_info().version.to_string();
 
     let mut out: Vec<ReleaseInfo> = Vec::new();
-    let arr = releases.as_array().ok_or("Некорректный ответ GitHub API")?;
+    let arr = releases.as_array().ok_or_else(|| {
+        log::error!("[about-updates] ответ GitHub API не массив");
+        "Некорректный ответ GitHub API".to_string()
+    })?;
 
     for rel in arr {
         let tag = rel
@@ -73,6 +83,7 @@ pub async fn get_release_history<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Re
             }
         }
         if download_url.is_empty() {
+            log::warn!("[about-updates] у релиза {} нет ассета -setup.exe, пропускаем", version);
             continue;
         }
 
@@ -85,82 +96,45 @@ pub async fn get_release_history<R: Runtime>(app: AppHandle<R>) -> Result<Vec<Re
         });
     }
 
+    log::info!("[about-updates] история релизов: {} шт.", out.len());
     Ok(out)
 }
 
 /// Откат к конкретной версии.
 ///
 /// Единственный источник правды — GitHub Releases. Фронтенд передаёт сюда реальный
-/// URL установщика (`download_url`, полученный из GitHub API в `get_release_history`),
-/// мы качаем ровно этот ассет и запускаем NSIS-инсталлер (тихо, с даунгрейдом —
-/// `allowDowngrades` включён в `tauri.conf.json` хоста).
+/// URL установщика (`download_url`, полученный из GitHub API в `get_release_history`)
+/// и версию, мы качаем ровно этот ассет и запускаем NSIS-инсталлер
+/// (даунгрейд разрешён — `allowDowngrades` включён в `tauri.conf.json` хоста).
+///
+/// Запуск и перезапуск — на стороне инсталлера (`/P /UPDATE /R`, см. `installer.rs`),
+/// поэтому здесь только бэкап данных, скачивание и выход приложения.
 #[tauri::command]
-pub async fn install_release<R: Runtime>(app: AppHandle<R>, download_url: String) -> Result<(), String> {
-    // 1. Бэкап данных перед понижением версии.
-    crate::updater_rollback::backup_before_rollback(&app)?;
+pub async fn install_release<R: Runtime>(
+    app: AppHandle<R>,
+    download_url: String,
+    version: String,
+) -> Result<(), String> {
+    log::info!("[about-updates] откат: запрос на установку {}", download_url);
 
-    // 2. Имя установщика из URL.
-    let file_name = download_url
-        .rsplit('/')
-        .next()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "Некорректный URL установщика".to_string())?
-        .to_string();
+    // 1. Бэкап данных перед понижением версии. Для отката это обязательно:
+    //    после даунгрейда старая версия может не прочитать конфиг/сессии новее.
+    crate::updater_rollback::backup_before_rollback(&app).map_err(|e| {
+        log::error!("[about-updates] бэкап перед откатом не удался: {}", e);
+        format!("Не удалось создать бэкап перед откатом: {}", e)
+    })?;
 
-    // 3. Скачивание установщика единым движком (прогресс, без лишних окон).
-    let installer_path: PathBuf = std::env::temp_dir().join(&file_name);
-    tauri_plugin_downloader::download(
-        &download_url,
-        &installer_path,
-        tauri_plugin_downloader::DownloadOptions {
-            label: format!("Установщик {}", file_name),
-            kind: "app".into(),
-            ..Default::default()
-        },
-        Some(&|msg: String| {
-            log::info!("[about-updates] {}", msg);
-        }),
-    )
-    .await
-    .map_err(|e| format!("Ошибка загрузки установщика: {}", e))?;
+    // 2. Скачивание, отчёт, запуск инсталлера, выход приложения.
+    crate::installer::run_install(&app, InstallKind::Rollback, &version, &download_url).await
+}
 
-    // 4. Запуск инсталлера в тихом режиме и авто-перезапуск приложения после
-    //    переустановки. NSIS в режиме /S НЕ перезапускает приложение сам, поэтому
-    //    запускаем отсоединённый cmd, который дожидается завершения инсталлера
-    //    (start /wait) и затем сам запускает обновлённый exe (start "" <exe>).
-    let app_exe = std::env::current_exe()
-        .map_err(|e| format!("Не удалось получить путь к exe: {}", e))?;
-    let installer_str = installer_path.display().to_string();
-    let app_str = app_exe.display().to_string();
-
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        const DETACHED_PROCESS: u32 = 0x0000_0008;
-        let relaunch_script = format!(
-            "start \"\" /wait \"{}\" /S & start \"\" \"{}\"",
-            installer_str, app_str
-        );
-        Command::new("cmd")
-            .args(["/c", &relaunch_script])
-            .creation_flags(CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS)
-            .spawn()
-            .map_err(|e| format!("Не удалось запланировать перезапуск: {}", e))?;
-    }
-    #[cfg(not(windows))]
-    {
-        let relaunch_script = format!("\"{}\" /S; \"{}\"", installer_str, app_str);
-        Command::new("sh")
-            .args(["-c", &relaunch_script])
-            .spawn()
-            .map_err(|e| format!("Не удалось запланировать перезапуск: {}", e))?;
-    }
-
-    // Завершаем текущий процесс, чтобы он не держал заблокированным свой exe
-    // (иначе тихая переустановка не сможет заменить файлы). Перезапуск выполнит
-    // отсоединённый релаунчер выше.
-    std::process::exit(0);
+/// Отчёт о последней установке (откат/обновление) с вердиктом.
+///
+/// Вызывается фронтендом или при диагностике; попутно разрешает «висящий» отчёт,
+/// если приложение было запущено вручную после неудачной установки.
+#[tauri::command]
+pub fn get_install_report<R: Runtime>(app: AppHandle<R>) -> Option<InstallReport> {
+    install_report::resolve_pending(&app).or_else(|| install_report::read(&app))
 }
 
 /// Версия хост-приложения (из его Cargo.toml / tauri.conf.json).

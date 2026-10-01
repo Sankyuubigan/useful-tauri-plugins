@@ -328,6 +328,13 @@ impl LlamaEngine {
         let cfg_early = crate::engine::config::load_config_early();
         let source_id = crate::engine::sources::resolve_source(cfg_early.engine_source.as_deref());
         let source_spec = crate::engine::sources::source_spec(&source_id);
+        // Ярлык источника нужен в тексте диагностики ошибки запуска (см. ниже),
+        // а `source_spec` после этого уходит в замыкание `build_cmd` — держим
+        // копию строки, чтобы не зависеть от владения Option.
+        let source_label = source_spec
+            .as_ref()
+            .map(|s| s.label.clone())
+            .unwrap_or_else(|| source_id.clone());
         let pref = cfg_early.engine_variant.as_deref();
         let selected_variant = crate::engine::llamacpp_installer::resolve_variant(pref);
         let installed_family = crate::engine::llamacpp_installer::EngineFamily::from_variant(&selected_variant);
@@ -387,26 +394,35 @@ impl LlamaEngine {
         // поймает и объяснит причину).
         let required_gen = crate::engine::gpu_detector::required_cuda_gen(&gpu_info);
         let required_label = required_gen.map(|g| g.label().to_string()).unwrap_or_else(|| "cpu".to_string());
-        if let Some(gen) = required_gen {
-            let required_family = match gen {
-                crate::engine::gpu_detector::CudaGen::Cuda13 => crate::engine::llamacpp_installer::EngineFamily::Cuda13,
-                crate::engine::gpu_detector::CudaGen::Cuda12 => crate::engine::llamacpp_installer::EngineFamily::Cuda12,
-            };
-            if required_family == crate::engine::llamacpp_installer::EngineFamily::Cuda13
-                && installed_family == crate::engine::llamacpp_installer::EngineFamily::Cuda12
-                && gpu_info.compute_major >= 12
+        // То же имя, что и в дропдауне Настроек: юзер должен находить нужный
+        // вариант в списке по точному названию из текста ошибки.
+        let recommended_variant = required_gen
+            .map(crate::engine::llamacpp_installer::cuda_gen_variant)
+            .unwrap_or(crate::engine::llamacpp_installer::VARIANT_CPU)
+            .to_string();
+        let recommended_variant_label =
+            crate::engine::llamacpp_installer::variant_label(&recommended_variant).to_string();
+        if required_gen.is_some() {
+            // ── Несовместимость состава сборки с архитектурой видеокарты ──
+            // Жёсткая в обе стороны, потому что в обоих случаях падение
+            // гарантированное и одинаково непонятное юзеру
+            // (`CUDA error: no kernel image is available for execution on the device`):
+            //   • cuda-12.x на Blackwell (sm_120) — в сборке нет ядер sm_120;
+            //   • cuda-13.x на Maxwell/Pascal/Volta — в сборке нет ядер младше
+            //     sm_75 (см. MIN_COMPUTE_MAJOR_CUDA13).
+            // Для 40xx cuda-13.x — лишь предпочтение свежего драйвера,
+            // cuda-12.x при этом работает нормально, поэтому там только лог.
+            if let Some((required_variant, _)) =
+                crate::engine::llamacpp_installer::arch_incompatibility(&gpu_info, &selected_variant)
             {
-                // Жёсткая несовместимость только для Blackwell: сборка cuda-12.x
-                // не содержит ядер sm_120. Для 40xx cuda-13.x — лишь предпочтение
-                // свежего драйвера, cuda-12.x при этом работает нормально.
                 log_cb(format!(
-                    "⚠️ Ваша видеокарта {} (Blackwell, compute {}.{}) — бекенд {} не содержит ядер Blackwell. Модель будет работать только на CPU.\n\
-                     Решение: Настройки → «Движок запуска нейромоделей» → выберите «{}».",
-                    gpu_info.gpu_name,
-                    gpu_info.compute_major,
-                    gpu_info.compute_minor,
+                    "❌ Бекенд «{}» не содержит вычислительных ядер для вашей видеокарты {} ({}). \
+                     Модель не сможет работать на GPU.\n\
+                     Решение: Настройки → «Движок запуска нейромоделей» → выберите «{}» и нажмите «Установить».",
                     crate::engine::llamacpp_installer::variant_label(&selected_variant),
-                    crate::engine::llamacpp_installer::variant_label(crate::engine::llamacpp_installer::VARIANT_CUDA13)
+                    gpu_info.gpu_name,
+                    crate::engine::gpu_detector::compute_label(&gpu_info),
+                    crate::engine::llamacpp_installer::variant_label(required_variant),
                 ));
             }
             if installed_family == crate::engine::llamacpp_installer::EngineFamily::Cpu {
@@ -435,6 +451,32 @@ impl LlamaEngine {
             kv_quant_keys,
             kv_quant_values,
         );
+        // ── Превентивная проверка совместимости движка с архитектурой модели ──
+        // Некоторые движки (BeeLlama с режимом KVarN) не умеют работать с моделями,
+        // у которых часть слоёв делит KV-кэш с предыдущими (Cross-Layer Attention).
+        // Признак берём из метаданных GGUF (`*.attention.shared_kv_layers`), а не из
+        // имени файла — правило универсально и не привязано к конкретным моделям.
+        // Проверка ДО spawn: иначе юзер платит два неудачных запуска (~3 с) и сырой
+        // трейс в логах, а получает тот же текст только постфактум.
+        let diag_ctx = crate::engine::startup_diagnosis::build_context(
+            &gpu_info,
+            &selected_variant,
+            &crate::engine::llamacpp_installer::variant_label(&selected_variant),
+            &source_id,
+            &source_label,
+            kv_spec.tail_tokens,
+            &recommended_variant_label,
+            &model_path,
+        );
+        if let Some(diag) = crate::engine::startup_diagnosis::diagnose_shared_kv_before_spawn(
+            &model_path,
+            &diag_ctx,
+        ) {
+            log::error!("[llama-engine] startup failure (preflight {:?}): {}", diag.kind, diag.log_hint);
+            log_cb(format!("❌ {}", diag.log_hint));
+            return fail(diag.user_message);
+        }
+
         let mut vram_notice: Option<String> = None;
         if use_gpu && vram_before > 0 {
             if let Ok(nvml) = nvml_wrapper::Nvml::init() {
@@ -798,6 +840,31 @@ impl LlamaEngine {
                     path,
                     mmproj_error_detail(&log)
                 )
+            } else if let Some(diag) = {
+                // stderr — второй источник диагностики наряду с log-файлом,
+                // поэтому читаем его один раз и переиспользуем в лог.
+                let stderr_lines = server_trace.diagnostic_lines();
+                crate::engine::startup_diagnosis::diagnose_startup_failure(
+                    &log,
+                    &stderr_lines,
+                    code,
+                    &diag_ctx,
+                )
+                .map(|d| (d, stderr_lines))
+            } {
+                // Полный технический след — в лог приложения (вкладка «Логи»),
+                // юзеру — расшифровка с конкретным действием. Раньше здесь
+                // отдавался сырой хвост ggml-лога, и юзер делал вывод,
+                // что «сломалась программа».
+                let (diag, stderr_lines) = diag;
+                crate::engine::startup_diagnosis::log_full_trace(
+                    &server_log,
+                    &log,
+                    &stderr_lines,
+                    &diag,
+                );
+                log_cb(format!("❌ {}", diag.log_hint));
+                diag.user_message
             } else {
                 format!(
                     "Движок llama-server завершился при запуске (код {}). {}",

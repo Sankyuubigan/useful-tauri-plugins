@@ -21,6 +21,7 @@ pub mod mem_profiler;
 pub mod mmproj;
 pub mod process_util;
 pub mod sources;
+pub mod startup_diagnosis;
 pub mod stream_diagnostics;
 pub mod vram;
 pub mod vram_estimate;
@@ -45,6 +46,10 @@ pub use llm::{
 pub use llm_gguf::{extract_i64_array_from_gguf, extract_i64_array_with_arch};
 pub use mem_profiler::{current_process_rss, peak_line, MemGuard, MemSampler};
 pub use mmproj::ensure_mmproj_for_model;
+pub use startup_diagnosis::{
+    build_context, diagnose_shared_kv_before_spawn, diagnose_startup_failure, log_full_trace,
+    DiagnosisContext, StartupDiagnosis, StartupFailureKind,
+};
 pub use vram::notify_vram;
 pub use vram_estimate::{
     cache_type_bytes, current_kv_spec, estimate_vram, estimate_vram_with_spec,

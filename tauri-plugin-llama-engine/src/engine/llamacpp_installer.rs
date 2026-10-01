@@ -15,6 +15,7 @@
 //! 1) корень `<llamacpp_dir>/llama-server.exe` → `backends/ggml-org/<variant>/`;
 //! 2) старый плоский формат `backends/<variant>/` → `backends/ggml-org/<variant>/`.
 
+use crate::engine::gpu_detector::GpuInfo;
 use crate::engine::sources::{self, SourceSpec};
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -149,16 +150,27 @@ pub fn is_known_variant(variant: &str) -> bool {
     all_variants().iter().any(|v| v == variant)
 }
 
-/// Автоопределение варианта по GPU (логика как в Jan):
-/// Blackwell → cuda-13.x; NVIDIA с драйвером CUDA 13+ (R580+) → cuda-13.x
-/// (сборка содержит ядра sm_75..sm_120, включая RTX 40xx); остальные NVIDIA
-/// (драйвер CUDA 12+) → cuda-12.4; иначе CPU.
+/// Единственный маппинг «поколение CUDA → id варианта движка».
+/// Единственное место, где `CudaGen` превращается в то, что лежит в папке
+/// `backends/<source>/<variant>/` — чтобы авто-подбор, подпись в UI и тексты
+/// диагностики не разъезжались по разным формулировкам.
+pub fn cuda_gen_variant(gen: crate::engine::gpu_detector::CudaGen) -> &'static str {
+    use crate::engine::gpu_detector::CudaGen;
+    match gen {
+        CudaGen::Cuda13 => VARIANT_CUDA13,
+        CudaGen::Cuda12 => VARIANT_CUDA,
+    }
+}
+
+/// Автоопределение варианта по GPU. Решение принимает `required_cuda_gen`
+/// (единая точка правды об архитектуре и драйвере), здесь только маппинг:
+/// Blackwell → cuda-13.x; Turing+ на свежем драйвере → cuda-13.x;
+/// Maxwell/Pascal/Volta и неизвестная архитектура → cuda-12.4; иначе CPU.
 pub fn select_variant() -> String {
-    use crate::engine::gpu_detector::{detect_gpu, required_cuda_gen, CudaGen};
+    use crate::engine::gpu_detector::{detect_gpu, required_cuda_gen};
     let gpu = detect_gpu();
     match required_cuda_gen(&gpu) {
-        Some(CudaGen::Cuda13) => VARIANT_CUDA13.to_string(),
-        Some(CudaGen::Cuda12) => VARIANT_CUDA.to_string(),
+        Some(gen) => cuda_gen_variant(gen).to_string(),
         None => VARIANT_CPU.to_string(),
     }
 }
@@ -172,12 +184,41 @@ pub fn resolve_variant(pref: Option<&str>) -> String {
     }
 }
 
-/// Человекочитаемое описание варианта для UI (подсказка в дропдауне)
+/// Совместим ли установленный бекенд с архитектурой видеокарты «в принципе».
+/// Возвращает `None`, если несовместимости по составу сборки нет (в том числе
+/// когда судить нельзя: архитектура неизвестна, вариант не CUDA).
+///
+/// Здесь живёт единственный ответ на вопрос «упал ли движок из-за того, что в
+/// сборке нет ядер», потому что он зависит от двух фактов сразу: архитектуры
+/// карты (`gpu_detector`) и состава сборки (`MIN_COMPUTE_MAJOR_CUDA13`).
+/// Возвращает пару `(нужный вариант, установленный вариант)`.
+pub fn arch_incompatibility(
+    gpu: &GpuInfo,
+    installed_variant: &str,
+) -> Option<(&'static str, &'static str)> {
+    match EngineFamily::from_variant(installed_variant) {
+        // В сборке cuda-13.x ядра только от sm_75: Maxwell/Pascal/Volta не входят.
+        EngineFamily::Cuda13
+            if !crate::engine::gpu_detector::cuda13_arch_supported(gpu) =>
+        {
+            Some((VARIANT_CUDA, VARIANT_CUDA13))
+        }
+        // В сборке cuda-12.x нет ядер Blackwell (sm_120).
+        EngineFamily::Cuda12 if gpu.compute_major >= 12 => Some((VARIANT_CUDA13, VARIANT_CUDA)),
+        _ => None,
+    }
+}
+
+/// Человекочитаемое описание варианта для UI (подсказка в дропдауне).
+/// Границы архитектур — не украшение: сборка `cuda-13.x` физически не
+/// содержит ядер младше sm_75 (см. `MIN_COMPUTE_MAJOR_CUDA13`), поэтому
+/// подпись обязана называть нижнюю границу, иначе юзер выберет вариант,
+/// который гарантированно упадёт с `CUDA_ERROR_NO_KERNEL_IMAGE`.
 pub fn variant_note(variant: &str) -> &'static str {
     match variant {
         VARIANT_CPU => "Работает на любом компьютере, без видеокарты",
-        VARIANT_CUDA => "NVIDIA GTX 10xx — RTX 40xx (драйвер CUDA 12+)",
-        VARIANT_CUDA13 => "NVIDIA с драйвером CUDA 13+ (R580+). Работает на RTX 40xx и 50xx; для 50xx обязателен",
+        VARIANT_CUDA => "NVIDIA от Maxwell (GTX 9xx) до RTX 40xx. Самый совместимый вариант — выбирайте его, если сомневаетесь в видеокарте",
+        VARIANT_CUDA13 => "NVIDIA Turing и новее (GTX 16xx, RTX 20xx–50xx) с драйвером CUDA 13+ (580+). На GTX 10xx и старше НЕ работает: в сборке нет ядер старше sm_75",
         VARIANT_VULKAN => "Любые видеокарты: AMD, Intel, NVIDIA (через Vulkan)",
         VARIANT_HIP => "Только современные AMD: RX 6000/7000 (ROCm). На старых AMD (RX 5xx, Vega, RX 5700) не работает — выберите Vulkan",
         _ => "",
@@ -1142,11 +1183,86 @@ mod tests {
         // Подсказка для HIP предупреждает про старые AMD
         assert!(variant_note("hip-radeon").contains("старых AMD"));
         assert!(variant_note("vulkan").contains("Любые видеокарты"));
-        // CUDA 13.x — не «только RTX 50xx»: подходит для любых NVIDIA с драйвером 580+
+        // CUDA 13.x — не «только RTX 50xx»: подходит для Turing+ (GTX 16xx, RTX 20xx–50xx)
+        // с драйвером 580+. Подпись обязана называть нижнюю границу архитектуры,
+        // иначе юзер выберет вариант, который гарантированно упадёт.
         assert_eq!(variant_label("cuda-13.3"), "CUDA 13.x (NVIDIA, драйвер 580+)");
-        assert!(variant_note("cuda-13.3").contains("RTX 40xx и 50xx"));
+        assert!(variant_note("cuda-13.3").contains("GTX 16xx"));
+        assert!(variant_note("cuda-13.3").contains("RTX 20xx"));
         assert!(variant_note("cuda-13.3").contains("580"));
-        assert!(variant_note("cuda-12.4").contains("GTX 10xx"));
+        assert!(
+            variant_note("cuda-13.3").contains("GTX 10xx"),
+            "подпись cuda-13.x обязана предупреждать про GTX 10xx: {}",
+            variant_note("cuda-13.3")
+        );
+        // cuda-12.x — самый совместимый вариант, и подпись должна предлагать
+        // его тем, кто не уверен в своей видеокарте.
+        assert!(variant_note("cuda-12.4").contains("GTX 9xx"));
+        assert!(variant_note("cuda-12.4").contains("сомневаетесь"));
+    }
+
+    /// Регрессия: инцидент с 4 ГБ GPU. Свежий драйвер (CUDA 13) на карте
+    /// младше Turing больше не приводит к выбору cuda-13.x, а ручной выбор
+    /// cuda-13.x на такой карте распознаётся как несовместимость состава сборки.
+    #[test]
+    fn old_arch_pascal_and_volta_are_excluded_from_cuda13() {
+        // Pascal sm_61, Maxwell sm_52, Volta sm_70 — ядер в cuda-13.x нет.
+        for (major, minor) in [(5u32, 0u32), (5, 2), (6, 0), (6, 1), (7, 0)] {
+            let gpu = gpu_with_arch(major, minor);
+            assert!(
+                arch_incompatibility(&gpu, VARIANT_CUDA13).is_some(),
+                "sm_{}.{} не поддержан cuda-13.x — несовместимость обязана определяться",
+                major,
+                minor
+            );
+        }
+        // Turing sm_75 и новее — совместимы с обеими ветками CUDA.
+        for (major, minor) in [(7u32, 5u32), (8, 6), (8, 9), (9, 0), (12, 0)] {
+            let gpu = gpu_with_arch(major, minor);
+            assert!(
+                arch_incompatibility(&gpu, VARIANT_CUDA13).is_none(),
+                "sm_{}.{} поддержан cuda-13.x",
+                major,
+                minor
+            );
+        }
+        // Blackwell на cuda-12.x — тоже несовместимость (обратная сторона).
+        let blackwell = gpu_with_arch(12, 0);
+        assert!(arch_incompatibility(&blackwell, VARIANT_CUDA).is_some());
+        assert!(arch_incompatibility(&blackwell, VARIANT_CUDA13).is_none());
+        // Неизвестная архитектура — не блокируем юзера.
+        let unknown = gpu_with_arch(0, 0);
+        assert!(arch_incompatibility(&unknown, VARIANT_CUDA13).is_none());
+        // Не-CUDA варианты всегда совместимы по этому критерию.
+        let pascal = gpu_with_arch(6, 1);
+        for v in [VARIANT_CPU, VARIANT_VULKAN, VARIANT_HIP] {
+            assert!(arch_incompatibility(&pascal, v).is_none());
+        }
+    }
+
+    /// `select_variant` обязан отдавать cuda-12.x на карте младше Turing с
+    /// драйвером CUDA 13: это был исходный баг (авто-подбор уводил юзера в
+    /// сборку без нужных ядер).
+    #[test]
+    fn cuda_gen_variant_is_the_single_mapping_point() {
+        use crate::engine::gpu_detector::CudaGen;
+        assert_eq!(cuda_gen_variant(CudaGen::Cuda13), VARIANT_CUDA13);
+        assert_eq!(cuda_gen_variant(CudaGen::Cuda12), VARIANT_CUDA);
+        // Обе CUDA-ветки отличаются от CPU — иначе сработает не та ветка.
+        assert_ne!(cuda_gen_variant(CudaGen::Cuda12), VARIANT_CPU);
+        assert_ne!(cuda_gen_variant(CudaGen::Cuda13), VARIANT_CPU);
+    }
+
+    fn gpu_with_arch(compute_major: u32, compute_minor: u32) -> GpuInfo {
+        GpuInfo {
+            has_nvidia: true,
+            gpu_name: "Test GPU".to_string(),
+            cuda_major: 13,
+            cuda_minor: 0,
+            driver_version: "580.00".to_string(),
+            compute_major,
+            compute_minor,
+        }
     }
 
     fn release_with(names: &[&str]) -> GitHubRelease {

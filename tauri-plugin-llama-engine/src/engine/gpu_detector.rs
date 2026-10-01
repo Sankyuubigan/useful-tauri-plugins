@@ -7,6 +7,35 @@ use std::process::Command;
 /// (exe слинкован с cublas64_12.dll — нужен драйвер с поддержкой CUDA 12).
 pub const MIN_CUDA_MAJOR: u32 = 12;
 
+/// Минимальная архитектура (sm_XX), для которой в сборке `cuda-13.x`
+/// вообще есть вычислительные ядра.
+///
+/// Обоснование (ggml/src/ggml-cuda/CMakeLists.txt в llama.cpp):
+/// ```cmake
+/// if (CUDAToolkit_VERSION VERSION_LESS "13")
+///     list(APPEND CMAKE_CUDA_ARCHITECTURES 50-virtual 61-virtual 70-virtual)
+/// endif ()
+/// list(APPEND CMAKE_CUDA_ARCHITECTURES 75-virtual 80-virtual 86-real 89-real 90-virtual 120a-real)
+/// ```
+/// Тулкит CUDA 13 выпилил Maxwell (sm_5x), Pascal (sm_6x) и Volta (sm_70);
+/// минимальный arch в его наборе — `75-virtual` (Turing). Релизные бинари
+/// `llama-*-bin-win-cuda-13.*` собираются именно с этим дефолтным набором
+/// (см. `.github/workflows/release.yml`: "no CMAKE_CUDA_ARCHITECTURES: use
+/// the broad default arch set").
+///
+/// Следствие: на карте младше Turing движок `cuda-13.x` падает с
+/// `CUDA error: no kernel image is available for execution on the device`,
+/// а сборка `cuda-12.4` там работает (в ней есть `61-virtual` PTX).
+pub const MIN_COMPUTE_MAJOR_CUDA13: u32 = 7;
+
+/// Минимальная минорная версия compute capability, поддерживаемая
+/// сборкой `cuda-13.x` при `compute_major == 7`.
+///
+/// sm_70 — это Volta, и её CUDA 13 тоже удалил, поэтому для major 7 нужна
+/// минорная часть ≥ 5 (то есть sm_75 = Turing). Проверять только major
+/// нельзя: карта major 7 / minor 0 получила бы cuda-13.x и упала бы.
+pub const MIN_COMPUTE_MINOR_CUDA13: u32 = 5;
+
 /// Поколение CUDA-сборки движка llama.cpp, требуемое для GPU.
 /// Сборка `cuda-12.4` НЕ содержит ядер Blackwell (sm_120, RTX 50xx) —
 /// они появились только в сборках CUDA >= 12.8 (см. ggml/src/ggml-cuda/CMakeLists.txt:
@@ -81,10 +110,18 @@ pub fn supports_cuda12(info: &GpuInfo) -> bool {
 /// Какую сборку движка (cuda-12.4 / cuda-13.x) требует установленная GPU.
 /// None = CUDA не используется (нет NVIDIA / старый драйвер / нет данных).
 ///
-/// Правила (обновлены по логике Jan, см. `janhq/jan` backend.rs):
+/// Правила:
 /// - Blackwell (sm_120): только cuda-13.x — сборка cuda-12.4 не имеет ядер;
-/// - свежий драйвер CUDA 13+ (R580+): cuda-13.x — она содержит ядра sm_75..sm_120,
-///   включая RTX 40xx, и является приоритетным выбором (как у Jan);
+/// - **архитектура младше Turing (sm_50/61/70): только cuda-12.x** —
+///   в сборке cuda-13.x ядер для них нет вообще (`MIN_COMPUTE_MAJOR_CUDA13`).
+///   Это правило приоритетнее свежести драйвера: драйвер R580+ одинаково
+///   хорошо работает и с Maxwell, и с Blackwell, но бинарник cuda-13.x без
+///   ядер sm_61 на GTX 10xx падает с `CUDA_ERROR_NO_KERNEL_IMAGE`;
+/// - свежий драйвер CUDA 13+ (R580+): cuda-13.x — она содержит ядра
+///   sm_75..sm_120, включая RTX 40xx (sm_89), и является приоритетным
+///   выбором (как в Jan);
+/// - архитектура не определилась: cuda-12.4 — он совместим с заметно более
+///   широким набором карт, поэтому при неопределённости берём его, а не гадаем;
 /// - остальные NVIDIA с драйвером CUDA 12: cuda-12.4.
 pub fn required_cuda_gen(info: &GpuInfo) -> Option<CudaGen> {
     if !supports_cuda12(info) {
@@ -94,13 +131,49 @@ pub fn required_cuda_gen(info: &GpuInfo) -> Option<CudaGen> {
     if info.compute_major >= 12 {
         return Some(CudaGen::Cuda13);
     }
-    // Свежий драйвер CUDA 13+ → cuda-13.x (предпочтителен, как в Jan).
-    // Если compute capability не определилась — полагаемся на драйвер.
+    // Драйвер новый, а карта — нет: ядер cuda-13.x для Maxwell/Pascal/Volta
+    // не существует. Отдаём cuda-12.x независимо от версии драйвера.
+    if !cuda13_arch_supported(info) {
+        return Some(CudaGen::Cuda12);
+    }
+    if info.compute_major == 0 {
+        // Архитектура неизвестна (NVML её не отдала) — берём самый
+        // совместимый вариант, чтобы не уводить юзера в гарантированный сбой.
+        return Some(CudaGen::Cuda12);
+    }
+    // Драйвер CUDA 13+ → cuda-13.x (предпочтителен, как в Jan).
     if info.cuda_major >= 13 {
         return Some(CudaGen::Cuda13);
     }
     // Драйвер CUDA 12.x: cuda-12.4 — самый совместимый вариант.
     Some(CudaGen::Cuda12)
+}
+
+/// Есть ли в сборке `cuda-13.x` ядра для этой видеокарты.
+///
+/// `compute_major == 0` → считаем, что есть: архитектура неизвестна, и
+/// блокировать юзера из-за отсутствия данных нельзя (сам авто-подбор в этом
+/// случае тоже ведёт в cuda-12.x — см. `required_cuda_gen`).
+pub fn cuda13_arch_supported(info: &GpuInfo) -> bool {
+    if info.compute_major == 0 {
+        return true;
+    }
+    if info.compute_major != MIN_COMPUTE_MAJOR_CUDA13 {
+        return info.compute_major > MIN_COMPUTE_MAJOR_CUDA13;
+    }
+    // major 7: sm_70 (Volta) удалён из CUDA 13, sm_75 (Turing) — нет.
+    info.compute_minor >= MIN_COMPUTE_MINOR_CUDA13
+}
+
+/// Короткое имя архитектуры GPU для сообщений: `sm_61`, `sm_86`,
+/// `не определена`. Строка «cuda-13.x на sm_61» сразу показывает юзеру,
+/// что не так с его видеокартой.
+pub fn compute_label(info: &GpuInfo) -> String {
+    if info.compute_major == 0 {
+        "не определена".to_string()
+    } else {
+        format!("sm_{}", info.compute_major)
+    }
 }
 
 /// Драйвер есть, но слишком старый (CUDA 11.x) — нужен апгрейд драйвера
@@ -229,9 +302,19 @@ pub fn describe_gpu(info: &GpuInfo) -> String {
         let variant = required_cuda_gen(info)
             .map(|g| format!("нужен вариант {}", g.label()))
             .unwrap_or_else(|| "".to_string());
+        // Свежий драйвер CUDA 13+ на карте младше Turing: подчёркиваем, что
+        // cuda-13.x тут не подойдёт, иначе авто-подбор бьётся об отсутствие ядер.
+        let arch_note = if info.cuda_major >= 13 && !cuda13_arch_supported(info) {
+            format!(
+                " Внимание: карта архитектуры {}, а в сборке cuda-13.x ядра только от sm_75 (Turing) — вариант cuda-13.x на ней не запустится.",
+                compute_label(info)
+            )
+        } else {
+            String::new()
+        };
         format!(
-            "NVIDIA GPU: {} (драйвер CUDA {}.{}{}) — GPU-ускорение доступно ({}).",
-            info.gpu_name, info.cuda_major, info.cuda_minor, cc, variant
+            "NVIDIA GPU: {} (драйвер CUDA {}.{}{}) — GPU-ускорение доступно ({}).{}",
+            info.gpu_name, info.cuda_major, info.cuda_minor, cc, variant, arch_note
         )
     }
 }
@@ -288,9 +371,11 @@ mod tests {
     fn unknown_compute_cap_falls_back_to_cuda12() {
         let info = gpu(true, 12, 0, 0);
         assert_eq!(required_cuda_gen(&info), Some(CudaGen::Cuda12));
-        // Compute не определился, но драйвер свежий CUDA 13 → cuda-13.x
+        // Архитектура не определилась — даже при свежем драйвере CUDA 13 берём
+        // cuda-12.4: он совместим с заметно более широким набором карт, а
+        // cuda-13.x на неизвестной архитектуре — лотерея с падением.
         let info = gpu(true, 13, 0, 0);
-        assert_eq!(required_cuda_gen(&info), Some(CudaGen::Cuda13));
+        assert_eq!(required_cuda_gen(&info), Some(CudaGen::Cuda12));
     }
 
     #[test]
@@ -299,5 +384,100 @@ mod tests {
         // Драйвер CUDA 11.x — слишком старый для движка CUDA 12
         assert_eq!(required_cuda_gen(&gpu(true, 11, 12, 0)), None);
         assert!(requires_driver_update(&gpu(true, 11, 12, 0)));
+    }
+
+    // ─── Регрессия: инцидент у юзера с 4 ГБ GPU ───
+    // Юзер поставил движок, авто-подбор выбрал `cuda-13.x` (драйвер R580+
+    // сообщает CUDA 13), а карта — Pascal. Релизный бинарь cuda-13.x собран
+    // только под sm_75+ (ggml-cuda/CMakeLists.txt добавляет 50/61/70 только
+    // при CUDAToolkit_VERSION < 13), поэтому движок упал с
+    // `CUDA error: no kernel image is available for execution on the device`.
+    // Проверяем, что свежесть драйвера больше не перевешивает архитектуру.
+
+    #[test]
+    fn pascal_with_cuda13_driver_never_gets_cuda13() {
+        // GTX 1050 Ti / 1060 / 1080: compute 6.1, драйвер R580+ (CUDA 13.x)
+        for compute in [5u32, 6] {
+            let info = gpu(true, 13, compute, 0);
+            assert_eq!(
+                required_cuda_gen(&info),
+                Some(CudaGen::Cuda12),
+                "compute sm_{} не должен получать cuda-13.x даже на драйвере CUDA 13",
+                compute
+            );
+            assert!(
+                !cuda13_arch_supported(&info),
+                "sm_{} не поддержан сборкой cuda-13.x",
+                compute
+            );
+        }
+        // sm_61 с минорной частью — тот же вывод
+        assert_eq!(required_cuda_gen(&gpu(true, 13, 6, 1)), Some(CudaGen::Cuda12));
+    }
+
+    #[test]
+    fn volta_sm70_is_also_excluded_from_cuda13() {
+        // Регрессия: проверка только по major пропускала Volta. major 7 / minor 0
+        // — это sm_70 (Volta), которую CUDA 13 тоже удалила, тогда как major 7 /
+        // minor 5 — sm_75 (Turing), и она поддержана.
+        let volta = gpu(true, 13, 7, 0);
+        assert!(
+            !cuda13_arch_supported(&volta),
+            "Volta sm_70 выпилена из CUDA 13 — major 7 сам по себе не подходит"
+        );
+        assert_eq!(required_cuda_gen(&volta), Some(CudaGen::Cuda12));
+        assert_eq!(variant_for_gen(&volta), CudaGen::Cuda12);
+
+        let turing = gpu(true, 13, 7, 5);
+        assert!(
+            cuda13_arch_supported(&turing),
+            "sm_75 (Turing) — первый arch, поддержанный в cuda-13.x"
+        );
+        assert_eq!(required_cuda_gen(&turing), Some(CudaGen::Cuda13));
+    }
+
+    /// Маленький локальный хелпер: cuda_gen_variant живёт в llamacpp_installer,
+    /// здесь проверяем только само решение `required_cuda_gen`.
+    fn variant_for_gen(info: &GpuInfo) -> CudaGen {
+        required_cuda_gen(info).expect("NVIDIA с драйвером CUDA 13 обязан получить вариант")
+    }
+
+    #[test]
+    fn maxwell_with_cuda13_driver_never_gets_cuda13() {
+        // GTX 960 / 970 / 980: compute 5.2, драйвер R580+ (CUDA 13.x)
+        let info = gpu(true, 13, 5, 2);
+        assert_eq!(required_cuda_gen(&info), Some(CudaGen::Cuda12));
+        assert!(!cuda13_arch_supported(&info));
+        // Старый драйвер CUDA 12 на той же карте — тоже cuda-12.4
+        assert_eq!(required_cuda_gen(&gpu(true, 12, 5, 2)), Some(CudaGen::Cuda12));
+    }
+
+    #[test]
+    fn turing_and_newer_still_get_cuda13_on_fresh_driver() {
+        // GTX 1650 / RTX 2060: compute 7.5 — ядра в cuda-13.x есть
+        let info = gpu(true, 13, 7, 5);
+        assert_eq!(required_cuda_gen(&info), Some(CudaGen::Cuda13));
+        assert!(cuda13_arch_supported(&info));
+        // sm_86 / sm_89 / sm_90 — тоже
+        for compute in [8u32, 9, 10] {
+            assert!(cuda13_arch_supported(&gpu(true, 13, compute, 0)));
+        }
+    }
+
+    #[test]
+    fn compute_label_and_arch_note_expose_the_reason() {
+        let info = gpu(true, 13, 6, 1);
+        assert_eq!(compute_label(&info), "sm_6");
+        let text = describe_gpu(&info);
+        assert!(
+            text.contains("sm_6") && text.contains("cuda-12.x"),
+            "describe_gpu должен называть архитектуру и рекомендованный вариант: {}",
+            text
+        );
+        // Неизвестная архитектура — не врём в тексте
+        assert_eq!(compute_label(&gpu(true, 13, 0, 0)), "не определена");
+        // Turing+ без предупреждения
+        let text = describe_gpu(&gpu(true, 13, 8, 6));
+        assert!(!text.contains("Внимание"), "для Turing лишнее предупреждение: {}", text);
     }
 }

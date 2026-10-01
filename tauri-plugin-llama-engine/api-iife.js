@@ -78,6 +78,14 @@
   .progress-bar { height: 100%; width: 0%; background: var(--primary, #4a90d9); transition: width .1s linear; }
   .bar-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
   .badge { font-size: 12px; vertical-align: middle; cursor: help; }
+  /* \u041C\u0435\u0442\u043A\u0430-\xAB\u0442\u0430\u0431\u043B\u0435\u0442\u043A\u0430\xBB \u0434\u043B\u044F \u0441\u043B\u0443\u0436\u0435\u0431\u043D\u044B\u0445 \u043F\u043E\u043C\u0435\u0442\u043E\u043A \u0440\u044F\u0434\u043E\u043C \u0441 \u043D\u0430\u0437\u0432\u0430\u043D\u0438\u0435\u043C \u043C\u043E\u0434\u0435\u043B\u0438.
+     \u041E\u0442\u0434\u0435\u043B\u044C\u043D\u044B\u0439 \u043A\u043B\u0430\u0441\u0441, \u043F\u043E\u0442\u043E\u043C\u0443 \u0447\u0442\u043E \u043E\u0431\u044B\u0447\u043D\u044B\u0439 .badge \u2014 \u044D\u0442\u043E \u0431\u0435\u0441\u0446\u0432\u0435\u0442\u043D\u044B\u0435 \u0438\u043A\u043E\u043D\u043A\u0438
+     (\u{1F608}/\u{1F441}\uFE0F/\u{1F3B5}), \u0430 \xAB\u0421\u0442\u043E\u0440\u043E\u043D\u043D\u044F\u044F \u043C\u043E\u0434\u0435\u043B\u044C\xBB \u0434\u043E\u043B\u0436\u043D\u0430 \u0447\u0438\u0442\u0430\u0442\u044C\u0441\u044F \u043A\u0430\u043A \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u044B\u0439 \u043E\u0431\u044A\u0435\u043A\u0442,
+     \u0430 \u043D\u0435 \u0441\u043B\u0438\u0432\u0430\u0442\u044C\u0441\u044F \u0441 \u0438\u043C\u0435\u043D\u0435\u043C \u0444\u0430\u0439\u043B\u0430. */
+  .badge-pill { display: inline-block; font-size: 11px; line-height: 1.3; vertical-align: middle;
+                margin-left: 6px; padding: 1px 6px; border: 1px solid var(--border, #555);
+                border-radius: 4px; background: var(--bg-elevated, #1c1c1c);
+                color: var(--text-muted, #aaa); white-space: nowrap; cursor: help; }
   .update-badge { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
                   background: #4caf50; margin-left: 6px; box-shadow: 0 0 6px #4caf50; }
   .hint { color: var(--text-muted, #999); font-size: 12px; white-space: pre-line; }
@@ -736,7 +744,7 @@
         name.style.cssText = "font-weight:600; color:var(--text,#eee); word-break:break-all;";
         name.textContent = (cfg.last_model === m ? "\u25CF " : "") + fileName(m);
         if (!this.isCatalogModel(m)) {
-          name.appendChild(span("\u0421\u0442\u043E\u0440\u043E\u043D\u043D\u044F\u044F \u043C\u043E\u0434\u0435\u043B\u044C", "\u0424\u0430\u0439\u043B \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D \u0432 \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u0435 \u043C\u043E\u0434\u0435\u043B\u0435\u0439"));
+          name.appendChild(pill("\u0421\u0442\u043E\u0440\u043E\u043D\u043D\u044F\u044F \u043C\u043E\u0434\u0435\u043B\u044C", "\u0424\u0430\u0439\u043B \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D \u0432 \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u0435 \u043C\u043E\u0434\u0435\u043B\u0435\u0439"));
         }
         const meta = this.capMap[m];
         if (meta) {
@@ -841,6 +849,12 @@
     s.title = title;
     s.className = "badge";
     s.style.marginLeft = "5px";
+    return s;
+  }
+  function pill(text, title) {
+    const s = span(text, title);
+    s.className = "badge-pill";
+    s.style.marginLeft = "";
     return s;
   }
   if (!customElements.get("llama-engine-panel")) {

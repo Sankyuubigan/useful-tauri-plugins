@@ -42,6 +42,14 @@ const STYLE = `
   .progress-bar { height: 100%; width: 0%; background: var(--primary, #4a90d9); transition: width .1s linear; }
   .bar-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
   .badge { font-size: 12px; vertical-align: middle; cursor: help; }
+  /* Метка-«таблетка» для служебных пометок рядом с названием модели.
+     Отдельный класс, потому что обычный .badge — это бесцветные иконки
+     (😈/👁️/🎵), а «Сторонняя модель» должна читаться как отдельный объект,
+     а не сливаться с именем файла. */
+  .badge-pill { display: inline-block; font-size: 11px; line-height: 1.3; vertical-align: middle;
+                margin-left: 6px; padding: 1px 6px; border: 1px solid var(--border, #555);
+                border-radius: 4px; background: var(--bg-elevated, #1c1c1c);
+                color: var(--text-muted, #aaa); white-space: nowrap; cursor: help; }
   .update-badge { display: inline-block; width: 8px; height: 8px; border-radius: 50%;
                   background: #4caf50; margin-left: 6px; box-shadow: 0 0 6px #4caf50; }
   .hint { color: var(--text-muted, #999); font-size: 12px; white-space: pre-line; }
@@ -742,7 +750,7 @@ class LlamaModelsPanel extends HTMLElement {
       name.style.cssText = 'font-weight:600; color:var(--text,#eee); word-break:break-all;'
       name.textContent = (cfg.last_model === m ? '● ' : '') + fileName(m)
       if (!this.isCatalogModel(m)) {
-        name.appendChild(span('Сторонняя модель', 'Файл не найден в каталоге моделей'))
+        name.appendChild(pill('Сторонняя модель', 'Файл не найден в каталоге моделей'))
       }
       const meta = this.capMap[m]
       if (meta) {
@@ -844,6 +852,15 @@ function span(text: string, title: string): HTMLSpanElement {
   s.title = title
   s.className = 'badge'
   s.style.marginLeft = '5px'
+  return s
+}
+
+/** Служебная пометка-«таблетка» с рамкой: читается как отдельный объект,
+ *  в отличие от бесцветных иконок из `span()`. */
+function pill(text: string, title: string): HTMLSpanElement {
+  const s = span(text, title)
+  s.className = 'badge-pill'
+  s.style.marginLeft = ''
   return s
 }
 

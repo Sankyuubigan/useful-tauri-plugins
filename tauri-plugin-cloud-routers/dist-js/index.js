@@ -11,6 +11,8 @@ import { listen } from '@tauri-apps/api/event';
 export const PROGRESS_EVENT = 'cloud-routers-progress';
 /** Tauri-событие порции стриминга: `{ router, text, author, kind }`. */
 export const CHUNK_EVENT = 'cloud-routers-chunk';
+/** Идентификаторы роутеров — единственный источник истины (тип выводится из списка). */
+export const ROUTER_IDS = ['9router', 'extremerouter', 'omniroute'];
 // ─────────────────────────────── Команды ───────────────────────────────
 /** Статус шлюза (для индикатора). Сервер НЕ запускает. */
 export function getStatus(router) {

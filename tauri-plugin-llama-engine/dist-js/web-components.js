@@ -1,5 +1,5 @@
-import { autoDownloadDefaultModel, checkEngineUpdate, deleteModelFile, downloadModel, getAutoDownloadInfo, getEngineConfig, getEngineStatus, getModelsCatalog, getAllCapabilities, installEngineUpdate, installLlamaCpp, addModel, notifyModelsChanged, removeEngine, removeModel, setEngineDir, setEngineSource, setEngineVariant, } from './index';
-import { getUpdateState, onUpdateState, setUpdateState } from './updates';
+import { autoDownloadDefaultModel, deleteModelFile, downloadModel, getAutoDownloadInfo, getEngineConfig, getEngineStatus, getModelsCatalog, getAllCapabilities, installEngineUpdate, installLlamaCpp, addModel, notifyModelsChanged, removeEngine, removeModel, setEngineDir, setEngineSource, setEngineVariant, } from './index';
+import { checkUpdate, getUpdateState, onUpdateState, setUpdateState } from './updates';
 import { open as openDialog, save } from '@tauri-apps/plugin-dialog';
 import { listen } from '@tauri-apps/api/event';
 const STYLE = `
@@ -259,16 +259,21 @@ class LlamaEnginePanel extends HTMLElement {
         void prevSource;
         this.renderUpdateState(getUpdateState());
     }
+    /**
+     * Единственное место, где видны бейдж и кнопка «Обновить»: оба выводятся
+     * из одного состояния. Раньше в ветке `else` прятался только бейдж — кнопка
+     * оставалась на экране после установки обновления.
+     */
     renderUpdateState(s) {
         const badge = this.root.getElementById('updateBadge');
+        const updateBtn = this.root.getElementById('installUpdate');
+        const display = s.hasUpdate ? 'inline-block' : 'none';
+        if (badge)
+            badge.style.display = display;
+        if (updateBtn)
+            updateBtn.style.display = display;
         if (s.hasUpdate) {
             this.setStatus(`Доступно обновление движка: ${s.tag ?? ''}`);
-            this.root.getElementById('installUpdate').style.display = 'inline-block';
-            if (badge)
-                badge.style.display = 'inline-block';
-        }
-        else if (badge) {
-            badge.style.display = 'none';
         }
     }
     async onSourceChange() {
@@ -390,19 +395,16 @@ class LlamaEnginePanel extends HTMLElement {
         const prevLabel = btn.textContent;
         btn.textContent = 'Проверка…';
         btn.classList.add('checking');
-        this.root.getElementById('installUpdate').style.display = 'none';
+        // На время проверки прячем кнопку «Обновить»; результат придёт через setUpdateState,
+        // который двигает и кнопку, и бейдж, и точку в навигации хоста.
+        this.renderUpdateState({ hasUpdate: false });
         try {
-            const newTag = await checkEngineUpdate();
-            if (newTag) {
-                this.setStatus(`Доступно обновление движка: ${newTag}`);
-                this.root.getElementById('installUpdate').style.display = 'inline-block';
-            }
-            else {
-                this.setStatus('Движок llamacpp актуален');
-            }
+            const next = await checkUpdate();
+            this.setStatus(next.hasUpdate
+                ? `Доступно обновление движка: ${next.tag ?? ''}`
+                : 'Движок llamacpp актуален');
         }
         catch (e) {
-            this.setStatus('');
             toast(`Ошибка проверки обновления движка: ${e}`, 'error');
         }
         finally {

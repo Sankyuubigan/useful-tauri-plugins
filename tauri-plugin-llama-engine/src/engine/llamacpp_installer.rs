@@ -667,6 +667,103 @@ fn sha256_file(path: &Path) -> Result<String, String> {
     Ok(hex)
 }
 
+/// Сверка скачанного файла с digest из GitHub API (`"sha256:<hex>"`).
+/// Битый файл удаляется — мусор на диске пользователя не оставляем.
+fn verify_sha256(path: &Path, digest: Option<&str>, what: &str) -> Result<(), String> {
+    let Some(raw) = digest else {
+        return Ok(()); // ассет не помечен контрольной суммой — сверять не с чем
+    };
+    let expected = raw.strip_prefix("sha256:").unwrap_or(raw);
+    let actual = sha256_file(path)?;
+    if actual.eq_ignore_ascii_case(expected) {
+        return Ok(());
+    }
+    let _ = fs::remove_file(path);
+    Err(format!(
+        "Контрольная сумма {} не совпала! Ожидалось {}, получено {}. Загрузка повреждена.",
+        what, expected, actual
+    ))
+}
+
+/// Ключ семейства для имени папки общего CUDA-рантайма.
+/// Внутри одной мажорной версии набор DLL одинаков (все CUDA 12.x грузят
+/// `cudart64_12.dll`, `nvrtc64_120_*`), поэтому granularity по мажору и есть
+/// правильная: меняется набор — меняется папка.
+impl EngineFamily {
+    pub fn cudart_key(self) -> Option<&'static str> {
+        match self {
+            EngineFamily::Cuda12 => Some("cuda-12"),
+            EngineFamily::Cuda13 => Some("cuda-13"),
+            _ => None,
+        }
+    }
+}
+
+/// Главная DLL, без которой CUDA-режим не работает (ggml-cuda.dll не загрузится).
+pub fn required_cudart_dll(family: EngineFamily) -> Option<&'static str> {
+    match family {
+        EngineFamily::Cuda13 => Some("cublas64_13.dll"),
+        EngineFamily::Cuda12 => Some("cublas64_12.dll"),
+        _ => None,
+    }
+}
+
+/// Общая папка CUDA-рантайма: `backends/_cudart/<семейство>/`.
+///
+/// ЕДИНСТВЕННОЕ место, где лежат CUDA-DLL — их НЕ копируют в папку каждого
+/// варианта. Причина: BeeLlama — форк llama.cpp и перевыкладывает ТОТ ЖЕ
+/// апстримный redistributable NVIDIA, что и ggml-org (для cuda-12.4 sha256
+/// архивов `cudart-llama-bin-win-cuda-12.4-x64.zip` и
+/// `beellama-v0.4.7-cudart-win-cuda-12.4-x64.zip` совпадают байт-в-байт).
+/// Копии в `backends/<source>/<variant>/` означали бы ×N дублей по ~370 МБ.
+///
+/// Доступ к DLL — через PATH дочернего процесса (см. `child_path_with_cudart`):
+/// Windows ищет библиотеки рядом с exe, затем в System32, затем по PATH.
+pub fn cudart_dir(dir: &Path, family: EngineFamily) -> Option<PathBuf> {
+    Some(backends_dir(dir).join("_cudart").join(family.cudart_key()?))
+}
+
+/// Готова ли пара «движок + CUDA-рантайм» к запуску.
+///
+/// Общая папка — основной вариант. Рядом с exe и в System32 проверяются ради
+/// обратной совместимости: установки, сделанные до появления `_cudart/`, держат
+/// DLL в папке варианта и продолжают работать как раньше.
+pub fn cudart_ready(
+    dir: &Path,
+    family: EngineFamily,
+    variant_dir: &Path,
+) -> Result<(), String> {
+    let Some(dll) = required_cudart_dll(family) else {
+        return Ok(()); // не CUDA-вариант — CUDA-рантайм не нужен
+    };
+    let in_shared = cudart_dir(dir, family).is_some_and(|p| p.join(dll).exists());
+    let in_variant = variant_dir.join(dll).exists();
+    let in_system = Path::new(r"C:\Windows\System32").join(dll).exists();
+    if in_shared || in_variant || in_system {
+        return Ok(());
+    }
+    Err(format!(
+        "Не найден CUDA-рантайм ({dll}).\n\
+         Без него ggml-cuda.dll не загрузится и движок ТИХО уйдёт в CPU.\n\
+         Решение: Настройки → «Движок запуска нейромоделей» → переустановите движок \
+         (установщик докачает рантайм автоматически)."
+    ))
+}
+
+/// PATH для дочернего процесса движка: папка общего CUDA-рантайма впереди
+/// системного PATH. Нужна, потому что DLL лежат в `_cudart/`, а не рядом с exe.
+///
+/// `None`, если общей папки нет (не-CUDA вариант, CPU, старые установки) —
+/// тогда PATH процесса не трогаем.
+pub fn child_path_with_cudart(dir: &Path, family: EngineFamily) -> Option<String> {
+    let shared = cudart_dir(dir, family)?;
+    if !shared.is_dir() {
+        return None;
+    }
+    let existing = std::env::var("PATH").unwrap_or_default();
+Some(format!("{};{}", shared.display(), existing))
+}
+
 /// Извлечение ВСЕГО содержимого архива в dest_dir (с подпапками, например backends/)
 fn extract_all<L: Fn(String)>(zip_path: &Path, dest_dir: &Path, on_log: &L) -> Result<u32, String> {
     on_log("📦 Распаковка движка llama.cpp...".to_string());
@@ -826,15 +923,7 @@ pub async fn install<L: Fn(String) + Send + Sync>(
     .await?;
 
     if let Some(digest) = &asset.0.digest {
-        let expected = digest.strip_prefix("sha256:").unwrap_or(digest);
-        let actual = sha256_file(&zip_path)?;
-        if !actual.eq_ignore_ascii_case(expected) {
-            let _ = fs::remove_file(&zip_path);
-            return Err(format!(
-                "Контрольная сумма не совпала! Ожидалось {}, получено {}. Загрузка повреждена.",
-                expected, actual
-            ));
-        }
+        verify_sha256(&zip_path, Some(digest), "движка")?;
         on_log("✅ Контрольная сумма SHA-256 подтверждена".to_string());
     }
 
@@ -855,9 +944,31 @@ pub async fn install<L: Fn(String) + Send + Sync>(
     let main_asset_is_cudart = asset.0.name.contains("cudart");
     let family = EngineFamily::from_variant(&actual_variant);
     if !main_asset_is_cudart && matches!(family, EngineFamily::Cuda12 | EngineFamily::Cuda13) {
-        if let Some(cudart) = find_cudart_asset(&release, &spec, &actual_variant) {
+        // CUDA-рантайм — ОБЩИЙ на семейство, лежит в `backends/_cudart/<key>/`
+        // и не копируется в папку варианта. Поэтому второй источник того же
+        // семейства (BeeLlama поверх ggml-org) его не перекачивает и не дублирует.
+        let shared = cudart_dir(&dir, family).ok_or_else(|| {
+            format!("Неизвестное семейство движка для CUDA-рантайма: {}", actual_variant)
+        })?;
+        let dll = required_cudart_dll(family).unwrap_or_default();
+
+        if shared.join(dll).exists() {
+            on_log(format!(
+                "♻️ CUDA-рантайм уже установлен ({}): повторно не скачиваем.",
+                shared.display()
+            ));
+        } else {
+            let cudart = find_cudart_asset(&release, &spec, &actual_variant).ok_or_else(|| {
+                format!(
+                    "В релизе {} не найден архив CUDA-рантайма для «{}» — GPU-режим работать не будет.",
+                    release.tag_name, actual_variant
+                )
+            })?;
             on_log(format!("⬇️ Дополнение CUDA-рантайма: {}", cudart.0.name));
-            let cudart_zip = target.join("cudart.zip");
+            let cudart_zip = shared.join("cudart.zip");
+            fs::create_dir_all(&shared).map_err(|e| {
+                format!("Не удалось создать {}: {}", shared.display(), e)
+            })?;
             tauri_plugin_downloader::download(
                 &cudart.0.browser_download_url,
                 &cudart_zip,
@@ -870,44 +981,24 @@ pub async fn install<L: Fn(String) + Send + Sync>(
                 Some(&on_log),
             )
             .await?;
-            if let Some(digest) = &cudart.0.digest {
-                let expected = digest.strip_prefix("sha256:").unwrap_or(digest);
-                let actual = sha256_file(&cudart_zip)?;
-                if !actual.eq_ignore_ascii_case(expected) {
-                    let _ = fs::remove_file(&cudart_zip);
-                    return Err(format!(
-                        "Контрольная сумма CUDA-рантайма не совпала! Ожидалось {}, получено {}. Загрузка повреждена.",
-                        expected, actual
-                    ));
-                }
-            }
-            let cudart_count = extract_all(&cudart_zip, &target, &on_log)?;
+            verify_sha256(&cudart_zip, cudart.0.digest.as_deref(), "CUDA-рантайма")?;
+            let cudart_count = extract_all(&cudart_zip, &shared, &on_log)?;
             let _ = fs::remove_file(&cudart_zip);
-            on_log(format!("✅ CUDA-рантайм распакован: {} файлов", cudart_count));
-        } else {
             on_log(format!(
-                "⚠️ В релизе {} не найден архив CUDA-рантайма — GPU-режим может не работать.",
-                release.tag_name
+                "✅ CUDA-рантайм распакован в общую папку ({}): {} файлов",
+                shared.display(),
+                cudart_count
             ));
         }
+
         // ── Guard: cublas*_*.dll ОБЯЗАН быть после установки CUDA-варианта ──
         // Без него ggml-cuda.dll не грузится → llama-server тихо уходит в CPU
         // или LlamaEngine::new падает предлётной проверкой. Ошибка установки,
         // а не warning: юзер не должен получить «неготовый» бекенд.
-        let required_dll = match family {
-            EngineFamily::Cuda13 => "cublas64_13.dll",
-            EngineFamily::Cuda12 => "cublas64_12.dll",
-            _ => "",
-        };
-        if !required_dll.is_empty() && !target.join(required_dll).exists() {
+        if let Err(msg) = cudart_ready(&dir, family, &target) {
             let _ = clear_dir(&target);
             let _ = fs::remove_dir_all(&target);
-            return Err(format!(
-                "После установки CUDA-рантайма не найден {} в {}.\n\
-                 Без него GPU-режим не работает (ggml-cuda.dll не загрузится).\n\
-                 Возможно, формат релизов источника «{}» изменился — сообщите разработчику.",
-                required_dll, target.display(), source
-            ));
+            return Err(format!("{}\nИсточник: «{}».", msg, source));
         }
     }
 
@@ -1335,6 +1426,95 @@ mod tests {
         assert!(!is_installed(&tmp, "ggml-org", "cuda-12.4"));
         assert!(is_installed(&tmp, "beellama", "cuda-12.4"));
 
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn cudart_shared_dir_is_per_family_and_outside_sources() {
+        let dir = Path::new("D:/llamacpp");
+        let cuda12 = cudart_dir(dir, EngineFamily::Cuda12).unwrap();
+        let cuda13 = cudart_dir(dir, EngineFamily::Cuda13).unwrap();
+        assert_eq!(cuda12, dir.join("backends/_cudart/cuda-12"));
+        assert_eq!(cuda13, dir.join("backends/_cudart/cuda-13"));
+        // Не-CUDA семейства CUDA-рантайма не имеют
+        assert!(cudart_dir(dir, EngineFamily::Cpu).is_none());
+        assert!(cudart_dir(dir, EngineFamily::Vulkan).is_none());
+        assert!(cudart_dir(dir, EngineFamily::Hip).is_none());
+        // Ключ обязателен и для куста CUDA 12.x/13.x — набор DLL в мажоре один
+        assert_eq!(
+            cudart_dir(dir, EngineFamily::from_variant("cuda-12.4")).unwrap(),
+            cuda12
+        );
+        assert_eq!(
+            cudart_dir(dir, EngineFamily::from_variant("cuda-13.7")).unwrap(),
+            cuda13
+        );
+    }
+
+    #[test]
+    fn _cudart_dir_is_not_mistaken_for_a_source_or_variant() {
+        // Миграции перебирают содержимое backends/ — общая папка CUDA не должна
+        // превращаться ни в «источник», ни в «плоский вариант».
+        let tmp = std::env::temp_dir().join(format!("kingorch_cudart_skip_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(cudart_dir(&tmp, EngineFamily::Cuda12).unwrap()).unwrap();
+        assert_eq!(migrate_sources_layout(&tmp), 0);
+        assert!(list_installed_sources(&tmp).is_empty());
+        assert!(!has_any_installed(&tmp));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn cudart_ready_accepts_shared_dir_legacy_variant_dir_and_skips_non_cuda() {
+        let tmp = std::env::temp_dir().join(format!("kingorch_cudart_ready_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let variant = tmp.join("backends/ggml-org/cuda-12.4");
+        fs::create_dir_all(&variant).unwrap();
+
+        // Нигде нет рантайма — ошибка
+        let err = cudart_ready(&tmp, EngineFamily::Cuda12, &variant).unwrap_err();
+        assert!(err.contains("cublas64_12.dll"), "{}", err);
+
+        // Общая папка — основной путь (SSOT)
+        let shared = cudart_dir(&tmp, EngineFamily::Cuda12).unwrap();
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join("cublas64_12.dll"), "dll").unwrap();
+        assert!(cudart_ready(&tmp, EngineFamily::Cuda12, &variant).is_ok());
+
+        // Legacy-установка: DLL в папке варианта (до появления _cudart) — тоже ок
+        let tmp2 = std::env::temp_dir().join(format!("kingorch_cudart_legacy_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp2);
+        let v2 = tmp2.join("backends/ggml-org/cuda-12.4");
+        fs::create_dir_all(&v2).unwrap();
+        assert!(cudart_ready(&tmp2, EngineFamily::Cuda12, &v2).is_err());
+        fs::write(v2.join("cublas64_12.dll"), "dll").unwrap();
+        assert!(cudart_ready(&tmp2, EngineFamily::Cuda12, &v2).is_ok());
+
+        // Не-CUDA вариант: проверка не выполняется вовсе
+        assert!(cudart_ready(&tmp, EngineFamily::Cpu, &variant).is_ok());
+        assert!(cudart_ready(&tmp, EngineFamily::Vulkan, &variant).is_ok());
+
+        let _ = fs::remove_dir_all(&tmp);
+        let _ = fs::remove_dir_all(&tmp2);
+    }
+
+    #[test]
+    fn child_path_puts_shared_cudart_before_system_path() {
+        let tmp = std::env::temp_dir().join(format!("kingorch_cudart_path_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        // Общей папки нет — PATH процесса не трогаем
+        assert!(child_path_with_cudart(&tmp, EngineFamily::Cuda12).is_none());
+
+        let shared = cudart_dir(&tmp, EngineFamily::Cuda12).unwrap();
+        fs::create_dir_all(&shared).unwrap();
+        let p = child_path_with_cudart(&tmp, EngineFamily::Cuda12).unwrap();
+        assert!(p.starts_with(&shared.to_string_lossy().to_string()), "{p}");
+        // Остальной PATH сохранён (иначе движок не найдёт системные библиотеки)
+        assert!(p.contains(';'), "{p}");
+        assert!(p.len() > shared.to_string_lossy().len() + 1, "{p}");
+
+        // Не-CUDA — не подкладываем ничего
+        assert!(child_path_with_cudart(&tmp, EngineFamily::Cpu).is_none());
         let _ = fs::remove_dir_all(&tmp);
     }
 

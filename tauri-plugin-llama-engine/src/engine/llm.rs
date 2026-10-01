@@ -130,6 +130,9 @@ struct RespawnCtx {
     /// Финальные флаги запуска ПОСЛЕ фолбэков цикла запуска (реально применились).
     reasoning_enabled: bool,
     is_pre_hopper: bool,
+    /// PATH с общей папкой CUDA-рантайма (`backends/_cudart/<семейство>/`).
+    /// None для CPU/Vulkan/HIP и старых установок, где DLL лежат рядом с exe.
+    cudart_path: Option<String>,
 }
 
 // ─── Простой ГПСЧ для порта/ключа (без внешних зависимостей) ───
@@ -315,28 +318,15 @@ impl LlamaEngine {
 
         // ── Предлётная проверка CUDA-рантайма ──
         // В релизах llama.cpp b10275+ cublas64_*.dll вынесены из архива движка
-        // в отдельный архив cudart-llama-bin. Без них ggml-cuda.dll не грузится
+        // в отдельный архив cudart. Мы держим их ОДИН раз в `backends/_cudart/`
+        // и подкладываем процессу через PATH. Без них ggml-cuda.dll не грузится
         // и движок ТИХО уходит в CPU — проверяем заранее и говорим явно.
-        let cuda_runtime_dll = match installed_family {
-            crate::engine::llamacpp_installer::EngineFamily::Cuda13 => Some("cublas64_13.dll"),
-            crate::engine::llamacpp_installer::EngineFamily::Cuda12 => Some("cublas64_12.dll"),
-            _ => None,
-        };
-        if let Some(dll_name) = cuda_runtime_dll {
-            let server_dir = std::path::Path::new(&server_exe)
-                .parent()
-                .map(|p| p.to_path_buf())
-                .unwrap_or_else(|| engine_dir.to_path_buf());
-            let nearby = server_dir.join(dll_name);
-            let in_system = std::path::Path::new(r"C:\Windows\System32").join(dll_name);
-            if !nearby.exists() && !in_system.exists() {
-                return fail(format!(
-                    "CUDA-библиотека {} не найдена рядом с llama-server.exe (в {}) и в System32.\n\
-                     Без неё GPU-режим не работает — движок тихо уходит в CPU.\n\
-                     Решение: Настройки → «Движок запуска нейромоделей» → переустановите движок (установщик докачает CUDA-рантайм автоматически).",
-                    dll_name, server_dir.display()
-                ));
-            }
+        if let Err(msg) = crate::engine::llamacpp_installer::cudart_ready(
+            engine_dir,
+            installed_family,
+            &server_dir,
+        ) {
+            return fail(msg);
         }
 
         // ── Совместимость выбранного бекенда с GPU ──
@@ -504,6 +494,15 @@ impl LlamaEngine {
         // но не compute capability). Отключаем через env-var.
         let is_pre_hopper = gpu_info.compute_major > 0 && gpu_info.compute_major < 9;
 
+        // CUDA-DLL лежат ОДИН раз в `backends/_cudart/<семейство>/`, а не рядом
+        // с exe каждого варианта. Windows ищет библиотеки: папка exe → System32 →
+        // PATH, поэтому подкладываем общую папку в PATH дочернего процесса.
+        // None для CPU/Vulkan/HIP и старых установок — тогда PATH не трогаем.
+        let cudart_path =
+            crate::engine::llamacpp_installer::child_path_with_cudart(engine_dir, installed_family);
+        // Клон для замыкания спавна: оригинал ещё нужен для RespawnCtx (перезапуск).
+        let cudart_path_env = cudart_path.clone();
+
         let build_cmd = {
             let server_exe = server_exe.clone();
             let server_log = server_log.clone();
@@ -511,6 +510,9 @@ impl LlamaEngine {
             let model_path = model_path.clone();
             move |use_reasoning: bool, use_mmproj: bool| {
                 let mut c = Command::new(&server_exe);
+                if let Some(p) = &cudart_path_env {
+                    c.env("PATH", p);
+                }
                 c.current_dir(engine_dir)
                     .arg("-m").arg(&model_path)
                     .arg("--host").arg("127.0.0.1")
@@ -764,6 +766,7 @@ impl LlamaEngine {
                 kv_spec,
                 reasoning_enabled: attempt_reasoning,
                 is_pre_hopper,
+                cudart_path: cudart_path.clone(),
             })),
             engine_mode: std::cell::RefCell::new(engine_mode.clone()),
             engine_mode_detail: std::cell::RefCell::new(String::new()),
@@ -1851,6 +1854,9 @@ impl LlamaEngine {
 
         // ── Спавн с тем же конфигом, но меньшим -ngl ──
         let mut c = Command::new(&ctx.server_exe);
+        if let Some(p) = &ctx.cudart_path {
+            c.env("PATH", p);
+        }
         c.current_dir(&ctx.engine_dir)
             .arg("-m").arg(&self.model_path)
             .arg("--host").arg("127.0.0.1")

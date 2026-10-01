@@ -9,8 +9,10 @@
 export declare const PROGRESS_EVENT = "cloud-routers-progress";
 /** Tauri-событие порции стриминга: `{ router, text, author, kind }`. */
 export declare const CHUNK_EVENT = "cloud-routers-chunk";
+/** Идентификаторы роутеров — единственный источник истины (тип выводится из списка). */
+export declare const ROUTER_IDS: readonly ["9router", "extremerouter", "omniroute"];
 /** Идентификатор роутера. */
-export type RouterId = '9router' | 'extremerouter' | 'omniroute';
+export type RouterId = (typeof ROUTER_IDS)[number];
 export interface NineRouterStatus {
     /** Установлены и node.exe, и бандл роутера. */
     installed: boolean;

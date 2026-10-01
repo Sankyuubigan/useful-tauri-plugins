@@ -1,10 +1,10 @@
 import {
-  checkRouterUpdate,
   getCombos,
   getStatus,
   installOrUpdate,
   onProgress,
   openDashboard,
+  ROUTER_IDS,
   setApiKey,
   setRouterDir,
   stop,
@@ -12,7 +12,7 @@ import {
   type NineRouterStatus,
   type RouterId,
 } from './index'
-import { getUpdateState, onUpdateState, setUpdateState } from './updates'
+import { checkUpdate, getUpdateState, onUpdateState, setUpdateState } from './updates'
 import { open as openDialog } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@tauri-apps/api/core'
 
@@ -36,6 +36,9 @@ const STYLE = `
   .api-ok { color: var(--success, #3fa45b); font-size: 12px; margin-left: 4px; }
   .api-err { color: var(--warning, #d8a13a); font-size: 12px; margin-left: 4px; }
   .status { display: flex; gap: 8px; align-items: center; }
+  .spinner { display: inline-block; width: 12px; height: 12px; vertical-align: -1px;
+             border: 2px solid var(--primary, #4a90d9); border-top-color: transparent;
+             border-radius: 50%; animation: spin 0.8s linear infinite; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-muted, #777); flex: 0 0 auto; }
   .dot.on { background: var(--success, #3fa45b); }
   .dot.warn { background: var(--warning, #d8a13a); }
@@ -79,10 +82,30 @@ function logPlugin(msg: string): void {
   void invoke('plugin:logs|log_frontend_event', { level: 'FE', msg }).catch(() => {})
 }
 
+/** Подпись вкладки. Идентификаторы берутся из `ROUTER_IDS` (SSOT). */
+const ROUTER_LABELS: Record<RouterId, string> = {
+  '9router': '9Router',
+  extremerouter: 'ExtremeRouter',
+  omniroute: 'OmniRoute',
+}
+
+/**
+ * Состояние роутера — ТРИ значения, а не два.
+ *
+ * `loading` и `ready` обязаны быть разными: раньше «неизвестно» подставлялось
+ * как «не установлено» (`status?.installed ?? false`), из-за чего на смене вкладки
+ * на ~1 с появлялась кнопка «Установить». Отдельно `error`: невозможность проверить
+ * состояние — это НЕ «не установлено», и врать пользователю нельзя.
+ */
+type RouterState =
+  | { kind: 'loading' }
+  | { kind: 'error'; message: string }
+  | { kind: 'ready'; status: NineRouterStatus }
+
 export class CloudRoutersPanel extends HTMLElement {
   private router: RouterId = '9router'
-  private status: NineRouterStatus | null = null
-  private combos: ComboInfo[] = []
+  private states = new Map<RouterId, RouterState>()
+  private combosByRouter = new Map<RouterId, ComboInfo[]>()
   private offProgress: (() => void) | null = null
   private visibilityObserver: MutationObserver | null = null
   private refreshTimer: number | null = null
@@ -94,9 +117,37 @@ export class CloudRoutersPanel extends HTMLElement {
     this.root = this.attachShadow({ mode: 'open' })
   }
 
+  // ── Состояние: единственное место чтения/записи, ключ — роутер ──────────────
+
+  private stateOf(router: RouterId): RouterState {
+    return this.states.get(router) ?? { kind: 'loading' }
+  }
+
+  /** Текущий статус активного роутера; null пока он неизвестен или ошибка. */
+  private get status(): NineRouterStatus | null {
+    const s = this.stateOf(this.router)
+    return s.kind === 'ready' ? s.status : null
+  }
+
+  private get combos(): ComboInfo[] {
+    return this.combosByRouter.get(this.router) ?? []
+  }
+
+  /**
+   * Запись состояния — всегда с явным роутером. Иначе ответ на действие, начатое
+   * на одной вкладке, лёг бы в слот той, на которую юзер успел переключиться.
+   */
+  private setStatus(router: RouterId, status: NineRouterStatus): void {
+    this.states.set(router, { kind: 'ready', status })
+  }
+
+  private setCombos(router: RouterId, combos: ComboInfo[]): void {
+    this.combosByRouter.set(router, combos)
+  }
+
   connectedCallback() {
     this.render()
-    this.unsubUpdate = onUpdateState((s) => this.renderUpdateState(s))
+    this.unsubUpdate = onUpdateState(() => this.renderUpdateState(getUpdateState(this.router)))
     void this.refresh()
     onProgress((p) => {
       if (p.router === this.router) this.onProgress(p.text, p.done, p.total)
@@ -131,12 +182,25 @@ export class CloudRoutersPanel extends HTMLElement {
     this.visibilityObserver.observe(host, { attributes: true, attributeFilter: ['class'] })
   }
 
-  private async refresh() {
+  /**
+   * Обновить статус роутера. Ответ пишется в слот ИМЕННО `target`, поэтому быстрые
+   * клики по вкладкам не могут записать статус чужого роутера (гонка last-write-wins).
+   *
+   * Кэш НЕ затирается: если статус уже `ready`, он остаётся на экране, пока идёт
+   * фоновая проверка (stale-while-revalidate) — переключение вкладок не мигает.
+   */
+  private async refresh(target: RouterId = this.router) {
+    if (!this.states.has(target)) {
+      this.states.set(target, { kind: 'loading' })
+      this.render()
+    }
     try {
-      this.status = await getStatus(this.router)
+      this.states.set(target, { kind: 'ready', status: await getStatus(target) })
     } catch (e) {
-      this.status = null
-      logPlugin(`[cloud-routers] getStatus failed: ${String(e)}`)
+      const msg = `Не удалось получить статус ${target}: ${String(e)}`
+      logPlugin(`[cloud-routers] ${msg}`)
+      toast(msg, 'error')
+      this.states.set(target, { kind: 'error', message: msg })
     }
     this.render()
   }
@@ -162,17 +226,18 @@ export class CloudRoutersPanel extends HTMLElement {
     }
   }
 
-  private notifyCombosChanged() {
+  private notifyCombosChanged(router: RouterId = this.router) {
     window.dispatchEvent(new CustomEvent('cloud-routers:combos-changed', {
-      detail: { router: this.router, combos: this.combos },
+      detail: { router, combos: this.combosByRouter.get(router) ?? [] },
     }))
   }
 
   private async onInstall() {
+    const router = this.router
     this.setBtnBusy('.install', true)
     try {
-      this.status = await installOrUpdate(this.router, true)
-      this.combos = await getCombos(this.router).catch(() => [])
+      this.setStatus(router, await installOrUpdate(router, true))
+      this.setCombos(router, await getCombos(router).catch(() => []))
     } catch (e) {
       const msg = `Ошибка установки: ${String(e)}`
       logPlugin(`[cloud-routers] ${msg}`)
@@ -185,15 +250,17 @@ export class CloudRoutersPanel extends HTMLElement {
     } finally {
       this.setBtnBusy('.install', false)
     }
-    this.notifyCombosChanged()
+    this.notifyCombosChanged(router)
     this.render()
   }
 
   private async onOpen() {
+    const router = this.router
     this.setBtnBusy('.open', true)
     try {
-      await openDashboard(this.router)
-      this.status = await getStatus(this.router).catch(() => this.status)
+      await openDashboard(router)
+      const fresh = await getStatus(router).catch(() => null)
+      if (fresh) this.setStatus(router, fresh)
     } catch (e) {
       const msg = `Ошибка открытия Web UI: ${String(e)}`
       logPlugin(`[cloud-routers] ${msg}`)
@@ -205,11 +272,12 @@ export class CloudRoutersPanel extends HTMLElement {
   }
 
   private async onStop() {
+    const router = this.router
     this.setBtnBusy('.stop', true)
     try {
-      this.status = await stop(this.router)
-      this.combos = []
-      this.notifyCombosChanged()
+      this.setStatus(router, await stop(router))
+      this.setCombos(router, [])
+      this.notifyCombosChanged(router)
     } catch (e) {
       const msg = `Ошибка остановки: ${String(e)}`
       logPlugin(`[cloud-routers] ${msg}`)
@@ -221,10 +289,11 @@ export class CloudRoutersPanel extends HTMLElement {
   }
 
   private async onShowCombos() {
+    const router = this.router
     this.setBtnBusy('.refresh', true)
     try {
-      this.combos = await getCombos(this.router)
-      this.status = await getStatus(this.router)
+      this.setCombos(router, await getCombos(router))
+      this.setStatus(router, await getStatus(router))
     } catch (e) {
       const msg = `Ошибка обновления комбо: ${String(e)}`
       logPlugin(`[cloud-routers] ${msg}`)
@@ -232,11 +301,12 @@ export class CloudRoutersPanel extends HTMLElement {
     } finally {
       this.setBtnBusy('.refresh', false)
     }
-    this.notifyCombosChanged()
+    this.notifyCombosChanged(router)
     this.render()
   }
 
   private async onSaveApiKey() {
+    const router = this.router
     const input = this.root.querySelector<HTMLInputElement>('.api-key-input')
     const ok = this.root.querySelector<HTMLElement>('.api-ok')
     const err = this.root.querySelector<HTMLElement>('.api-err')
@@ -245,7 +315,7 @@ export class CloudRoutersPanel extends HTMLElement {
     err && (err.textContent = '')
     this.setBtnBusy('.save-key', true)
     try {
-      this.status = await setApiKey(this.router, input.value.trim())
+      this.setStatus(router, await setApiKey(router, input.value.trim()))
       ok && (ok.textContent = '✓ сохранён')
     } catch (e) {
       const msg = `Ошибка сохранения API-ключа: ${String(e)}`
@@ -259,15 +329,16 @@ export class CloudRoutersPanel extends HTMLElement {
   }
 
   private async onSetDir() {
+    const router = this.router
     this.setBtnBusy('.setdir', true)
     try {
       const sel = await openDialog({ directory: true })
       if (!sel) return
       const path = Array.isArray(sel) ? sel[0] : sel
       if (!path) return
-      this.status = await setRouterDir(this.router, path)
-      this.combos = []
-      this.notifyCombosChanged()
+      this.setStatus(router, await setRouterDir(router, path))
+      this.setCombos(router, [])
+      this.notifyCombosChanged(router)
       this.render()
     } catch (e) {
       const msg = `Ошибка смены пути: ${String(e)}`
@@ -283,21 +354,20 @@ export class CloudRoutersPanel extends HTMLElement {
   }
 
   private async onCheckUpdate() {
+    const router = this.router
     const btn = this.root.querySelector<HTMLButtonElement>('.check-update')
-    const updateBtn = this.root.querySelector<HTMLButtonElement>('.install-update')
-    if (btn) btn.disabled = true
-    if (updateBtn) updateBtn.style.display = 'none'
     const label = this.root.querySelector<HTMLElement>('.progress-status')
     const box = this.root.querySelector<HTMLElement>('.progress-container')
+    if (btn) btn.disabled = true
+    // На время проверки кнопка «Обновить» прячется; результат придёт через setUpdateState.
+    this.renderUpdateState({ hasUpdate: false })
     try {
-      const newTag = await checkRouterUpdate(this.router)
-      if (newTag) {
-        if (box) box.classList.add('on')
-        if (label) label.textContent = `Доступно обновление: v${newTag}`
-        if (updateBtn) updateBtn.style.display = 'inline-block'
-      } else {
-        if (box) box.classList.add('on')
-        if (label) label.textContent = `Актуален${this.status?.version ? ` (v${this.status.version})` : ''}`
+      const next = await checkUpdate(router)
+      if (box) box.classList.add('on')
+      if (label) {
+        label.textContent = next.hasUpdate
+          ? `Доступно обновление: v${next.tag ?? ''}`
+          : `Актуален${this.status?.version ? ` (v${this.status.version})` : ''}`
       }
     } catch (e) {
       const msg = `Ошибка проверки обновления: ${String(e)}`
@@ -311,35 +381,54 @@ export class CloudRoutersPanel extends HTMLElement {
   }
 
   private async onInstallUpdate() {
+    const router = this.router
     await this.onInstall()
-    setUpdateState({ hasUpdate: false })
-    const updateBtn = this.root.querySelector<HTMLButtonElement>('.install-update')
-    if (updateBtn) updateBtn.style.display = 'none'
+    setUpdateState(router, { hasUpdate: false })
   }
 
   private switchRouter(router: RouterId) {
+    if (router === this.router) return
     this.router = router
-    this.status = null
-    this.combos = []
-    void this.refresh()
+    // Рендер сразу: закэшированное состояние этой вкладки (или скелет, если её
+    // ещё не видели). Сброса в «не установлено» здесь быть не должно — отсюда и был flash.
     this.render()
+    void this.refresh(router)
   }
 
   private render() {
+    const state = this.stateOf(this.router)
+    // Состояние НЕИЗВЕСТНО — значит кнопки решений рисовать рано: любая из них
+    // («Установить» в первую очередь) была бы догадкой, а не фактом.
+    const known = state.kind === 'ready'
     const s = this.status
     const installed = s?.installed ?? false
     const running = s?.running ?? false
     const dotClass = installed && running ? 'dot on' : installed ? 'dot warn' : 'dot'
-    const message = s?.message ?? 'Загрузка...'
+    const message = known
+      ? s!.message
+      : state.kind === 'error'
+        ? state.message
+        : 'Проверка состояния…'
     const version = s?.version ? `v${s.version}` : '—'
     const nodeVersion = s?.node_version ? `Node ${s.node_version}` : 'Node —'
+    const actions = known
+      ? `<button class="primary install" style="${installed ? 'display:none;' : ''}">Установить</button>
+         <button class="check-update" style="${installed ? '' : 'display:none;'}">Проверить обновление</button>
+         <button class="primary install-update" style="display:none;">Обновить</button>
+         <button class="open" ${installed ? '' : 'disabled'}>Открыть Web UI</button>
+         <button class="stop" ${running ? '' : 'disabled'}>Остановить</button>
+         <button class="refresh" ${installed ? '' : 'disabled'}>⟳ Обновить комбо</button>`
+      : `<span class="muted">${state.kind === 'error'
+          ? 'Состояние проверить не удалось — повторите через «Обновить комбо»'
+          : '<span class="spinner"></span> Проверка состояния…'}</span>`
 
     this.root.innerHTML = `
       <style>${STYLE}</style>
       <div class="tabs">
-        <button class="${this.router === '9router' ? 'active' : ''}" data-router="9router">9Router</button>
-        <button class="${this.router === 'extremerouter' ? 'active' : ''}" data-router="extremerouter">ExtremeRouter</button>
-        <button class="${this.router === 'omniroute' ? 'active' : ''}" data-router="omniroute">OmniRoute</button>
+        ${ROUTER_IDS.map(
+          (id) =>
+            `<button class="${this.router === id ? 'active' : ''}" data-router="${id}">${ROUTER_LABELS[id]}</button>`,
+        ).join('')}
       </div>
       <div class="status">
         <span class="${dotClass}"></span>
@@ -354,12 +443,7 @@ export class CloudRoutersPanel extends HTMLElement {
         <span>порт ${s?.port ?? '—'}</span>
       </div>
       <div class="row">
-        <button class="primary install" style="${installed ? 'display:none;' : ''}">Установить</button>
-        <button class="check-update" style="${installed ? '' : 'display:none;'}">Проверить обновление</button>
-        <button class="primary install-update" style="display:none;">Обновить</button>
-        <button class="open" ${installed ? '' : 'disabled'}>Открыть Web UI</button>
-        <button class="stop" ${running ? '' : 'disabled'}>Остановить</button>
-        <button class="refresh" ${installed ? '' : 'disabled'}>⟳ Обновить комбо</button>
+        ${actions}
         <button class="setdir">Изменить путь</button>
       </div>
       <div class="row muted">
@@ -397,18 +481,17 @@ export class CloudRoutersPanel extends HTMLElement {
     this.root.querySelector('.refresh')?.addEventListener('click', () => void this.onShowCombos())
     this.root.querySelector('.open')?.addEventListener('click', () => void this.onOpen())
     this.root.querySelector('.setdir')?.addEventListener('click', () => void this.onSetDir())
-    this.renderUpdateState(getUpdateState())
+    this.renderUpdateState(getUpdateState(this.router))
   }
 
   private renderUpdateState(s: { hasUpdate: boolean; tag?: string }) {
     const badge = this.root.querySelector<HTMLElement>('#updateBadge')
     const updateBtn = this.root.querySelector<HTMLElement>('.install-update')
-    if (s.hasUpdate) {
-      if (badge) badge.style.display = 'inline-block'
-      if (updateBtn) updateBtn.style.display = 'inline-block'
-    } else if (badge) {
-      badge.style.display = 'none'
-    }
+    // И бейдж, и кнопка выводятся из ОДНОГО состояния: раньше в `else` прятался
+    // только бейдж, и кнопка «Обновить» оставалась висеть после установки.
+    const display = s.hasUpdate ? 'inline-block' : 'none'
+    if (badge) badge.style.display = display
+    if (updateBtn) updateBtn.style.display = display
   }
 }
 

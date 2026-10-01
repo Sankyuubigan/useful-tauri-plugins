@@ -31,6 +31,12 @@
     state = next;
     subs.forEach((fn) => fn(state));
   }
+  async function checkUpdate() {
+    const tag = await checkEngineUpdate();
+    const next = tag ? { hasUpdate: true, tag } : { hasUpdate: false };
+    setUpdateState(next);
+    return next;
+  }
 
   // guest-js/shims/dialog.ts
   var g2 = window;
@@ -292,14 +298,19 @@
       void prevSource;
       this.renderUpdateState(getUpdateState());
     }
+    /**
+     * Единственное место, где видны бейдж и кнопка «Обновить»: оба выводятся
+     * из одного состояния. Раньше в ветке `else` прятался только бейдж — кнопка
+     * оставалась на экране после установки обновления.
+     */
     renderUpdateState(s) {
       const badge = this.root.getElementById("updateBadge");
+      const updateBtn = this.root.getElementById("installUpdate");
+      const display = s.hasUpdate ? "inline-block" : "none";
+      if (badge) badge.style.display = display;
+      if (updateBtn) updateBtn.style.display = display;
       if (s.hasUpdate) {
         this.setStatus(`\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0434\u0432\u0438\u0436\u043A\u0430: ${s.tag ?? ""}`);
-        this.root.getElementById("installUpdate").style.display = "inline-block";
-        if (badge) badge.style.display = "inline-block";
-      } else if (badge) {
-        badge.style.display = "none";
       }
     }
     async onSourceChange() {
@@ -409,17 +420,13 @@
       const prevLabel = btn.textContent;
       btn.textContent = "\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430\u2026";
       btn.classList.add("checking");
-      this.root.getElementById("installUpdate").style.display = "none";
+      this.renderUpdateState({ hasUpdate: false });
       try {
-        const newTag = await checkEngineUpdate();
-        if (newTag) {
-          this.setStatus(`\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0434\u0432\u0438\u0436\u043A\u0430: ${newTag}`);
-          this.root.getElementById("installUpdate").style.display = "inline-block";
-        } else {
-          this.setStatus("\u0414\u0432\u0438\u0436\u043E\u043A llamacpp \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D");
-        }
+        const next = await checkUpdate();
+        this.setStatus(
+          next.hasUpdate ? `\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0434\u0432\u0438\u0436\u043A\u0430: ${next.tag ?? ""}` : "\u0414\u0432\u0438\u0436\u043E\u043A llamacpp \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D"
+        );
       } catch (e) {
-        this.setStatus("");
         toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0438 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u0434\u0432\u0438\u0436\u043A\u0430: ${e}`, "error");
       } finally {
         btn.disabled = false;

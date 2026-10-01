@@ -1,6 +1,5 @@
 import {
   autoDownloadDefaultModel,
-  checkEngineUpdate,
   deleteModelFile,
   downloadModel,
   getAutoDownloadInfo,
@@ -21,7 +20,7 @@ import {
   type EngineConfig,
   type EngineStatus,
 } from './index'
-import { getUpdateState, onUpdateState, setUpdateState } from './updates'
+import { checkUpdate, getUpdateState, onUpdateState, setUpdateState } from './updates'
 import { open as openDialog, save } from '@tauri-apps/plugin-dialog'
 import { listen } from '@tauri-apps/api/event'
 
@@ -288,14 +287,19 @@ class LlamaEnginePanel extends HTMLElement {
     this.renderUpdateState(getUpdateState())
   }
 
+  /**
+   * Единственное место, где видны бейдж и кнопка «Обновить»: оба выводятся
+   * из одного состояния. Раньше в ветке `else` прятался только бейдж — кнопка
+   * оставалась на экране после установки обновления.
+   */
   private renderUpdateState(s: { hasUpdate: boolean; tag?: string }) {
     const badge = this.root.getElementById('updateBadge') as HTMLElement | null
+    const updateBtn = this.root.getElementById('installUpdate') as HTMLElement | null
+    const display = s.hasUpdate ? 'inline-block' : 'none'
+    if (badge) badge.style.display = display
+    if (updateBtn) updateBtn.style.display = display
     if (s.hasUpdate) {
       this.setStatus(`Доступно обновление движка: ${s.tag ?? ''}`)
-      this.root.getElementById('installUpdate')!.style.display = 'inline-block'
-      if (badge) badge.style.display = 'inline-block'
-    } else if (badge) {
-      badge.style.display = 'none'
     }
   }
 
@@ -409,17 +413,17 @@ class LlamaEnginePanel extends HTMLElement {
     const prevLabel = btn.textContent
     btn.textContent = 'Проверка…'
     btn.classList.add('checking')
-    this.root.getElementById('installUpdate')!.style.display = 'none'
+    // На время проверки прячем кнопку «Обновить»; результат придёт через setUpdateState,
+    // который двигает и кнопку, и бейдж, и точку в навигации хоста.
+    this.renderUpdateState({ hasUpdate: false })
     try {
-      const newTag = await checkEngineUpdate()
-      if (newTag) {
-        this.setStatus(`Доступно обновление движка: ${newTag}`)
-        this.root.getElementById('installUpdate')!.style.display = 'inline-block'
-      } else {
-        this.setStatus('Движок llamacpp актуален')
-      }
+      const next = await checkUpdate()
+      this.setStatus(
+        next.hasUpdate
+          ? `Доступно обновление движка: ${next.tag ?? ''}`
+          : 'Движок llamacpp актуален',
+      )
     } catch (e) {
-      this.setStatus('')
       toast(`Ошибка проверки обновления движка: ${e}`, 'error')
     } finally {
       btn.disabled = false

@@ -23,21 +23,36 @@
   }
 
   // guest-js/updates.ts
-  var state = { hasUpdate: false };
+  var states = /* @__PURE__ */ new Map();
   var subs = /* @__PURE__ */ new Set();
-  function getUpdateState() {
-    return state;
+  var pending = /* @__PURE__ */ new Set();
+  function getUpdateState(router) {
+    if (router) return states.get(router) ?? { hasUpdate: false };
+    return { hasUpdate: Array.from(states.values()).some((s) => s.hasUpdate) };
   }
   function onUpdateState(fn) {
     subs.add(fn);
-    fn(state);
+    fn(getUpdateState());
     return () => {
       subs.delete(fn);
     };
   }
-  function setUpdateState(next) {
-    state = next;
-    subs.forEach((fn) => fn(state));
+  function setUpdateState(router, next) {
+    states.set(router, next);
+    const aggregate = getUpdateState();
+    subs.forEach((fn) => fn(aggregate));
+  }
+  async function checkUpdate(router) {
+    if (pending.has(router)) return getUpdateState(router);
+    pending.add(router);
+    try {
+      const tag = await checkRouterUpdate(router);
+      const next = tag ? { hasUpdate: true, tag } : { hasUpdate: false };
+      setUpdateState(router, next);
+      return next;
+    } finally {
+      pending.delete(router);
+    }
   }
 
   // guest-js/shims/dialog.ts
@@ -69,6 +84,9 @@
   .api-ok { color: var(--success, #3fa45b); font-size: 12px; margin-left: 4px; }
   .api-err { color: var(--warning, #d8a13a); font-size: 12px; margin-left: 4px; }
   .status { display: flex; gap: 8px; align-items: center; }
+  .spinner { display: inline-block; width: 12px; height: 12px; vertical-align: -1px;
+             border: 2px solid var(--primary, #4a90d9); border-top-color: transparent;
+             border-radius: 50%; animation: spin 0.8s linear infinite; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--text-muted, #777); flex: 0 0 auto; }
   .dot.on { background: var(--success, #3fa45b); }
   .dot.warn { background: var(--warning, #d8a13a); }
@@ -106,20 +124,47 @@
     void invoke("plugin:logs|log_frontend_event", { level: "FE", msg }).catch(() => {
     });
   }
+  var ROUTER_LABELS = {
+    "9router": "9Router",
+    extremerouter: "ExtremeRouter",
+    omniroute: "OmniRoute"
+  };
   var CloudRoutersPanel = class extends HTMLElement {
     constructor() {
       super();
       this.router = "9router";
-      this.status = null;
-      this.combos = [];
+      this.states = /* @__PURE__ */ new Map();
+      this.combosByRouter = /* @__PURE__ */ new Map();
       this.offProgress = null;
       this.visibilityObserver = null;
       this.refreshTimer = null;
       this.root = this.attachShadow({ mode: "open" });
     }
+    // ── Состояние: единственное место чтения/записи, ключ — роутер ──────────────
+    stateOf(router) {
+      return this.states.get(router) ?? { kind: "loading" };
+    }
+    /** Текущий статус активного роутера; null пока он неизвестен или ошибка. */
+    get status() {
+      const s = this.stateOf(this.router);
+      return s.kind === "ready" ? s.status : null;
+    }
+    get combos() {
+      return this.combosByRouter.get(this.router) ?? [];
+    }
+    /**
+     * Запись состояния — всегда с явным роутером. Иначе ответ на действие, начатое
+     * на одной вкладке, лёг бы в слот той, на которую юзер успел переключиться.
+     */
+    setStatus(router, status) {
+      this.states.set(router, { kind: "ready", status });
+    }
+    setCombos(router, combos) {
+      this.combosByRouter.set(router, combos);
+    }
     connectedCallback() {
       this.render();
-      this.unsubUpdate = onUpdateState((s) => this.renderUpdateState(s));
+      this.unsubUpdate = onUpdateState(() => this.renderUpdateState(getUpdateState(this.router)));
       void this.refresh();
       onProgress((p) => {
         if (p.router === this.router) this.onProgress(p.text, p.done, p.total);
@@ -151,12 +196,25 @@
       });
       this.visibilityObserver.observe(host, { attributes: true, attributeFilter: ["class"] });
     }
-    async refresh() {
+    /**
+     * Обновить статус роутера. Ответ пишется в слот ИМЕННО `target`, поэтому быстрые
+     * клики по вкладкам не могут записать статус чужого роутера (гонка last-write-wins).
+     *
+     * Кэш НЕ затирается: если статус уже `ready`, он остаётся на экране, пока идёт
+     * фоновая проверка (stale-while-revalidate) — переключение вкладок не мигает.
+     */
+    async refresh(target = this.router) {
+      if (!this.states.has(target)) {
+        this.states.set(target, { kind: "loading" });
+        this.render();
+      }
       try {
-        this.status = await getStatus(this.router);
+        this.states.set(target, { kind: "ready", status: await getStatus(target) });
       } catch (e) {
-        this.status = null;
-        logPlugin(`[cloud-routers] getStatus failed: ${String(e)}`);
+        const msg = `\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u0441\u0442\u0430\u0442\u0443\u0441 ${target}: ${String(e)}`;
+        logPlugin(`[cloud-routers] ${msg}`);
+        toast(msg, "error");
+        this.states.set(target, { kind: "error", message: msg });
       }
       this.render();
     }
@@ -179,16 +237,17 @@
         btn.classList.toggle("busy", v);
       }
     }
-    notifyCombosChanged() {
+    notifyCombosChanged(router = this.router) {
       window.dispatchEvent(new CustomEvent("cloud-routers:combos-changed", {
-        detail: { router: this.router, combos: this.combos }
+        detail: { router, combos: this.combosByRouter.get(router) ?? [] }
       }));
     }
     async onInstall() {
+      const router = this.router;
       this.setBtnBusy(".install", true);
       try {
-        this.status = await installOrUpdate(this.router, true);
-        this.combos = await getCombos(this.router).catch(() => []);
+        this.setStatus(router, await installOrUpdate(router, true));
+        this.setCombos(router, await getCombos(router).catch(() => []));
       } catch (e) {
         const msg = `\u041E\u0448\u0438\u0431\u043A\u0430 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0438: ${String(e)}`;
         logPlugin(`[cloud-routers] ${msg}`);
@@ -201,14 +260,16 @@
       } finally {
         this.setBtnBusy(".install", false);
       }
-      this.notifyCombosChanged();
+      this.notifyCombosChanged(router);
       this.render();
     }
     async onOpen() {
+      const router = this.router;
       this.setBtnBusy(".open", true);
       try {
-        await openDashboard(this.router);
-        this.status = await getStatus(this.router).catch(() => this.status);
+        await openDashboard(router);
+        const fresh = await getStatus(router).catch(() => null);
+        if (fresh) this.setStatus(router, fresh);
       } catch (e) {
         const msg = `\u041E\u0448\u0438\u0431\u043A\u0430 \u043E\u0442\u043A\u0440\u044B\u0442\u0438\u044F Web UI: ${String(e)}`;
         logPlugin(`[cloud-routers] ${msg}`);
@@ -219,11 +280,12 @@
       this.render();
     }
     async onStop() {
+      const router = this.router;
       this.setBtnBusy(".stop", true);
       try {
-        this.status = await stop(this.router);
-        this.combos = [];
-        this.notifyCombosChanged();
+        this.setStatus(router, await stop(router));
+        this.setCombos(router, []);
+        this.notifyCombosChanged(router);
       } catch (e) {
         const msg = `\u041E\u0448\u0438\u0431\u043A\u0430 \u043E\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0438: ${String(e)}`;
         logPlugin(`[cloud-routers] ${msg}`);
@@ -234,10 +296,11 @@
       this.render();
     }
     async onShowCombos() {
+      const router = this.router;
       this.setBtnBusy(".refresh", true);
       try {
-        this.combos = await getCombos(this.router);
-        this.status = await getStatus(this.router);
+        this.setCombos(router, await getCombos(router));
+        this.setStatus(router, await getStatus(router));
       } catch (e) {
         const msg = `\u041E\u0448\u0438\u0431\u043A\u0430 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u043A\u043E\u043C\u0431\u043E: ${String(e)}`;
         logPlugin(`[cloud-routers] ${msg}`);
@@ -245,10 +308,11 @@
       } finally {
         this.setBtnBusy(".refresh", false);
       }
-      this.notifyCombosChanged();
+      this.notifyCombosChanged(router);
       this.render();
     }
     async onSaveApiKey() {
+      const router = this.router;
       const input = this.root.querySelector(".api-key-input");
       const ok = this.root.querySelector(".api-ok");
       const err = this.root.querySelector(".api-err");
@@ -257,7 +321,7 @@
       err && (err.textContent = "");
       this.setBtnBusy(".save-key", true);
       try {
-        this.status = await setApiKey(this.router, input.value.trim());
+        this.setStatus(router, await setApiKey(router, input.value.trim()));
         ok && (ok.textContent = "\u2713 \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D");
       } catch (e) {
         const msg = `\u041E\u0448\u0438\u0431\u043A\u0430 \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0438\u044F API-\u043A\u043B\u044E\u0447\u0430: ${String(e)}`;
@@ -270,15 +334,16 @@
       this.render();
     }
     async onSetDir() {
+      const router = this.router;
       this.setBtnBusy(".setdir", true);
       try {
         const sel = await open({ directory: true });
         if (!sel) return;
         const path = Array.isArray(sel) ? sel[0] : sel;
         if (!path) return;
-        this.status = await setRouterDir(this.router, path);
-        this.combos = [];
-        this.notifyCombosChanged();
+        this.setStatus(router, await setRouterDir(router, path));
+        this.setCombos(router, []);
+        this.notifyCombosChanged(router);
         this.render();
       } catch (e) {
         const msg = `\u041E\u0448\u0438\u0431\u043A\u0430 \u0441\u043C\u0435\u043D\u044B \u043F\u0443\u0442\u0438: ${String(e)}`;
@@ -293,21 +358,17 @@
       }
     }
     async onCheckUpdate() {
+      const router = this.router;
       const btn = this.root.querySelector(".check-update");
-      const updateBtn = this.root.querySelector(".install-update");
-      if (btn) btn.disabled = true;
-      if (updateBtn) updateBtn.style.display = "none";
       const label = this.root.querySelector(".progress-status");
       const box = this.root.querySelector(".progress-container");
+      if (btn) btn.disabled = true;
+      this.renderUpdateState({ hasUpdate: false });
       try {
-        const newTag = await checkRouterUpdate(this.router);
-        if (newTag) {
-          if (box) box.classList.add("on");
-          if (label) label.textContent = `\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435: v${newTag}`;
-          if (updateBtn) updateBtn.style.display = "inline-block";
-        } else {
-          if (box) box.classList.add("on");
-          if (label) label.textContent = `\u0410\u043A\u0442\u0443\u0430\u043B\u0435\u043D${this.status?.version ? ` (v${this.status.version})` : ""}`;
+        const next = await checkUpdate(router);
+        if (box) box.classList.add("on");
+        if (label) {
+          label.textContent = next.hasUpdate ? `\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435: v${next.tag ?? ""}` : `\u0410\u043A\u0442\u0443\u0430\u043B\u0435\u043D${this.status?.version ? ` (v${this.status.version})` : ""}`;
         }
       } catch (e) {
         const msg = `\u041E\u0448\u0438\u0431\u043A\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0438 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F: ${String(e)}`;
@@ -320,32 +381,38 @@
       }
     }
     async onInstallUpdate() {
+      const router = this.router;
       await this.onInstall();
-      setUpdateState({ hasUpdate: false });
-      const updateBtn = this.root.querySelector(".install-update");
-      if (updateBtn) updateBtn.style.display = "none";
+      setUpdateState(router, { hasUpdate: false });
     }
     switchRouter(router) {
+      if (router === this.router) return;
       this.router = router;
-      this.status = null;
-      this.combos = [];
-      void this.refresh();
       this.render();
+      void this.refresh(router);
     }
     render() {
+      const state = this.stateOf(this.router);
+      const known = state.kind === "ready";
       const s = this.status;
       const installed = s?.installed ?? false;
       const running = s?.running ?? false;
       const dotClass = installed && running ? "dot on" : installed ? "dot warn" : "dot";
-      const message = s?.message ?? "\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430...";
+      const message = known ? s.message : state.kind === "error" ? state.message : "\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u044F\u2026";
       const version = s?.version ? `v${s.version}` : "\u2014";
       const nodeVersion = s?.node_version ? `Node ${s.node_version}` : "Node \u2014";
+      const actions = known ? `<button class="primary install" style="${installed ? "display:none;" : ""}">\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C</button>
+         <button class="check-update" style="${installed ? "" : "display:none;"}">\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435</button>
+         <button class="primary install-update" style="display:none;">\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C</button>
+         <button class="open" ${installed ? "" : "disabled"}>\u041E\u0442\u043A\u0440\u044B\u0442\u044C Web UI</button>
+         <button class="stop" ${running ? "" : "disabled"}>\u041E\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C</button>
+         <button class="refresh" ${installed ? "" : "disabled"}>\u27F3 \u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043A\u043E\u043C\u0431\u043E</button>` : `<span class="muted">${state.kind === "error" ? "\u0421\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u2014 \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u0435 \u0447\u0435\u0440\u0435\u0437 \xAB\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043A\u043E\u043C\u0431\u043E\xBB" : '<span class="spinner"></span> \u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u044F\u2026'}</span>`;
       this.root.innerHTML = `
       <style>${STYLE}</style>
       <div class="tabs">
-        <button class="${this.router === "9router" ? "active" : ""}" data-router="9router">9Router</button>
-        <button class="${this.router === "extremerouter" ? "active" : ""}" data-router="extremerouter">ExtremeRouter</button>
-        <button class="${this.router === "omniroute" ? "active" : ""}" data-router="omniroute">OmniRoute</button>
+        ${ROUTER_IDS.map(
+        (id) => `<button class="${this.router === id ? "active" : ""}" data-router="${id}">${ROUTER_LABELS[id]}</button>`
+      ).join("")}
       </div>
       <div class="status">
         <span class="${dotClass}"></span>
@@ -360,12 +427,7 @@
         <span>\u043F\u043E\u0440\u0442 ${s?.port ?? "\u2014"}</span>
       </div>
       <div class="row">
-        <button class="primary install" style="${installed ? "display:none;" : ""}">\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C</button>
-        <button class="check-update" style="${installed ? "" : "display:none;"}">\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435</button>
-        <button class="primary install-update" style="display:none;">\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C</button>
-        <button class="open" ${installed ? "" : "disabled"}>\u041E\u0442\u043A\u0440\u044B\u0442\u044C Web UI</button>
-        <button class="stop" ${running ? "" : "disabled"}>\u041E\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C</button>
-        <button class="refresh" ${installed ? "" : "disabled"}>\u27F3 \u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043A\u043E\u043C\u0431\u043E</button>
+        ${actions}
         <button class="setdir">\u0418\u0437\u043C\u0435\u043D\u0438\u0442\u044C \u043F\u0443\u0442\u044C</button>
       </div>
       <div class="row muted">
@@ -396,17 +458,14 @@
       this.root.querySelector(".refresh")?.addEventListener("click", () => void this.onShowCombos());
       this.root.querySelector(".open")?.addEventListener("click", () => void this.onOpen());
       this.root.querySelector(".setdir")?.addEventListener("click", () => void this.onSetDir());
-      this.renderUpdateState(getUpdateState());
+      this.renderUpdateState(getUpdateState(this.router));
     }
     renderUpdateState(s) {
       const badge = this.root.querySelector("#updateBadge");
       const updateBtn = this.root.querySelector(".install-update");
-      if (s.hasUpdate) {
-        if (badge) badge.style.display = "inline-block";
-        if (updateBtn) updateBtn.style.display = "inline-block";
-      } else if (badge) {
-        badge.style.display = "none";
-      }
+      const display = s.hasUpdate ? "inline-block" : "none";
+      if (badge) badge.style.display = display;
+      if (updateBtn) updateBtn.style.display = display;
     }
   };
   if (!customElements.get("cloud-routers-panel")) {
@@ -416,6 +475,7 @@
   // guest-js/index.ts
   var PROGRESS_EVENT = "cloud-routers-progress";
   var CHUNK_EVENT = "cloud-routers-chunk";
+  var ROUTER_IDS = ["9router", "extremerouter", "omniroute"];
   function getStatus(router) {
     return invoke("plugin:cloud-routers|get_status", { router });
   }

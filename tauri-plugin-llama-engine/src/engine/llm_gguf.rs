@@ -875,11 +875,14 @@ mod tests {
         assert!((est.kv_mb - 336.0).abs() < 0.01, "KV: {} МБ (ожидалось 336)", est.kv_mb);
         assert_eq!(est.num_attn_layers, 48);
 
-        // ctx 18204 (n_ctx_seq=18432; SWA cells = min(18432, 4608)=4608):
-        //   dense 16384·18432 = 288 MiB + SWA 327680·4608 = 1440 MiB → 1728 MiB.
+        // ctx 18204 (n_ctx_seq=18432; SWA cells = min(18432, 1024·1+512)=1536 —
+        // один слот, см. SERVER_N_PARALLEL):
+        //   dense 16384·18432 = 288 MiB + SWA 327680·1536 = 480 MiB → 768 MiB.
+        // При прежних 4 слотах было 1440+288 = 1728 MiB — вчетверо больше,
+        // чем движок резервирует на самом деле.
         let est2 = crate::engine::vram_estimate::estimate_vram(p, 18_204, false, false);
-        assert!((est2.kv_mb - 1728.0).abs() < 0.01, "KV: {} МБ (ожидалось 1728)", est2.kv_mb);
-        assert!((est2.kv_swa_mb - 1440.0).abs() < 0.01, "SWA KV: {} МБ (ожидалось 1440)", est2.kv_swa_mb);
+        assert!((est2.kv_mb - 768.0).abs() < 0.01, "KV: {} МБ (ожидалось 768)", est2.kv_mb);
+        assert!((est2.kv_swa_mb - 480.0).abs() < 0.01, "SWA KV: {} МБ (ожидалось 480)", est2.kv_swa_mb);
     }
 
     #[test]

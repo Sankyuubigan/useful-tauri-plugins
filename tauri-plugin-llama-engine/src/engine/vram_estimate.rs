@@ -17,8 +17,7 @@
 //! KV-кэш двухкомпонентный (повторяет llama-kv-cache-iswa.cpp):
 //!   - dense (non-SWA) слои видят ПОЛНЫЙ контекст: `PAD(ctx, 256)` ячеек;
 //!   - SWA-слои ограничены sliding_window: `PAD(min(ctx, n_swa·n_seq_max + n_ubatch), 256)`.
-//!     Приложение запускает llama-server с авто-параметрами (n_parallel=4,
-//!     kv_unified=true), поэтому n_seq_max=4, n_ubatch=512.
+//!     n_seq_max = [`SERVER_N_PARALLEL`], n_ubatch = [`N_UBATCH`].
 //!
 //! `ctx_size` — ЭФФЕКТИВНЫЙ контекст (промпт + запас генерации). Вопреки более
 //! ранним комментариям llama.cpp выделяет KV-кэш НЕ лениво: при создании
@@ -34,6 +33,21 @@ use crate::engine::llm_gguf::{extract_gguf_arch, extract_u32_with_arch, extract_
 use crate::engine::sources::SourceSpec;
 
 const MIB: f64 = 1024.0 * 1024.0;
+
+/// Число параллельных слотов (`--parallel`), с которым приложение запускает
+/// `llama-server`. ЕДИНСТВЕННЫЙ источник правды: и команда запуска в `llm.rs`,
+/// и расчёт SWA-окна ниже читают эту константу.
+///
+/// Приложение настольное и выполняет запросы СТРОГО последовательно, поэтому
+/// слот ровно один. Раньше слот не передавался, и движок брал свой дефолт
+/// `n_parallel=4`: `llama-server` умножает `-c` на число слотов, то есть на
+/// карте резервировался KV вчетверо больший, чем нужно, а оценка в dense-ветке
+/// считала одну последовательность — то есть вчетверо меньше реальности.
+/// Расхождение ломало pre-flight и заставляло резать слои на CPU.
+pub const SERVER_N_PARALLEL: u32 = 1;
+
+/// `n_ubatch` — дефолт llama.cpp (аргумент движку не передаётся).
+pub const N_UBATCH: u32 = 512;
 
 /// Оценка VRAM-потребления для контекста `ctx_size`.
 #[derive(Debug, Clone, Copy)]
@@ -179,12 +193,10 @@ fn pad256(v: u32) -> u32 {
 }
 
 /// Число ячеек SWA-кэша (llama-kv-cache-iswa.cpp): SWA капится окном, а не полным
-/// контекстом. Приложение запускает llama-server с авто-параметрами
-/// (n_parallel=4, kv_unified=true), значит n_seq_max=4, n_ubatch=512.
+/// контекстом. Окно умножается на число параллельных слотов — берётся из
+/// [`SERVER_N_PARALLEL`], то есть ровно то значение, которое передаётся движку.
 fn swa_cells_count(n_ctx_seq: u32, swa_window: u32) -> u32 {
-    const SERVER_N_SEQ: u32 = 4; // llama-server авто n_parallel
-    const N_UBATCH: u32 = 512;   // дефолт llama.cpp ubatch
-    let size = (swa_window * SERVER_N_SEQ + N_UBATCH).min(n_ctx_seq);
+    let size = (swa_window * SERVER_N_PARALLEL + N_UBATCH).min(n_ctx_seq);
     pad256(size)
 }
 
@@ -458,21 +470,45 @@ pub fn max_fitting_ngl_estimate(est: &VramEstimate, budget_mb: f64, reserve_mb: 
     max_fitting_ngl_safe_estimate(est, budget_mb, reserve_mb, 1.0)
 }
 
-/// Максимальное число слоёв с запасом безопасности `safety_factor` (>1): бюджет
-/// делится на (МБ на слой × фактор). Фактор покрывает пиковые compute-буферы и
-/// фрагментацию СВЕРХ `buffers_mb` — на реальной карте пик может превысить
-/// линейную оценку «веса + KV» (буферы промпт-процессинга под ubatch 512 на
-/// 12B-моделях далеко за 256 МБ). Используется в pre-flight запуска и авто-повторе.
+/// Максимальное число слоёв с запасом безопасности `safety_factor` (>1).
+///
+/// Это ТОЧНАЯ ОБРАТНАЯ к [`vram_for_ngl_safe`] — то есть к тому же критерию,
+/// по которому решается «влезает ли модель целиком». Раньше здесь была
+/// отдельная формула «(веса+KV) × фактор / слоёв», которая:
+///   - не учитывала `buffers_mb` вообще (а буферы в VRAM при любом `-ngl`);
+///   - применяла фактор к весам, а резерв вычитала целиком сверху.
+///
+/// Из-за расхождения pre-flight выбирал `-ngl`, для которого СОБСТВЕННЫЙ
+/// прогноз памяти всё равно превышал бюджет, то есть недозащищал ровно от
+/// CUDA OOM / TDR, ради которых запас и введён. Теперь критерий один:
+/// `vram_for_ngl_safe(est, ngl) ≤ budget`.
 pub fn max_fitting_ngl_safe_estimate(est: &VramEstimate, budget_mb: f64, reserve_mb: f64, safety_factor: f64) -> u32 {
     if est.num_layers == 0 {
         return 0;
     }
-    let usable = (budget_mb - reserve_mb).max(0.0);
-    let per_layer = ((est.model_mb + est.kv_mb) * safety_factor.max(1.0)) / est.num_layers as f64;
-    if per_layer <= 0.0 {
+    let safety = safety_factor.max(1.0);
+    let budget_for_payload = ((budget_mb - reserve_mb) / safety - est.buffers_mb).max(0.0);
+    let scalable = est.model_mb + est.kv_mb;
+    if scalable <= 0.0 {
         return est.num_layers;
     }
-    (usable / per_layer).floor().min(est.num_layers as f64) as u32
+    let frac = budget_for_payload / scalable;
+    ((frac * est.num_layers as f64).floor() as i64)
+        .clamp(0, est.num_layers as i64) as u32
+}
+
+/// Полный прогноз VRAM при оффлоаде `ngl` слоёв, с теми же запасами, что и
+/// проверка «влезает ли целиком»: `(веса·frac + KV·frac + буферы) × фактор + резерв`.
+///
+/// Единая формула для входной проверки и для клампа — иначе они расходятся
+/// (см. комментарий у [`max_fitting_ngl_safe_estimate`]).
+pub fn vram_for_ngl_safe(
+    est: &VramEstimate,
+    ngl: u32,
+    reserve_mb: f64,
+    safety_factor: f64,
+) -> f64 {
+    vram_for_ngl_estimate(est, ngl) * safety_factor.max(1.0) + reserve_mb
 }
 
 /// Максимальное число слоёв с запасом безопасности (обёртка с чтением GGUF).
@@ -537,12 +573,16 @@ mod tests {
 
     #[test]
     fn max_fitting_ngl_computes_floor_of_budget() {
-        // МБ на слой = (10000+2000)/20 = 600. Бюджет 10 500 − резерв 500 = 10 000 → 16 слоёв.
+        // Модель 10000+2000 МБ, 20 слоёв, буферы = min(12000·0.1, 256) = 256.
         let e = est(10_000.0, 2_000.0, 20);
+        // Безопасно: (12000·n/20 + 256) ≤ 10 000 → 600n ≤ 9744 → 16 слоёв.
         assert_eq!(max_fitting_ngl_estimate(&e, 10_500.0, 500.0), 16);
-        // Safety-фактор 1.25 урезает число слоёв (пиковые буферы сверх оценки).
-        // 600 МБ/слой × 1.25 = 750 → 10 000 / 750 = 13 слоёв.
-        assert_eq!(max_fitting_ngl_safe_estimate(&e, 10_500.0, 500.0, 1.25), 13);
+        // С фактором 1.25 пик считается как (веса+KV+буферы)·1.25 + резерв:
+        // (600n + 256)·1.25 ≤ 10 000 → 600n ≤ 7744 → 12 слоёв.
+        // (Раньше здесь было 13: фактор применялся к весам, а буферы не
+        // учитывались — из-за этого кламп возвращал число слоёв, которое не
+        // проходило собственный критерий. См. max_fitting_ngl_safe_estimate.)
+        assert_eq!(max_fitting_ngl_safe_estimate(&e, 10_500.0, 500.0, 1.25), 12);
         // Фактор никогда не расширяет бюджет.
         assert!(max_fitting_ngl_safe_estimate(&e, 10_500.0, 500.0, 1.25) <= max_fitting_ngl_estimate(&e, 10_500.0, 500.0));
         // Резерв больше бюджета → 0 (не влезает даже минимальный оффлоад).
@@ -680,12 +720,92 @@ mod tests {
 
     #[test]
     fn swa_cells_uses_windows_not_full_ctx() {
-        // llama-server: n_parallel=4, kv_unified=true → n_seq_max=4, ubatch=512.
-        // window 1024: cells = min(ctx, 1024·4+512=4608), PAD 256.
-        assert_eq!(swa_cells_count(pad256(18_432), 1024), 4_608);
+        // Один слот (SERVER_N_PARALLEL=1), ubatch=512.
+        // window 1024: cells = min(ctx, 1024·1+512=1536), PAD 256.
+        assert_eq!(swa_cells_count(pad256(18_432), 1024), 1_536);
         // Меньше окна — полный ctx (PAD 256).
-        assert_eq!(swa_cells_count(pad256(1024), 1024), 1024);
-        // Промежуточный ctx тоже паддится до 256 (1800 → 2048).
-        assert_eq!(swa_cells_count(pad256(1_800), 1024), 2_048);
+        assert_eq!(swa_cells_count(pad256(1_024), 1024), 1_024);
+        // При одном слоте окно 1024 + ubatch уже перекрывает ctx 2048, поэтому
+        // SWA-кап срабатывает именно на ctx, а не на окне × слоты.
+        assert_eq!(swa_cells_count(pad256(1_800), 1024), 1_536);
+    }
+
+    /// Регрессия: константа слотов в расчёте SWA и флаг `--parallel` в команде
+    /// запуска обязаны быть ОДНИМ числом. Расхождение означало, что оценка VRAM
+    /// считает вчетверо меньше KV, чем реально резервирует движок, и pre-flight
+    /// без причины резал слои модели на CPU.
+    #[test]
+    fn swa_cells_follow_the_configured_slot_count() {
+        assert_eq!(SERVER_N_PARALLEL, 1);
+        // Окно 4096 при одном слоте: 4096·1 + 512 = 4608, без четвертного
+        // деления, которое давало бы 16 896.
+        assert_eq!(swa_cells_count(pad256(18_432), 4_096), 4_608);
+    }
+
+    /// Регрессия на сценарий юзера (GTX 1070 Ti, 8192 МБ VRAM, 9B Q4).
+    ///
+    /// Главное свойство: выбранный pre-flight `-ngl` обязан проходить тот же
+    /// критерий, по которому решается «влезает ли целиком». Раньше входная
+    /// проверка и кламп считали по РАЗНЫМ формулам, и кламп возвращал 30 слоёв,
+    /// для которых прогноз памяти всё равно превышал бюджет — то есть pre-flight
+    /// недозащищал ровно от CUDA OOM/TDR, ради которых запас и добавлен.
+    #[test]
+    fn pre_flight_ngl_satisfies_the_same_budget_check() {
+        let reserve = 1_024.0;
+        let safety = 1.25;
+        let budget = 7_376.0;
+        let e = est(5_167.0, 212.0, 32); // Ornith-1.5-9B IQ4_NL, ctx 19968
+
+        // Полный оффлоад действительно не влезает — иначе тест не проверяет путь.
+        assert!(
+            vram_for_ngl_safe(&e, e.num_layers, reserve, safety) > budget,
+            "модель должна требовать больше бюджета — премушаны теста"
+        );
+
+        let ngl = max_fitting_ngl_safe_estimate(&e, budget, reserve, safety);
+        assert!(ngl > 0 && ngl < e.num_layers, "ngl={} вне ожидаемого диапазона", ngl);
+
+        // Выбранный оффлоад влезает…
+        assert!(
+            vram_for_ngl_safe(&e, ngl, reserve, safety) <= budget,
+            "ngl={} даёт {:.0} МБ при бюджете {:.0} МБ — не влезает",
+            ngl,
+            vram_for_ngl_safe(&e, ngl, reserve, safety),
+            budget
+        );
+        // …и является максимальным: ещё один слой уже не влезает.
+        assert!(
+            vram_for_ngl_safe(&e, ngl + 1, reserve, safety) > budget,
+            "ngl={} не максимален: ngl+1 даёт {:.0} МБ и влезает в {:.0} МБ",
+            ngl,
+            vram_for_ngl_safe(&e, ngl + 1, reserve, safety),
+            budget
+        );
+    }
+
+    /// Инвариант формы: кламп — обратная функция к прогнозу, а не отдельная
+    /// эвристика. Проверяется на сетке параметров, где результат известен.
+    #[test]
+    fn max_fitting_ngl_is_inverse_of_vram_for_ngl_safe() {
+        let e = est(5_167.0, 212.0, 32);
+        let reserve = 1_024.0;
+        let safety = 1.25;
+        for budget in [2_000.0, 4_000.0, 6_000.0, 7_376.0, 9_000.0, 40_000.0] {
+            let ngl = max_fitting_ngl_safe_estimate(&e, budget, reserve, safety);
+            assert!(
+                vram_for_ngl_safe(&e, ngl, reserve, safety) <= budget,
+                "бюджет {:.0}: ngl={} выходит за бюджет",
+                budget,
+                ngl
+            );
+            if ngl < e.num_layers {
+                assert!(
+                    vram_for_ngl_safe(&e, ngl + 1, reserve, safety) > budget,
+                    "бюджет {:.0}: ngl={} не максимален",
+                    budget,
+                    ngl
+                );
+            }
+        }
     }
 }

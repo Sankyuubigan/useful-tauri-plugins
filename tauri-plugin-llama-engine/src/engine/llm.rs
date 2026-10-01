@@ -35,11 +35,54 @@ pub use super::llm_gguf::{extract_string_from_gguf, extract_f32_from_gguf, extra
 
 /// Таймаут ожидания готовности движка (загрузка модели в память)
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(120);
-/// Таймаут чтения потока генерации: если за это время от сервера не пришло
-/// НИ одного байта — движок завис (первый токен не пришёл / оборвался стрим).
-/// Работает как таймаут «первого токена», но НЕ обрезает длинную генерацию:
-/// при живом стриме данные идут чаще.
-const READ_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Таймауты фаз HTTP-обмена с `llama-server`.
+///
+/// Раньше стоял один `READ_TIMEOUT = 120 с`, но он НИКОГДА не срабатывал по
+/// назначению: ниже по умолчанию у `reqwest::blocking` лежит собственный
+/// таймаут 30 с (`Timeout::default()` в `reqwest/src/blocking/client.rs`),
+/// и он обрывает тело ответа в `Response::read` раньше нашего watchdog.
+/// Итог: на слабой машине (префилл промпта > 30 с) любой запрос падал с
+/// «operation timed out» задолго до первого токена — при живом, работающем
+/// движке. Поэтому дефолт reqwest отключается явно (см. `Client::builder`),
+/// а сторожевые таймеры ведёт сам движок — по фазам, у каждой своя семантика:
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamTimeouts {
+    /// Фаза A: от отправки POST до HTTP-статуса ответа. Движок может
+    /// молча ждать свободный слот, пока обслуживает чужой запрос.
+    pub headers: Duration,
+    /// Фаза B: от HTTP-200 до первого байта SSE. Это ВЕСЬ prompt eval:
+    /// `llama-server` не отдаёт ни одного байта, пока считает промпт, поэтому
+    /// бюджет должен покрывать префилл всей истории, а не «секунду-две».
+    pub first_token: Duration,
+    /// Фаза C: между соседними строками SSE после первого байта. Генерация
+    /// идёт — значит, движок жив; 60 с тишины это уже реальный завис.
+    pub inter_token: Duration,
+}
+
+impl Default for StreamTimeouts {
+    fn default() -> Self {
+        Self {
+            headers: Duration::from_secs(300),
+            // 10 минут: с запасом на префилл ~20k токенов на медленном CPU/GPU.
+            first_token: Duration::from_secs(600),
+            inter_token: Duration::from_secs(60),
+        }
+    }
+}
+
+impl StreamTimeouts {
+    /// Таймаут ожидания следующей строки SSE для текущей фазы стрима.
+    /// `seen_any_line` — пришло ли хоть что-то от сервера.
+    pub fn wait_for(&self, seen_any_line: bool) -> Duration {
+        if seen_any_line {
+            self.inter_token
+        } else {
+            self.first_token
+        }
+    }
+}
+
 const STREAM_RETRY_MARKER: &str = "[stream-retry-before-first-token]";
 /// Диапазон портов для локального сервера
 const PORT_MIN: u16 = 17800;
@@ -79,6 +122,14 @@ pub struct LlamaEngine {
     /// true = движок запущен с mmproj (может принимать изображения)
     pub is_multimodal_engine: bool,
     stream_cb: Arc<dyn Fn(String) + Send + Sync>,
+    /// Канал размышлений модели (`reasoning_content` в SSE). Отдельный от
+    /// `stream_cb` намеренно: у llama.cpp с `--reasoning-format deepseek`
+    /// мысли приходят отдельным полем и НЕ являются частью ответа — смешивать
+    /// их с текстом значит испортить разбор JSON-envelope у агентов Method 3.
+    /// RefCell: меняется через setter после создания (метод на &self).
+    /// Дефолт — no-op, поэтому хост, которому показывать мысли не нужно,
+    /// ничего не меняет.
+    reasoning_cb: std::cell::RefCell<Arc<dyn Fn(String) + Send + Sync>>,
     /// Канал логов движка (нужен для stderr-ридера при перезапуске из-за CUDA OOM)
     log_cb: Arc<dyn Fn(String) + Send + Sync>,
     client: Client,
@@ -404,7 +455,12 @@ impl LlamaEngine {
                         // при расчётных ~60%, после чего драйвер сбрасывал GPU — TDR).
                         const VRAM_RESERVE_MB: f64 = 1024.0;
                         const VRAM_SAFETY_FACTOR: f64 = 1.25;
-                        let need_mb = est.total_mb * VRAM_SAFETY_FACTOR + VRAM_RESERVE_MB;
+                        let need_mb = crate::engine::vram_estimate::vram_for_ngl_safe(
+                            &est,
+                            est.num_layers,
+                            VRAM_RESERVE_MB,
+                            VRAM_SAFETY_FACTOR,
+                        );
                         if need_mb > free_vram_mb {
                             // Ступенчатый offload: максимальное число слоёв из бюджета
                             // (с тем же фактором безопасности на МБ/слой).
@@ -519,6 +575,11 @@ impl LlamaEngine {
                     .arg("--port").arg(port.to_string())
                     .arg("--api-key").arg(&api_key)
                     .arg("--ctx-size").arg(global_ctx_limit.to_string())
+                // Один слот: приложение выполняет запросы строго последовательно,
+                // а llama-server умножает -c на число слотов. Без этого флага
+                // движок брал дефолт n_parallel=4 и резервировал вчетверо больший
+                // KV-кэш (см. SERVER_N_PARALLEL в vram_estimate).
+                .arg("--parallel").arg(crate::engine::vram_estimate::SERVER_N_PARALLEL.to_string())
                 .arg("-t").arg(threads.to_string())
                 .arg("-ngl").arg(gpu_layers.to_string())
                 .arg("--flash-attn").arg("on")
@@ -582,6 +643,14 @@ impl LlamaEngine {
             .tcp_keepalive_interval(Some(Duration::from_secs(10)))
             .tcp_nodelay(true)
             .pool_idle_timeout(Some(Duration::from_secs(300)))
+            // КРИТИЧНО: у `reqwest::blocking` есть СКРЫТЫЙ таймаут 30 с
+            // (`Timeout::default()`), который обрывает тело ответа в
+            // `Response::read`. На локальном `llama-server` он срабатывал
+            // всегда, когда prompt eval длился дольше 30 с, и обрывал стрим
+            // с «operation timed out» при полностью живом движке — из-за чего
+            // наш собственный watchdog ниже не мог сработать никогда.
+            // Отключаем дефолт: временем жизни обмена управляет `StreamTimeouts`.
+            .timeout(None)
             .build()
         {
             Ok(c) => c,
@@ -747,6 +816,7 @@ impl LlamaEngine {
             mmproj_path: if attempt_mmproj { mmproj_orig.clone() } else { None },
             is_multimodal_engine: attempt_mmproj,
             stream_cb: Arc::new(stream_cb),
+            reasoning_cb: std::cell::RefCell::new(Arc::new(|_chunk: String| {})),
             log_cb: log_cb.clone(),
             client,
             server_log,
@@ -939,11 +1009,59 @@ impl LlamaEngine {
         }
     }
 
+    /// Фаза A запроса генерации: отправка POST и ожидание HTTP-статуса.
+    ///
+    /// Дефолт reqwest отключён (иначе он рвёт обмен на 30-й секунде), поэтому
+    /// заголовки ждём в отдельном потоке под своим таймаутом. Без этого
+    /// освобождённое время превратилось бы в бесконечное ожидание.
+    ///
+    /// Принимает уже сериализованное тело: хелпер не зависит от локального
+    /// типа запроса, который живёт внутри `run_chat_completions`.
+    fn send_with_timeout(
+        &self,
+        body: Vec<u8>,
+        timeout: Duration,
+    ) -> Result<reqwest::blocking::Response, String> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let url = self.url("/v1/chat/completions");
+        let auth = self.auth_header();
+        let client = self.client.clone();
+        std::thread::spawn(move || {
+            let sent = client
+                .post(url)
+                .header(AUTHORIZATION, auth)
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .body(body)
+                .send();
+            let _ = tx.send(sent);
+        });
+        match rx.recv_timeout(timeout) {
+            Ok(Ok(resp)) => Ok(resp),
+            Ok(Err(e)) => Err(format!(
+                "Ошибка отправки запроса генерации: {}.{}",
+                chain_err(&e, 3),
+                read_log_tail(&self.server_log)
+            )),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
+                "Движок не ответил HTTP-статусом за {} сек (слот занят очередью).{}",
+                timeout.as_secs(),
+                read_log_tail(&self.server_log)
+            )),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(
+                "Поток отправки запроса генерации оборвался до получения ответа.".to_string(),
+            ),
+        }
+    }
+
     fn post_json<T: Serialize, R: DeserializeOwned>(&self, path: &str, body: &T) -> Result<R, String> {
         let resp = self.client
             .post(self.url(path))
             .header(AUTHORIZATION, self.auth_header())
             .json(body)
+            // Дефолт reqwest отключён ради стрима генерации, поэтому у всех
+            // служебных запросов таймаут проставляется явно — иначе зависший
+            // движок будет блокировать вызывающий поток навсегда.
+            .timeout(StreamTimeouts::default().inter_token)
             .send()
             .map_err(|e| format!("Ошибка HTTP {}: {}", path, e))?;
         let status = resp.status();
@@ -1256,7 +1374,8 @@ impl LlamaEngine {
         // ── Диагностика: превью точного тела запроса ──
         // Голова (system/сообщения) + хвост (грамматика, kwargs) — доказательство,
         // что грамматика реально была отправлена на сервер.
-        let req_summary = serde_json::to_string(&request).unwrap_or_default();
+        let req_body = serde_json::to_vec(&request).unwrap_or_default();
+        let req_summary = String::from_utf8_lossy(&req_body).into_owned();
         if !req_summary.is_empty() {
             let head: String = req_summary.chars().take(300).collect();
             let tail: String = req_summary.chars().rev().take(400).collect::<String>().chars().rev().collect();
@@ -1286,16 +1405,19 @@ impl LlamaEngine {
         let sampler = crate::engine::MemSampler::start(server_pid);
         let mem_guard = crate::engine::MemGuard::new(sampler, ctx_label, &log_cb);
 
-        let resp = self.client
-            .post(self.url("/v1/chat/completions"))
-            .header(AUTHORIZATION, self.auth_header())
-            .json(&request)
-            .send()
-            .map_err(|e| format!(
-                "Ошибка отправки запроса генерации: {}.{}",
-                chain_err(&e, 3),
-                read_log_tail(&self.server_log)
-            ))?;
+        let resp = self.send_with_timeout(req_body, StreamTimeouts::default().headers);
+        let resp = match resp {
+            Ok(resp) => resp,
+            Err(e) => {
+                // Раньше здесь стоял `?`, из-за чего `mem_guard` срабатывал в
+                // `Drop` и печатал «Замер памяти прерван» — то есть заведомо
+                // ложную причину сбоя, а пик VRAM/RSS по попытке терялся.
+                let report = mem_guard.finish();
+                let message = self.err_details(&report, &e);
+                self.report_generation_error(ctx_label, &report, &message);
+                return Err(message);
+            }
+        };
 
         let response_meta = ResponseMeta::from_response(&resp);
         let status = resp.status();
@@ -1311,10 +1433,12 @@ impl LlamaEngine {
         }
 
         let gen_start = Instant::now();
+        let timeouts = StreamTimeouts::default();
         // Чтение стрима — в отдельном потоке: блокирующий read_line нельзя
         // прервать по таймауту. Основной цикл ждёт строки с recv_timeout —
-        // так работает таймаут «первого токена» (и детект зависшего движка),
-        // при этом длинная живая генерация не обрезается.
+        // так работает сторожевой таймер, при этом длинная живая генерация
+        // не обрезается. До первого байта действует один бюджет (весь prompt
+        // eval), после первого байта — другой (пауза между токенами).
         let (lines_tx, lines_rx) = std::sync::mpsc::channel::<Result<Option<String>, StreamReaderError>>();
         let mut reader = BufReader::new(resp);
         std::thread::spawn(move || {
@@ -1361,7 +1485,8 @@ impl LlamaEngine {
                 break;
             }
 
-            let line = match lines_rx.recv_timeout(READ_TIMEOUT) {
+            let wait = timeouts.wait_for(raw_lines > 0);
+            let line = match lines_rx.recv_timeout(wait) {
                 Ok(Ok(Some(line))) => line,
                 Ok(Ok(None)) => {
                     let received_tokens = generated_tokens + reasoning_tokens;
@@ -1426,12 +1551,19 @@ impl LlamaEngine {
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     let received_tokens = generated_tokens + reasoning_tokens;
                     let marker = if received_tokens == 0 { STREAM_RETRY_MARKER } else { "" };
-                    let diagnostics = self.capture_stream_diagnostics(
+                    let reason = if raw_lines > 0 {
                         format!(
-                            "{}Движок не прислал данные в течение {} сек (завис или слишком долго обрабатывает промпт на CPU)",
-                            marker,
-                            READ_TIMEOUT.as_secs()
-                        ),
+                            "генерация остановилась: нет данных от движка {} сек",
+                            wait.as_secs()
+                        )
+                    } else {
+                        format!(
+                            "prompt eval не завершился за {} сек (движок считает промпт)",
+                            wait.as_secs()
+                        )
+                    };
+                    let diagnostics = self.capture_stream_diagnostics(
+                        format!("{}{}", marker, reason),
                         response_meta.clone(),
                         None,
                         gen_start,
@@ -1487,14 +1619,20 @@ impl LlamaEngine {
                 }
             };
 
-            if !prompt_done_logged {
+            // Счётчик промпта печатается один раз — но только когда движок реально его
+            // прислал. Раньше флаг выставлялся на ПЕРВОМ чанке, где timings ещё
+            // пусты, из-за чего в лог уезжало «Промпт принят движком: 0 токенов»
+            // и диагностика префилла слепла. Позднейшее уточнение (ниже, по
+            // timings) в лог не попадало — расхождение лога и метрик.
+            let prompt_seen = event
+                .tokens_evaluated
+                .max(event.timings.as_ref().map(|t| t.prompt_n).unwrap_or(0));
+            if !prompt_done_logged && prompt_seen > 0 {
                 prompt_done_logged = true;
-                let pt = event.tokens_evaluated
-                    .max(event.timings.as_ref().map(|t| t.prompt_n).unwrap_or(0));
-                prompt_tokens = pt;
+                prompt_tokens = prompt_seen;
                 log_cb(format!(
                     "📐 Промпт принят движком: {} токенов, max_gen={}",
-                    pt, max_tokens
+                    prompt_seen, max_tokens
                 ));
             }
 
@@ -1521,8 +1659,17 @@ impl LlamaEngine {
             }
             if let Some(r) = event.choices.first().and_then(|c| c.delta.reasoning_content.as_deref()) {
                 if !r.is_empty() {
+                    // Размышление — тоже первый токен с точки зрения юзера:
+                    // у reasoning-моделей они идут ДО ответа и могут длиться
+                    // минуты. Раньше метка ставилась только на `content`, из-за
+                    // чего лог показывал «Первый токен через 900 с» на полностью
+                    // идущей генерации.
+                    if first_token_at.is_none() {
+                        first_token_at = Some(Instant::now());
+                    }
                     reasoning_text.push_str(r);
                     reasoning_tokens += 1;
+                    (self.reasoning_cb.borrow())(r.to_string());
                 }
             }
             // Нативные tool_calls (OpenAI tools[]): чанки доклеиваются к
@@ -1863,6 +2010,7 @@ impl LlamaEngine {
             .arg("--port").arg(self.port.to_string())
             .arg("--api-key").arg(&self.api_key)
             .arg("--ctx-size").arg(self.global_ctx_limit.to_string())
+            .arg("--parallel").arg(crate::engine::vram_estimate::SERVER_N_PARALLEL.to_string())
             .arg("-t").arg(ctx.threads.to_string())
             .arg("-ngl").arg(new_ngl.to_string())
             .arg("--flash-attn").arg("on")
@@ -2079,6 +2227,17 @@ impl LlamaEngine {
     /// автоматически получают базовую грамматику, а не per-agent.
     pub fn set_grammar(&self, spec: Option<GrammarSpec>) {
         *self.pending_grammar.lock().unwrap() = spec;
+    }
+
+    /// Подписывает получателя на поток размышлений модели (`reasoning_content`).
+    ///
+    /// Нужен, чтобы юзер видел ход мыслей в реальном времени: у reasoning-моделей
+    /// фаза размышлений может длиться дольше всего остального запроса, и без
+    /// подписки экран молчит минутами, а лог копит «Первый токен через 900 с».
+    /// Канал отдельный от `stream_cb`, чтобы мысли не попадали в разбор
+    /// JSON-envelope у агентов Method 3.
+    pub fn set_reasoning_sink(&self, sink: Arc<dyn Fn(String) + Send + Sync>) {
+        *self.reasoning_cb.borrow_mut() = sink;
     }
 
     /// Забирает заданную грамматику для текущего вызова (consume-and-clear).
@@ -2504,6 +2663,64 @@ fn diagnose_cuda_fallback(log_path: &Path) -> String {
 mod tests {
     use super::*;
 
+    // ─── Таймауты фаз обмена с llama-server ───
+
+    /// Регрессия (инцидент у юзера на GTX 1070 Ti): prompt eval длился дольше
+    /// 30 с, скрытый дефолт reqwest рвал стрим, и наш `first_token`-бюджет
+    /// никогда не успевал сработать. Проверяем именно РАЗДЕЛЕНИЕ фаз:
+    /// до первого байта — большой бюджет, после — короткий.
+    #[test]
+    fn stream_timeouts_use_large_budget_only_before_first_byte() {
+        let t = StreamTimeouts::default();
+        assert!(
+            t.first_token > Duration::from_secs(300),
+            "бюджет prompt eval должен переживать медленный CPU, got {:?}",
+            t.first_token
+        );
+        assert!(
+            t.inter_token < t.first_token,
+            "пауза между токенами не должна быть длиннее ожидания первого токена"
+        );
+        assert!(
+            t.wait_for(false) == t.first_token,
+            "до первого байта нужен бюджет prompt eval"
+        );
+        assert!(
+            t.wait_for(true) == t.inter_token,
+            "после первого байта нужен таймаут зависания генерации"
+        );
+    }
+
+    /// Бюджет фазы заголовков — сторожевой таймер «сервер принял соединение, но
+    /// не ответил». Он не про префилл (это `first_token`), поэтому держать его
+    /// равным бюджету первого токена смысла нет: достаточно многократного
+    /// превышения времени коннекта, чтобы отличить «движок думает» от «сокет мёртв».
+    #[test]
+    fn headers_budget_is_well_above_connect_timeout() {
+        let t = StreamTimeouts::default();
+        let connect = Duration::from_secs(5);
+        assert!(
+            t.headers >= connect * 20,
+            "заголовки {:?} слишком близко к коннекту {:?} — не отличим зависший движок от ожидания",
+            t.headers,
+            connect
+        );
+        assert!(
+            t.headers <= t.first_token,
+            "очередь слота ждёт меньше, чем сам prompt eval — иначе значения перепутаны"
+        );
+    }
+
+    /// Один слот — потому что запросы строго последовательные. При дефолте 4
+    /// llama-server умножал `-c` на 4 и резервировал KV вчетверо больший.
+    #[test]
+    fn engine_is_launched_with_single_slot() {
+        assert_eq!(
+            crate::engine::vram_estimate::SERVER_N_PARALLEL, 1,
+            "движок обязан запускаться с одним слотом"
+        );
+    }
+
     #[test]
     fn cuda_fallback_diagnosis_finds_no_kernel_image() {
         let dir = std::env::temp_dir().join(format!("ko_diag_{}", std::process::id()));
@@ -2671,5 +2888,95 @@ mod tests {
         assert!((est.kv_mb - 1536.0).abs() < 1.0, "KV: {} МБ (ожидалось ~1536)", est.kv_mb);
         assert!(est.kv_mb < 2000.0, "KV всё ещё завышен: {} МБ", est.kv_mb);
         assert!(est.total_mb < 13000.0, "Завышенная оценка VRAM: {:.0} МБ", est.total_mb);
+    }
+
+    // ─── Транспорт: скрытые таймауты reqwest ───
+    //
+    // Регрессионный тест на главный баг юзера. `reqwest::blocking` из коробки
+    // ставит таймаут 30 с на ЧТЕНИЕ ТЕЛА ответа (`Timeout::default()` в
+    // `blocking/client.rs`, применяется в `Response::read`). Локальный
+    // llama-server во время prompt eval не отдаёт ни одного байта, поэтому на
+    // медленной машине этот дефолт убивал запрос ещё ДО того, как наш
+    // собственный watchdog успел бы сработать.
+    //
+    // Тест поднимает настоящий TCP-сокет, отдаёт HTTP-заголовки, затем молчит
+    // 35 секунд — заведомо БОЛЬШЕ дефолтных 30 с — и только потом присылает
+    // первый SSE-чанк. Если дефолт снова включится, чтение упадёт по таймауту
+    // и тест упадёт.
+    //
+    // Запуск: test-plugin.bat tauri-plugin-llama-engine --test transport_no_hidden_read_timeout -- --ignored --nocapture
+    #[test]
+    #[ignore = "держит сокет 35 с; гоняется вручную"]
+    fn transport_no_hidden_read_timeout() {
+        use std::io::{BufRead, BufReader, Read, Write};
+        use std::net::TcpListener;
+
+        let stall = Duration::from_secs(35);
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let server = std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().expect("accept");
+            // Сначала читаем голову запроса — иначе ответ уходит в гонке с
+            // недописанным запросом и hyper ругается UnexpectedMessage.
+            let mut head = [0u8; 4096];
+            let _ = sock.read(&mut head);
+            // Заголовки отдаём сразу — движок отвечает на HTTP до prompt eval.
+            sock.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+            )
+            .expect("write headers");
+            sock.flush().expect("flush");
+            // Дальше — тишина на весь prompt eval.
+            std::thread::sleep(stall);
+            let chunk = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n";
+            sock.write_all(format!("{:X}\r\n{}\r\n", chunk.len(), chunk).as_bytes())
+                .expect("write chunk");
+            sock.flush().expect("flush");
+            sock
+        });
+
+        // Клиент собирается ТОЧНО как движок: без явного .timeout(...) —
+        // полагаемся на то, что дефолт отключён в коде движка.
+        let client = Client::builder()
+            .connect_timeout(Duration::from_secs(5))
+            .tcp_nodelay(true)
+            .timeout(None)
+            .build()
+            .expect("client");
+
+        let mut resp = client
+            .get(format!("http://{}/v1/chat/completions", addr))
+            .send()
+            .expect("send");
+        assert!(resp.status().is_success(), "статус: {}", resp.status());
+
+        let started = Instant::now();
+        let mut reader = BufReader::new(resp);
+        let mut line = String::new();
+        let n = reader.read_line(&mut line).expect("read_line после паузы");
+        let waited = started.elapsed();
+
+        assert!(
+            n > 0,
+            "поток закрылся/оборвался: скрытый таймаут оборвал чтение через {:?}",
+            waited
+        );
+        assert!(
+            line.contains("\"ok\""),
+            "прочитан не тот чанк: {:?}",
+            line
+        );
+        assert!(
+            waited >= stall,
+            "чтение завершилось раньше паузы сервера ({:?} < {:?}) — тест не проверил ничего",
+            waited,
+            stall
+        );
+
+        let mut server = server.join().expect("server thread");
+        // Терминатор chunked-ответа; дальше сокеты закрывает процесс — ждать
+        // EOF вручную не нужно (клиент держит соединение в пуле).
+        let _ = server.write_all(b"0\r\n\r\n");
     }
 }

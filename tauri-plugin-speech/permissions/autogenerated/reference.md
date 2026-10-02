@@ -8,7 +8,7 @@ Default permissions for the speech plugin (CrispASR TTS/STT engine).
 - `allow-tts-presets`
 - `allow-tts-capabilities`
 - `allow-tts-unload`
-- `allow-tts-save-wav`
+- `allow-tts-save-mp3`
 - `allow-tts-download-engine`
 - `allow-tts-download-model`
 - `allow-tts-engine-backends`
@@ -511,6 +511,32 @@ Denies the tts_presets command without any pre-configured scope.
 <tr>
 <td>
 
+`speech:allow-tts-save-mp3`
+
+</td>
+<td>
+
+Enables the tts_save_mp3 command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`speech:deny-tts-save-mp3`
+
+</td>
+<td>
+
+Denies the tts_save_mp3 command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `speech:allow-tts-save-settings`
 
 </td>
@@ -530,32 +556,6 @@ Enables the tts_save_settings command without any pre-configured scope.
 <td>
 
 Denies the tts_save_settings command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`speech:allow-tts-save-wav`
-
-</td>
-<td>
-
-Enables the tts_save_wav command without any pre-configured scope.
-
-</td>
-</tr>
-
-<tr>
-<td>
-
-`speech:deny-tts-save-wav`
-
-</td>
-<td>
-
-Denies the tts_save_wav command without any pre-configured scope.
 
 </td>
 </tr>
@@ -771,12 +771,12 @@ Allow unloading the TTS engine (frees VRAM).
 <tr>
 <td>
 
-`speech:allow-tts-save-wav`
+`speech:allow-tts-save-mp3`
 
 </td>
 <td>
 
-Allow saving synthesized WAV bytes to a user-chosen path.
+Allow saving synthesized WAV bytes to a user-chosen path as MP3 (local re-encode, no extra engine call).
 
 </td>
 </tr>

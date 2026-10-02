@@ -23,6 +23,35 @@ pub fn decode_file(path: &str) -> Result<(usize, u32, Vec<f32>)> {
         hint.with_extension(ext);
     }
 
+    match decode_stream(mss, hint) {
+        Ok(decoded) => Ok(decoded),
+        Err(e) => {
+            // symphonia 0.6 не поддерживает opus — пробуем отдельный модуль.
+            let is_ogg = std::path::Path::new(path)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("ogg"))
+                .unwrap_or(false);
+            if is_ogg {
+                return crate::audio::opus_decode::decode_opus(path);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Декодирует аудио из памяти в Vec<f32> (перемежённые планы).
+/// Формат определяется пробой содержимого (для MP3 без расширения достаточно).
+pub fn decode_bytes(bytes: &[u8]) -> Result<(usize, u32, Vec<f32>)> {
+    let mss = MediaSourceStream::new(
+        Box::new(std::io::Cursor::new(bytes.to_vec())),
+        Default::default(),
+    );
+    decode_stream(mss, Hint::new())
+}
+
+/// Общий декод потока: probe -> аудиодорожка -> декодер -> сэмплы.
+fn decode_stream(mss: MediaSourceStream, hint: Hint) -> Result<(usize, u32, Vec<f32>)> {
     let mut format = get_probe()
         .probe(&hint, mss, FormatOptions::default(), MetadataOptions::default())
         .context("не удалось определить формат аудио (поддерживается ogg/vorbis, wav, flac, mp3)")?;
@@ -43,21 +72,9 @@ pub fn decode_file(path: &str) -> Result<(usize, u32, Vec<f32>)> {
 
     let audio_params = params.clone();
 
-    let mut decoder = match get_codecs().make_audio_decoder(&audio_params, &Default::default()) {
-        Ok(d) => d,
-        Err(_) => {
-            // symphonia 0.6 не поддерживает opus — пробуем отдельный модуль.
-            let is_ogg = std::path::Path::new(path)
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.eq_ignore_ascii_case("ogg"))
-                .unwrap_or(false);
-            if is_ogg {
-                return crate::audio::opus_decode::decode_opus(path);
-            }
-            anyhow::bail!("не удалось создать декодер для этого кодека");
-        }
-    };
+    let mut decoder = get_codecs()
+        .make_audio_decoder(&audio_params, &Default::default())
+        .context("не удалось создать декодер для этого кодека")?;
 
     let mut samples: Vec<f32> = Vec::new();
 
@@ -115,14 +132,103 @@ pub fn decode_file(path: &str) -> Result<(usize, u32, Vec<f32>)> {
 mod tests {
     use super::*;
 
+    /// Каталог для временных файлов тестов: `target/tmp` рядом с бинарником
+    /// теста (`target/<profile>/deps/test.exe` -> `target/tmp`).
+    /// Не системный temp (core rules §1.2) и не корень репозитория.
+    fn test_tmp_dir() -> std::path::PathBuf {
+        let mut p = std::env::current_exe().expect("current_exe");
+        p.pop(); // deps
+        p.pop(); // <profile>
+        p.push("tmp");
+        std::fs::create_dir_all(&p).expect("создать target/tmp");
+        p
+    }
+
+    /// Самодостаточная проверка ветки «файл на диске» (File + подсказка по
+    /// расширению). Хардкодить путь пользователя нельзя (§1.4) — файл
+    /// синтезируется тут же.
     #[test]
-    fn ogg_decode() {
-        let path = "E:\\Downloads\\audio_2026-07-18_23-59-01.ogg";
-        if !std::path::Path::new(path).exists() {
-            eprintln!("⚠️ тестовый файл не найден: {path} — пропускаем");
-            return;
+    fn decode_file_reads_wav_from_disk() {
+        let rate = 24_000u32;
+        let n = 4_800usize; // 0.2 с
+        let path = test_tmp_dir().join("decode_file_test.wav");
+
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        {
+            let mut w = hound::WavWriter::create(&path, spec).expect("writer");
+            for i in 0..n {
+                let s = 0.5 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate as f32).sin();
+                w.write_sample((s * i16::MAX as f32) as i16).expect("sample");
+            }
+            w.finalize().expect("finalize");
         }
-        let (channels, rate, samples) = decode_file(path).expect("декод должен успешно пройти");
+
+        let (channels, decoded_rate, samples) = decode_file(&path.to_string_lossy())
+            .expect("wav с диска должен декодироваться");
+        assert_eq!(channels, 1);
+        assert_eq!(decoded_rate, rate);
+        assert!(samples.len() >= n, "сэмплов меньше, чем записано: {}", samples.len());
+        let energy: f32 = samples.iter().map(|s| s * s).sum();
+        assert!(energy > 0.0, "в аудио должна быть энергия");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// `decode_bytes` (используется для проверки свежесозданного MP3) отдаёт
+    /// тот же результат, что и файловый путь для того же содержимого.
+    #[test]
+    fn decode_bytes_matches_decode_file_for_same_wav() {
+        let rate = 24_000u32;
+        let n = 2_400usize;
+        let mut bytes = Vec::new();
+        {
+            let spec = hound::WavSpec {
+                channels: 1,
+                sample_rate: rate,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            };
+            let mut w = hound::WavWriter::new(std::io::Cursor::new(&mut bytes), spec)
+                .expect("writer");
+            for i in 0..n {
+                let s = 0.25 * (2.0 * std::f32::consts::PI * 220.0 * i as f32 / rate as f32).sin();
+                w.write_sample((s * i16::MAX as f32) as i16).expect("sample");
+            }
+            w.finalize().expect("finalize");
+        }
+
+        let (c1, r1, s1) = decode_bytes(&bytes).expect("decode_bytes");
+        let path = test_tmp_dir().join("decode_bytes_test.wav");
+        std::fs::write(&path, &bytes).expect("write");
+        let (c2, r2, s2) = decode_file(&path.to_string_lossy()).expect("decode_file");
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!((c1, r1, s1.len()), (c2, r2, s2.len()));
+    }
+
+    /// Декод реального ogg с внешнего диска. Путь берётся из переменной
+    /// окружения `SPEECHLAB_TEST_OGG`; тест `#[ignore]`, потому что требует
+    /// данных пользователя (core rules §2.9) и не должен молча «проходить»
+    /// в его отсутствие (core rules §2.2).
+    ///
+    /// Запуск: `cargo test -p tauri-plugin-speech -- --ignored wav_to_mp3`
+    /// c заданной `SPEECHLAB_TEST_OGG`, либо из `run_asr_test.bat`.
+    #[test]
+    #[ignore = "нужен реальный ogg: задай SPEECHLAB_TEST_OGG"]
+    fn ogg_decode() {
+        let path = match std::env::var("SPEECHLAB_TEST_OGG") {
+            Ok(p) => p,
+            Err(_) => panic!("SPEECHLAB_TEST_OGG не задан — этот тест нельзя молча пропускать"),
+        };
+        if !std::path::Path::new(&path).exists() {
+            panic!("тестовый ogg не найден по пути из SPEECHLAB_TEST_OGG: {path}");
+        }
+        let (channels, rate, samples) = decode_file(&path).expect("декод должен успешно пройти");
         println!("decoded: channels={channels}, rate={rate}, samples={}", samples.len());
         assert!(channels >= 1, "каналов должно быть >= 1");
         assert!(rate > 0, "sample_rate должен быть > 0");

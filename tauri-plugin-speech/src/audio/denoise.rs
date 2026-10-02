@@ -35,7 +35,7 @@ pub fn denoise_mono(samples: &[f32], rate: u32, opts: &DenoiseOpts) -> Result<Ve
     // В int16-PCM диапазон ([-32768, 32767]), как того требует nnnoiseless.
     let pcm: Vec<f32> = samples
         .iter()
-        .map(|s| (s.clamp(-1.0, 1.0) * PCM_SCALE))
+        .map(|s| s.clamp(-1.0, 1.0) * PCM_SCALE)
         .collect();
 
     // resample исходной частоты -> 48k.

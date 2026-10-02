@@ -54,9 +54,11 @@ sha2 = "0.10"
 futures-util = "0.3"
 minijinja = "1.0"
 
-# Сохранение озвучки в MP3 (кодек CrispStrobe glint — тот же, что энкодит
-# response_format=mp3 в CrispASR; чистый Rust-враппер, без системных либ)
-glint-audio = "0.11"
+# Сохранение озвучки в MP3 (команда `tts_save_mp3` плагина tauri-plugin-speech).
+# Pure Rust MP3-энкодер: ноль зависимостей, без build.rs, Apache-2.0, CI зелёный
+# на windows-latest. Раньше здесь был `glint-audio` -> `glint-audio-sys`: 50
+# вендоренных C++ файлов и непочиненный MSVC-баг (M_PI без _USE_MATH_DEFINES).
+rusty_mp3 = "0.8"
 
 # Атомарные записи JSON + блокировки (ko-json-store)
 fs2 = "0.4"

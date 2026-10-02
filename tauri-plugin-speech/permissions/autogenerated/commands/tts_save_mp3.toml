@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-tts-save-mp3"
+description = "Enables the tts_save_mp3 command without any pre-configured scope."
+commands.allow = ["tts_save_mp3"]
+
+[[permission]]
+identifier = "deny-tts-save-mp3"
+description = "Denies the tts_save_mp3 command without any pre-configured scope."
+commands.deny = ["tts_save_mp3"]

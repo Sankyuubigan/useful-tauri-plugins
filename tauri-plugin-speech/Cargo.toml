@@ -34,8 +34,9 @@ windows = { workspace = true }
 # Логи: через log! макросы в единый кастомный log::Log логгер хоста (core rules §2.5)
 log = { workspace = true }
 
-# Сохранение озвучки в MP3 (glint — кодек CrispStrobe, тот же, что в CrispASR)
-glint-audio = { workspace = true }
+# Сохранение озвучки в MP3 (команда `tts_save_mp3`).
+# Pure Rust, ноль зависимостей, без build.rs — сборка хоста не компилирует C++.
+rusty_mp3 = { workspace = true }
 
 [lib]
 name = "tauri_plugin_speech"

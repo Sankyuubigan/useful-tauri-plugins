@@ -3,7 +3,7 @@ const COMMANDS: &[&str] = &[
     "tts_presets",
     "tts_capabilities",
     "tts_unload",
-    "tts_save_wav",
+    "tts_save_mp3",
     "tts_download_engine",
     "tts_download_model",
     "tts_engine_backends",

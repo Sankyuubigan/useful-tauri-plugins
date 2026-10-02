@@ -21,9 +21,9 @@ description = "Allow unloading the TTS engine (frees VRAM)."
 commands.allow = ["tts_unload"]
 
 [[permission]]
-identifier = "allow-tts-save-wav"
-description = "Allow saving synthesized WAV bytes to a user-chosen path."
-commands.allow = ["tts_save_wav"]
+identifier = "allow-tts-save-mp3"
+description = "Allow saving synthesized WAV bytes to a user-chosen path as MP3 (local re-encode, no extra engine call)."
+commands.allow = ["tts_save_mp3"]
 
 [[permission]]
 identifier = "allow-tts-download-engine"
@@ -137,7 +137,7 @@ permissions = [
   "allow-tts-presets",
   "allow-tts-capabilities",
   "allow-tts-unload",
-  "allow-tts-save-wav",
+  "allow-tts-save-mp3",
   "allow-tts-download-engine",
   "allow-tts-download-model",
   "allow-tts-engine-backends",

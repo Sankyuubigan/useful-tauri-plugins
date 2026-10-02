@@ -16,6 +16,16 @@ function asCrlf(text) {
     return text.replace(/\r?\n/g, '\r\n');
 }
 
+// cmd не умеет выполнять строку, начинающуюся с UTF-8 BOM: `@echo off` не
+// срабатывает, весь поток команд печатается в лог, а `exit /b` после ошибки
+// ведёт себя непредсказуемо. Плюс .bat по правилам проекта — только ASCII и
+// CRLF (desktop_rust_tauri/rules.md §2). Поэтому перед записью снимаем BOM и
+// приводим переводы строк к CRLF.
+function sanitizeBat(text) {
+    const withoutBom = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+    return asCrlf(withoutBom);
+}
+
 function run(cfg, opts = {}) {
     const root = cfg.projectRoot;
     console.log('=== init ===');
@@ -32,7 +42,11 @@ function run(cfg, opts = {}) {
             console.warn('template not found  :', src);
             continue;
         }
-        fs.writeFileSync(dest, asCrlf(fs.readFileSync(src, 'utf8')), 'utf8');
+        const text = sanitizeBat(fs.readFileSync(src, 'utf8'));
+        if (text.charCodeAt(0) === 0xfeff) {
+            console.warn('BOM stripped        :', name);
+        }
+        fs.writeFileSync(dest, text, 'utf8');
         console.log('wrote               :', name);
     }
 
@@ -40,11 +54,19 @@ function run(cfg, opts = {}) {
     if (fs.existsSync(cfgPath)) {
         console.log('config exists       :', cfgPath);
     } else {
-        const example = path.join(TEMPLATES_DIR, `${CONFIG_FILENAME}.example.json`);
-        if (fs.existsSync(example)) {
-            fs.writeFileSync(cfgPath, fs.readFileSync(example, 'utf8'), 'utf8');
-            console.log('wrote               :', cfgPath, '(edit it!)');
+        // Имя шаблона — `.build-config.example.json` (CONFIG_FILENAME без
+        // расширения + `.example.json`), а НЕ `<CONFIG_FILENAME>.example.json`:
+        // иначе поиск не находил шаблон и конфиг молча не создавался.
+        const example = path.join(
+            TEMPLATES_DIR,
+            `${CONFIG_FILENAME.replace(/\.json$/, '')}.example.json`
+        );
+        if (!fs.existsSync(example)) {
+            console.warn(`template not found  : ${example} — создай ${CONFIG_FILENAME} вручную`);
+            return false;
         }
+        fs.writeFileSync(cfgPath, fs.readFileSync(example, 'utf8'), 'utf8');
+        console.log('wrote               :', cfgPath, '(edit it!)');
     }
 
     const withLogs = opts.withLogs || opts['with-logs'];
@@ -54,6 +76,8 @@ function run(cfg, opts = {}) {
         const guideDest = path.join(root, LOGS_GUIDE_NAME);
         if (!fs.existsSync(guideSrc)) {
             console.warn('template not found  :', guideSrc);
+        } else if (fs.existsSync(guideDest)) {
+            console.log('exists, skip        :', guideDest);
         } else {
             fs.writeFileSync(guideDest, asCrlf(fs.readFileSync(guideSrc, 'utf8')), 'utf8');
             console.log('wrote               :', guideDest, '(гайд tauri-plugin-logs)');

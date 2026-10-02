@@ -358,22 +358,14 @@ pub async fn tts_unload<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 
 /// Сохраняет синтезированную озвучку (WAV-байты из фронта) как MP3 по выбранному
 /// пути. Движок по сети отвечает WAV (быстрее для прокачки), а на диск пишем
-/// компактный MP3: конверсия WAV→MP3 через кодек glint — тот же, что энкодит
-/// `response_format=mp3` в CrispASR.
+/// компактный MP3: конверсия WAV→MP3 локально, чистым Rust-кодеком `rusty_mp3`.
+///
+/// Синтез при этом не повторяется — кодируются те же байты, что уже прислал
+/// движок (`tts_speak`), поэтому кнопка «Сохранить» не обращается к движку.
 #[tauri::command]
 pub async fn tts_save_mp3(path: String, data: Vec<u8>) -> Result<(), String> {
-    let dec = glint::read_wav(&data)
-        .ok_or_else(|| "не удалось разобрать WAV озвучки (ожидается PCM)".to_string())?;
-    let mp3 = glint::encode_audio(
-        &dec.pcm,
-        dec.channels,
-        dec.sample_rate,
-        glint::Codec::Mp3,
-        128, // валиден при любой частоте движка (MPEG-2 @24кГц не держит 192)
-        None,
-        1, // quality: 1 = NORMAL (как в движке CrispASR)
-    )
-    .ok_or_else(|| "не удалось сжать озвучку в MP3".to_string())?;
+    let mp3 = crate::audio::mp3::encode_wav_to_mp3_default(&data)
+        .map_err(|e| format!("не удалось сжать озвучку в MP3: {e:#}"))?;
     std::fs::write(&path, &mp3)
         .map_err(|e| format!("не удалось сохранить MP3 в {path}: {e}"))?;
     Ok(())
@@ -627,44 +619,3 @@ pub async fn stt_inject_text(text: String) -> Result<(), String> {
     crate::inject::inject_text(&text)
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// WAV (24 кГц, как от cosyvoice3) → MP3 через glint: результирующий поток
-    /// должен декодироваться обратно с той же разрядностью и плавающей длительностью.
-    #[test]
-    fn wav_to_mp3_via_glint_roundtrips() {
-        let rate = 24000u32;
-        let n = rate as usize / 2; // ~0.5 с тона
-        let mut samples = Vec::with_capacity(n);
-        for i in 0..n {
-            samples.push(0.5 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / rate as f32).sin());
-        }
-        let mut wav_bytes = Vec::new();
-        {
-            use crate::audio::wav;
-            let tmp = std::env::temp_dir().join("glint_test.wav");
-            wav::write_wav(&tmp.to_string_lossy(), &samples, rate).unwrap();
-            wav_bytes = std::fs::read(&tmp).unwrap();
-        }
-        let dec = glint::read_wav(&wav_bytes).expect("wav разобран");
-        assert_eq!(dec.channels, 1);
-        let mp3 = glint::encode_audio(
-            &dec.pcm,
-            dec.channels,
-            dec.sample_rate,
-            glint::Codec::Mp3,
-            128,
-            None,
-            1,
-        )
-        .expect("mp3 закодировался");
-        assert!(mp3.len() > 1024, "mp3 подозрительно маленький: {} байт", mp3.len());
-
-        let back = glint::decode_audio(&mp3).expect("mp3 декодировался обратно");
-        assert_eq!(back.channels, 1);
-        let dur = back.pcm.len() as f64 / back.sample_rate as f64;
-        assert!(dur > 0.45 && dur < 0.55, "длительность после mp3: {dur:.3} с");
-    }
-}

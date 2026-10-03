@@ -5,6 +5,8 @@ const COMMANDS: &[&str] = &[
     "tts_unload",
     "tts_save_mp3",
     "tts_download_engine",
+    "tts_delete_engine",
+    "tts_get_engine_status",
     "tts_download_model",
     "tts_engine_backends",
     "tts_list_models",

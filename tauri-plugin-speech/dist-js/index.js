@@ -28,6 +28,20 @@ export async function ttsDownloadEngine(backendId, dest) {
         dest,
     });
 }
+/** Локальный статус движка с диска (без сети). Работает мгновенно и оффлайн. */
+export async function ttsGetEngineStatus() {
+    return invoke('plugin:speech|tts_get_engine_status');
+}
+/**
+ * Удаляет папку бэкенда движка `<dest>/<backendId>`. Папка моделей не трогается.
+ * Движок предварительно выгружается (на Windows живой .exe удалить нельзя).
+ */
+export async function ttsDeleteEngine(backendId, dest) {
+    return invoke('plugin:speech|tts_delete_engine', {
+        backendId,
+        dest,
+    });
+}
 export async function ttsDownloadModel(preset, dest) {
     return invoke('plugin:speech|tts_download_model', { preset, dest });
 }

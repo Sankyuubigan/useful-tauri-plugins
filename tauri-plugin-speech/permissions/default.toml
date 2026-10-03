@@ -31,6 +31,16 @@ description = "Allow downloading the CrispASR engine binary."
 commands.allow = ["tts_download_engine"]
 
 [[permission]]
+identifier = "allow-tts-delete-engine"
+description = "Allow deleting an installed CrispASR engine backend folder (models are untouched)."
+commands.allow = ["tts_delete_engine"]
+
+[[permission]]
+identifier = "allow-tts-get-engine-status"
+description = "Allow reading the local CrispASR engine status (installed backends/versions from disk, no network)."
+commands.allow = ["tts_get_engine_status"]
+
+[[permission]]
 identifier = "allow-tts-download-model"
 description = "Allow downloading TTS model GGUF files."
 commands.allow = ["tts_download_model"]
@@ -139,6 +149,8 @@ permissions = [
   "allow-tts-unload",
   "allow-tts-save-mp3",
   "allow-tts-download-engine",
+  "allow-tts-delete-engine",
+  "allow-tts-get-engine-status",
   "allow-tts-download-model",
   "allow-tts-engine-backends",
   "allow-tts-list-models",

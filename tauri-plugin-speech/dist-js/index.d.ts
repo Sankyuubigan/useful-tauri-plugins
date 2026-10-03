@@ -66,6 +66,32 @@ export interface CheckUpdateResult {
         update_available: boolean;
     }>;
 }
+/** Бэкенд движка, найденный сканированием папки на диске. */
+export interface InstalledEngineBackend {
+    id: string;
+    installed_version: string | null;
+}
+/**
+ * Локальный статус движка: читается ТОЛЬКО с диска, без сети.
+ *
+ * Отдельная команда от `ttsCheckUpdate` (которая ходит в GitHub): «что лежит
+ * на диске» и «какая версия свежее в облаке» — разные вопросы, и отсутствие
+ * сети не должно превращать установленный движок в «не установлен».
+ */
+export interface EngineStatusInfo {
+    engine_dir: string;
+    selected_backend: string;
+    installed: boolean;
+    installed_version: string | null;
+    installed_backends: InstalledEngineBackend[];
+    models_dir: string;
+}
+/** Результат удаления бэкенда движка. */
+export interface DeleteEngineResult {
+    /** Освобождённый размер в байтах; `null` — размер не удалось посчитать. */
+    freed_bytes: number | null;
+    path: string;
+}
 /** Пути по умолчанию (относительно exe хоста). */
 export interface DefaultDirs {
     engine_dir: string;
@@ -93,6 +119,13 @@ export declare function ttsCapabilities(): Promise<Capabilities>;
 export declare function ttsUnload(): Promise<void>;
 export declare function ttsSaveWav(path: string, data: number[]): Promise<void>;
 export declare function ttsDownloadEngine(backendId: string, dest: string): Promise<string>;
+/** Локальный статус движка с диска (без сети). Работает мгновенно и оффлайн. */
+export declare function ttsGetEngineStatus(): Promise<EngineStatusInfo>;
+/**
+ * Удаляет папку бэкенда движка `<dest>/<backendId>`. Папка моделей не трогается.
+ * Движок предварительно выгружается (на Windows живой .exe удалить нельзя).
+ */
+export declare function ttsDeleteEngine(backendId: string, dest: string): Promise<DeleteEngineResult>;
 export declare function ttsDownloadModel(preset: string, dest: string): Promise<{
     model: string;
     codec: string;

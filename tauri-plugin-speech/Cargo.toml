@@ -14,8 +14,15 @@ anyhow = { workspace = true }
 chrono = { workspace = true }
 reqwest = { workspace = true }
 tokio = { workspace = true }
-futures = { workspace = true }
 zip = { workspace = true }
+
+# Скачивание файлов — ЕДИНЫЙ движок проекта (core §2.1 SSOT).
+# Раньше плагин держал свою копию на голом reqwest: без stall-детекта, без
+# таймаутов и без фолбэков. Из-за этого один зависший ответ CDN (0 байт по
+# 2+ минуты) навечно блокировал tts_download_engine — команда не возвращалась,
+# прогресс не показывался, в логах было пусто. Здесь stall 60с + 6 уровней
+# фолбэка (reqwest → curl → PowerShell → bitsadmin → MCP → Chrome) + логи.
+tauri-plugin-downloader = { path = "../tauri-plugin-downloader" }
 
 # Аудио: декод ogg/vorbis/wav/flac/mp3/opus, шумоподавление RNNoise, ресемплинг
 symphonia = { workspace = true }

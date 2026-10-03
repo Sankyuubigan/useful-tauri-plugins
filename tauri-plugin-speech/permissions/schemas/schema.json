@@ -415,6 +415,18 @@
           "markdownDescription": "Denies the tts_default_dirs command without any pre-configured scope."
         },
         {
+          "description": "Enables the tts_delete_engine command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tts-delete-engine",
+          "markdownDescription": "Enables the tts_delete_engine command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tts_delete_engine command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tts-delete-engine",
+          "markdownDescription": "Denies the tts_delete_engine command without any pre-configured scope."
+        },
+        {
           "description": "Enables the tts_delete_voice command without any pre-configured scope.",
           "type": "string",
           "const": "allow-tts-delete-voice",
@@ -461,6 +473,18 @@
           "type": "string",
           "const": "deny-tts-engine-backends",
           "markdownDescription": "Denies the tts_engine_backends command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the tts_get_engine_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-tts-get-engine-status",
+          "markdownDescription": "Enables the tts_get_engine_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the tts_get_engine_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-tts-get-engine-status",
+          "markdownDescription": "Denies the tts_get_engine_status command without any pre-configured scope."
         },
         {
           "description": "Enables the tts_get_settings command without any pre-configured scope.",
@@ -607,10 +631,10 @@
           "markdownDescription": "Denies the tts_voice_trimmed_audio command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the speech plugin (CrispASR TTS/STT engine).\n#### This default permission set includes:\n\n- `allow-tts-speak`\n- `allow-tts-presets`\n- `allow-tts-capabilities`\n- `allow-tts-unload`\n- `allow-tts-save-mp3`\n- `allow-tts-download-engine`\n- `allow-tts-download-model`\n- `allow-tts-engine-backends`\n- `allow-tts-list-models`\n- `allow-tts-list-voices`\n- `allow-tts-add-voice`\n- `allow-tts-delete-voice`\n- `allow-tts-update-voice`\n- `allow-tts-voice-avatar`\n- `allow-tts-voice-audio`\n- `allow-tts-voice-trimmed-audio`\n- `allow-tts-check-update`\n- `allow-tts-default-dirs`\n- `allow-tts-get-settings`\n- `allow-tts-save-settings`\n- `allow-stt-get-settings`\n- `allow-stt-save-settings`\n- `allow-stt-start`\n- `allow-stt-stop`\n- `allow-stt-get-status`\n- `allow-stt-inject-text`",
+          "description": "Default permissions for the speech plugin (CrispASR TTS/STT engine).\n#### This default permission set includes:\n\n- `allow-tts-speak`\n- `allow-tts-presets`\n- `allow-tts-capabilities`\n- `allow-tts-unload`\n- `allow-tts-save-mp3`\n- `allow-tts-download-engine`\n- `allow-tts-delete-engine`\n- `allow-tts-get-engine-status`\n- `allow-tts-download-model`\n- `allow-tts-engine-backends`\n- `allow-tts-list-models`\n- `allow-tts-list-voices`\n- `allow-tts-add-voice`\n- `allow-tts-delete-voice`\n- `allow-tts-update-voice`\n- `allow-tts-voice-avatar`\n- `allow-tts-voice-audio`\n- `allow-tts-voice-trimmed-audio`\n- `allow-tts-check-update`\n- `allow-tts-default-dirs`\n- `allow-tts-get-settings`\n- `allow-tts-save-settings`\n- `allow-stt-get-settings`\n- `allow-stt-save-settings`\n- `allow-stt-start`\n- `allow-stt-stop`\n- `allow-stt-get-status`\n- `allow-stt-inject-text`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the speech plugin (CrispASR TTS/STT engine).\n#### This default permission set includes:\n\n- `allow-tts-speak`\n- `allow-tts-presets`\n- `allow-tts-capabilities`\n- `allow-tts-unload`\n- `allow-tts-save-mp3`\n- `allow-tts-download-engine`\n- `allow-tts-download-model`\n- `allow-tts-engine-backends`\n- `allow-tts-list-models`\n- `allow-tts-list-voices`\n- `allow-tts-add-voice`\n- `allow-tts-delete-voice`\n- `allow-tts-update-voice`\n- `allow-tts-voice-avatar`\n- `allow-tts-voice-audio`\n- `allow-tts-voice-trimmed-audio`\n- `allow-tts-check-update`\n- `allow-tts-default-dirs`\n- `allow-tts-get-settings`\n- `allow-tts-save-settings`\n- `allow-stt-get-settings`\n- `allow-stt-save-settings`\n- `allow-stt-start`\n- `allow-stt-stop`\n- `allow-stt-get-status`\n- `allow-stt-inject-text`"
+          "markdownDescription": "Default permissions for the speech plugin (CrispASR TTS/STT engine).\n#### This default permission set includes:\n\n- `allow-tts-speak`\n- `allow-tts-presets`\n- `allow-tts-capabilities`\n- `allow-tts-unload`\n- `allow-tts-save-mp3`\n- `allow-tts-download-engine`\n- `allow-tts-delete-engine`\n- `allow-tts-get-engine-status`\n- `allow-tts-download-model`\n- `allow-tts-engine-backends`\n- `allow-tts-list-models`\n- `allow-tts-list-voices`\n- `allow-tts-add-voice`\n- `allow-tts-delete-voice`\n- `allow-tts-update-voice`\n- `allow-tts-voice-avatar`\n- `allow-tts-voice-audio`\n- `allow-tts-voice-trimmed-audio`\n- `allow-tts-check-update`\n- `allow-tts-default-dirs`\n- `allow-tts-get-settings`\n- `allow-tts-save-settings`\n- `allow-stt-get-settings`\n- `allow-stt-save-settings`\n- `allow-stt-start`\n- `allow-stt-stop`\n- `allow-stt-get-status`\n- `allow-stt-inject-text`"
         },
         {
           "description": "Allow text-to-speech synthesis via the CrispASR engine (returns WAV bytes).",
@@ -647,6 +671,18 @@
           "type": "string",
           "const": "allow-tts-download-engine",
           "markdownDescription": "Allow downloading the CrispASR engine binary."
+        },
+        {
+          "description": "Allow deleting an installed CrispASR engine backend folder (models are untouched).",
+          "type": "string",
+          "const": "allow-tts-delete-engine",
+          "markdownDescription": "Allow deleting an installed CrispASR engine backend folder (models are untouched)."
+        },
+        {
+          "description": "Allow reading the local CrispASR engine status (installed backends/versions from disk, no network).",
+          "type": "string",
+          "const": "allow-tts-get-engine-status",
+          "markdownDescription": "Allow reading the local CrispASR engine status (installed backends/versions from disk, no network)."
         },
         {
           "description": "Allow downloading TTS model GGUF files.",

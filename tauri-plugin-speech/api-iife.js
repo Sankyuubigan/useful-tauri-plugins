@@ -32,15 +32,24 @@
     return dlg.open(opts);
   }
 
-  // guest-js/web-components.ts
+  // guest-js/panels/styles.ts
   var PANEL_STYLES = `
   :host { display: block; color: var(--text, #333); font-family: var(--font, system-ui, sans-serif); }
+  /* \u0410\u0442\u0440\u0438\u0431\u0443\u0442 hidden \u043E\u0431\u044F\u0437\u0430\u043D \u0440\u0430\u0431\u043E\u0442\u0430\u0442\u044C \u041B\u042E\u0411\u041E\u0413\u041E \u043A\u043B\u0430\u0441\u0441\u0430 \u0441 display.
+     \u041F\u0440\u0430\u0432\u0438\u043B\u043E UA-\u0441\u0442\u0438\u043B\u0435\u0439 [hidden] { display: none } \u043F\u0440\u043E\u0438\u0433\u0440\u044B\u0432\u0430\u0435\u0442 \u0430\u0432\u0442\u043E\u0440\u0441\u043A\u043E\u043C\u0443
+     display \u0438\u0437 \u044D\u0442\u043E\u0433\u043E \u0444\u0430\u0439\u043B\u0430 \u043F\u043E \u043F\u0440\u043E\u0438\u0441\u0445\u043E\u0436\u0434\u0435\u043D\u0438\u044E \u043A\u0430\u0441\u043A\u0430\u0434\u0430, \u043F\u043E\u044D\u0442\u043E\u043C\u0443 .badge.ok
+     { display: inline-flex } \u0434\u0435\u043B\u0430\u043B \u0431\u0435\u0439\u0434\u0436 \xAB\u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E\xBB \u0432\u0435\u0447\u043D\u043E
+     \u0432\u0438\u0434\u0438\u043C\u044B\u043C, \u0430 .dlg-overlay { display: flex } \u2014 \u043C\u043E\u0434\u0430\u043B\u043A\u0443. \u041E\u0434\u043D\u043E \u043F\u0440\u0430\u0432\u0438\u043B\u043E
+     \u0437\u0430\u043A\u0440\u044B\u0432\u0430\u0435\u0442 \u0432\u0435\u0441\u044C \u043A\u043B\u0430\u0441\u0441 \u043E\u0448\u0438\u0431\u043E\u043A, \u0430 \u043D\u0435 \u043A\u0430\u0436\u0434\u044B\u0439 \u0441\u043B\u0443\u0447\u0430\u0439 \u043F\u043E \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E\u0441\u0442\u0438. */
+  [hidden] { display: none !important; }
   * { box-sizing: border-box; }
   button { margin: 4px 4px 0 0; padding: 5px 10px; cursor: pointer; border-radius: 6px;
            border: 1px solid var(--border, #ccc); background: var(--session-hover, #eee);
            color: var(--text, #333); font: inherit; }
   button.primary { background: var(--primary, #89b4fa); color: #1e1e2e; font-weight: 600; border-color: var(--primary, #89b4fa); }
   button.primary:hover:not(:disabled) { background: var(--primary-hover, #74a0f0); }
+  button.danger { color: #f38ba8; border-color: #f38ba8; background: transparent; }
+  button.danger:hover:not(:disabled) { background: var(--session-hover, #45475a); }
   button:disabled { opacity: .5; cursor: default; }
   select, input, textarea { font: inherit; color: var(--text, #333); background: var(--bg-color, #fff);
            border: 1px solid var(--border, #ccc); border-radius: 6px; padding: 4px 6px; }
@@ -103,25 +112,45 @@
   .badge.ok { background: #1e2a1e; color: #a6e3a1; display: inline-flex; align-items: center; gap: 5px; }
   .badge.ok::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: #a6e3a1; box-shadow: 0 0 6px #a6e3a1; }
   .badge.warn { background: #33260f; color: #f9c77a; }
+
+  /* \u041C\u043E\u0434\u0430\u043B\u043A\u0430 \u043F\u043E\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043D\u0438\u044F \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u044F \u0434\u0432\u0438\u0436\u043A\u0430 (\u043F\u043E \u043E\u0431\u0440\u0430\u0437\u0446\u0443 overlay \u0432 llama-\u043F\u043B\u0430\u0448\u043A\u0435). */
+  .dlg-overlay { position: fixed; inset: 0; background: rgba(0, 0, 0, .55); display: flex;
+                 align-items: center; justify-content: center; z-index: 2000; padding: 16px; }
+  .dlg-box { background: var(--bg-elevated, #1c1c1c); border: 1px solid var(--border, #45475a);
+             border-radius: 12px; padding: 20px; max-width: 520px; width: 100%; color: var(--text, #cdd6f4); }
+  .dlg-box h3 { margin: 0 0 12px; font-size: 17px; }
+  .dlg-box p { margin: 8px 0; color: var(--text-muted, #aaa); }
+  .dlg-box .strong { color: var(--text, #cdd6f4); word-break: break-all; }
+  .dlg-buttons { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
 `;
+
+  // guest-js/panels/speech-engine-panel.ts
   var SpeechEnginePanel = class extends HTMLElement {
     constructor() {
       super(...arguments);
-      this.busy = false;
       this.initialized = false;
+      this.busy = false;
       this.settings = {};
       this.defaults = { engine_dir: "", models_dir: "" };
-      this.backend = "";
       this.backends = [];
-      this.status = "";
-      this.updateInfo = "";
+      /** Установленные бэкенды с диска: id → версия из `version.txt` (может быть null). */
+      this.localBackends = /* @__PURE__ */ new Map();
+      this.state = {
+        engineDir: "",
+        modelsDir: "",
+        backend: "",
+        installed: false,
+        installedVersion: null,
+        updateAvailable: false,
+        latestVersion: null
+      };
       this.download = null;
       this.unlisteners = [];
     }
     connectedCallback() {
       this.root = this.attachShadow({ mode: "open" });
       this.render();
-      this.init();
+      void this.init();
     }
     render() {
       this.root.innerHTML = `
@@ -131,168 +160,376 @@
         <label for="backend">\u0422\u0438\u043F \u0431\u044D\u043A\u0435\u043D\u0434\u0430:</label>
         <div class="row">
           <select id="backend"></select>
-          <span id="backends_none" class="hint" hidden>\u043D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u0441\u043F\u0438\u0441\u043E\u043A \u0431\u0438\u043D\u0430\u0440\u0435\u0439 (\u043D\u0435\u0442 \u0441\u0435\u0442\u0438?)</span>
+          <span id="backends_none" class="hint warn" hidden>\u043D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u0441\u043F\u0438\u0441\u043E\u043A \u0431\u0438\u043D\u0430\u0440\u0435\u0439 (\u043D\u0435\u0442 \u0441\u0435\u0442\u0438?)</span>
         </div>
-        <p class="hint">\u0421\u0442\u0430\u0442\u0443\u0441: <span id="engine_status">\u2014</span></p>
+        <p class="hint">
+          \u0421\u0442\u0430\u0442\u0443\u0441: <span id="engine_status">\u2014</span><span id="update_badge" class="badge ok" hidden>\u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0434\u043E\u0441\u0442\u0443\u043F\u043D\u043E</span>
+        </p>
         <div class="row">
-          <button id="install" class="primary">\u0441\u043A\u0430\u0447\u0430\u0442\u044C \u0434\u0432\u0438\u0436\u043E\u043A</button>
-          <button id="refresh">\u043F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F</button>
-          <button id="engine_dir_browse">\u0438\u0437\u043C\u0435\u043D\u0438\u0442\u044C \u043F\u0443\u0442\u044C \u043A \u0434\u0432\u0438\u0436\u043A\u0443</button>
-          <button id="unload">\u0432\u044B\u0433\u0440\u0443\u0437\u0438\u0442\u044C (VRAM)</button>
+          <button id="install" class="primary">\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C</button>
+          <button id="checkUpdate">\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435</button>
+          <button id="installUpdate" class="primary" hidden>\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C</button>
+          <button id="remove" class="danger" hidden>\u0423\u0434\u0430\u043B\u0438\u0442\u044C</button>
+          <button id="engine_dir_browse">\u0418\u0437\u043C\u0435\u043D\u0438\u0442\u044C \u043F\u0443\u0442\u044C</button>
+          <button id="unload">\u0412\u044B\u0433\u0440\u0443\u0437\u0438\u0442\u044C (VRAM)</button>
         </div>
         <p class="hint">\u041F\u0443\u0442\u044C \u043A \u0434\u0432\u0438\u0436\u043A\u0443: <code id="engine_dir_code"></code></p>
-        <p class="hint" id="update_info" hidden></p>
         <div id="progress" class="progress" style="display:none"><div></div></div>
         <div id="status" class="muted" style="margin-top:8px"></div>
+
+        <div id="delete_dialog" class="dlg-overlay" hidden>
+          <div class="dlg-box">
+            <h3>\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0434\u0432\u0438\u0436\u043E\u043A CrispASR?</h3>
+            <p>\u0411\u0443\u0434\u0435\u0442 \u0443\u0434\u0430\u043B\u0435\u043D\u0430 \u043F\u0430\u043F\u043A\u0430: <span class="strong" id="delete_path"></span></p>
+            <p>\u041C\u043E\u0434\u0435\u043B\u0438 (GGUF) \u043B\u0435\u0436\u0430\u0442 \u0432 \u043E\u0442\u0434\u0435\u043B\u044C\u043D\u043E\u0439 \u043F\u0430\u043F\u043A\u0435 \u0438 \u043E\u0441\u0442\u0430\u043D\u0443\u0442\u0441\u044F \u043D\u0430 \u043C\u0435\u0441\u0442\u0435.</p>
+            <div class="dlg-buttons">
+              <button id="delete_cancel">\u041E\u0442\u043C\u0435\u043D\u0430</button>
+              <button id="delete_ok" class="danger">\u0423\u0434\u0430\u043B\u0438\u0442\u044C</button>
+            </div>
+          </div>
+        </div>
 
         <hr />
 
         <h3>\u041F\u0430\u043F\u043A\u0430 \u043C\u043E\u0434\u0435\u043B\u0435\u0439 TTS</h3>
         <div class="row">
           <input id="models_dir_input" type="text" readonly value="" style="flex:1; min-width:200px;" />
-          <button id="models_dir_browse">\u0432\u044B\u0431\u0440\u0430\u0442\u044C \u043F\u0430\u043F\u043A\u0443</button>
+          <button id="models_dir_browse">\u0412\u044B\u0431\u0440\u0430\u0442\u044C \u043F\u0430\u043F\u043A\u0443</button>
         </div>
         <p class="hint">\u0412\u043D\u0443\u0442\u0440\u0438 \u0441\u043E\u0437\u0434\u0430\u0451\u0442\u0441\u044F \u043F\u043E\u0434\u043F\u0430\u043F\u043A\u0430 \u043D\u0430 \u043A\u0430\u0436\u0434\u044B\u0439 \u043F\u0440\u0435\u0441\u0435\u0442; \u0432\u0441\u0435 GGUF \u043A\u0430\u0447\u0430\u044E\u0442\u0441\u044F \u0442\u0443\u0434\u0430 \u0430\u0432\u0442\u043E\u043C\u0430\u0442\u0438\u0447\u0435\u0441\u043A\u0438.</p>
       </div>`;
-      this.root.getElementById("engine_dir_browse").addEventListener("click", () => this.pickDir("engine_dir"));
-      this.root.getElementById("models_dir_browse").addEventListener("click", () => this.pickDir("models_dir"));
+      const on = (id, fn) => this.root.getElementById(id).addEventListener("click", fn);
+      on("engine_dir_browse", () => void this.pickDir("engine_dir"));
+      on("models_dir_browse", () => void this.pickDir("models_dir"));
+      on("install", () => void this.install());
+      on("checkUpdate", () => void this.checkUpdate());
+      on("installUpdate", () => void this.install());
+      on("remove", () => this.openDeleteDialog());
+      on("delete_cancel", () => this.closeDeleteDialog());
+      on("delete_ok", () => void this.deleteEngine());
+      on("unload", () => void this.unload());
       this.root.getElementById("backend").addEventListener("change", (e) => {
-        this.backend = e.target.value;
-        this.saveSettings();
-      });
-      this.root.getElementById("install").addEventListener("click", () => this.install());
-      this.root.getElementById("refresh").addEventListener("click", () => this.checkUpdate());
-      this.root.getElementById("unload").addEventListener("click", async () => {
-        try {
-          await ttsUnload();
-          this.setStatus("\u0434\u0432\u0438\u0436\u043E\u043A \u0432\u044B\u0433\u0440\u0443\u0436\u0435\u043D");
-        } catch (e) {
-          this.setStatus("\u043E\u0448\u0438\u0431\u043A\u0430: " + e.message);
-        }
+        this.state.backend = e.target.value;
+        void this.saveSettings();
+        this.applySelectedBackendFromLocal();
+        this.renderEngineState();
       });
     }
     async init() {
       if (this.initialized) return;
-      const [s, d, b] = await Promise.all([
+      this.initialized = true;
+      const un = await listen(
+        "downloader:progress",
+        (ev) => {
+          const p = ev.payload;
+          if (p.kind !== "engine") return;
+          this.download = { current: p.downloaded, total: p.total, speed: p.speed_bps };
+          this.renderProgress();
+        }
+      ).catch(() => null);
+      if (un) this.unlisteners.push(un);
+      const [s, d] = await Promise.all([
         ttsGetSettings().catch(() => ({})),
-        ttsDefaultDirs().catch(() => ({ engine_dir: "", models_dir: "" })),
-        ttsEngineBackends().catch(() => [])
+        ttsDefaultDirs().catch(() => ({ engine_dir: "", models_dir: "" }))
       ]);
       this.settings = s;
       this.defaults = d;
-      this.backends = b;
-      if (!this.settings.engine_dir) this.settings.engine_dir = d.engine_dir;
-      if (!this.settings.models_dir) this.settings.models_dir = d.models_dir;
-      if (!this.settings.engine_backend && b.length) this.settings.engine_backend = b[0].id;
-      this.root.getElementById("engine_dir_code").textContent = this.settings.engine_dir;
-      this.root.getElementById("models_dir_input").value = this.settings.models_dir;
-      const sel = this.root.getElementById("backend");
-      sel.innerHTML = b.map((x) => `<option value="${x.id}">${x.label}</option>`).join("");
-      if (b.length === 0) {
-        const none = document.createElement("option");
-        none.value = "";
-        none.textContent = "\u0441\u0435\u0442\u044C \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430\u2026";
-        sel.appendChild(none);
+      this.state.engineDir = s.engine_dir || d.engine_dir;
+      this.state.modelsDir = s.models_dir || d.models_dir;
+      this.state.backend = s.engine_backend || "";
+      const modelsInput = this.root.getElementById("models_dir_input");
+      modelsInput.value = this.state.modelsDir;
+      await this.refreshLocalStatus();
+      this.renderEngineState();
+      void this.loadBackends();
+    }
+    /** Перечитывает локальный статус движка с диска (без сети). */
+    async refreshLocalStatus() {
+      let st;
+      try {
+        st = await ttsGetEngineStatus();
+      } catch (e) {
+        this.setStatus("\u043E\u0448\u0438\u0431\u043A\u0430 \u0447\u0442\u0435\u043D\u0438\u044F \u0441\u0442\u0430\u0442\u0443\u0441\u0430 \u0434\u0432\u0438\u0436\u043A\u0430: " + e.message);
+        return;
+      }
+      this.localBackends = new Map(
+        (st.installed_backends || []).map((b) => [b.id, b.installed_version])
+      );
+      this.state.engineDir = st.engine_dir || this.state.engineDir;
+      this.state.modelsDir = st.models_dir || this.state.modelsDir;
+      if (!this.state.backend) this.state.backend = st.selected_backend || "";
+      this.state.installed = st.installed;
+      this.state.installedVersion = st.installed ? st.installed_version : null;
+    }
+    /** Пересчитывает `installed`/`installedVersion` под текущий выбор бэкенда. */
+    /**
+     * Сбрасывает сетевое состояние апдейта.
+     *
+     * Результат проверки обновлений относится к КОНКРЕТНОМУ бэкенду в КОНКРЕТНОЙ
+     * папке движка. Сменился бэкенд или папка — про новую цель мы ничего не
+     * знаем, поэтому гасить надо (иначе бейдж «обновление доступно» остаётся
+     * висеть от прежнего бэкенда, а кнопки «Обновить» нет — ровно тот баг,
+     * что и чинили: апдейт одного бэкенда выдавался за все).
+     */
+    clearRemoteUpdateState() {
+      this.state.updateAvailable = false;
+      this.state.latestVersion = null;
+    }
+    /** Пересчитывает `installed`/`installedVersion` под текущий выбор бэкенда. */
+    applySelectedBackendFromLocal() {
+      this.clearRemoteUpdateState();
+      if (!this.state.backend) {
+        this.state.installed = false;
+        this.state.installedVersion = null;
+        return;
+      }
+      this.state.installed = this.localBackends.has(this.state.backend);
+      this.state.installedVersion = this.localBackends.get(this.state.backend) ?? null;
+    }
+    /** Список бэкендов из GitHub. Недоступность сети — не повод ломать локальный UI. */
+    async loadBackends() {
+      try {
+        this.backends = await ttsEngineBackends();
+      } catch (e) {
         const span = this.root.getElementById("backends_none");
         if (span) span.hidden = false;
+        this.setStatus("\u0441\u043F\u0438\u0441\u043E\u043A \u0431\u044D\u043A\u0435\u043D\u0434\u043E\u0432 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D: " + e.message);
+        this.renderBackendSelect();
+        return;
       }
-      sel.value = this.settings.engine_backend || b[0]?.id || "";
-      this.backend = sel.value;
-      this.unlisteners.push(await listen("tts-download", (ev) => {
-        const p = ev.payload;
-        this.download = { current: p.downloaded, total: p.total };
-        this.updateProgress();
-      }));
-      this.initialized = true;
-      this.checkUpdate();
+      this.renderBackendSelect();
     }
-    async pickDir(field) {
-      const picked = await open({ directory: true }).catch(() => null);
-      if (picked && typeof picked === "string") {
-        if (field === "engine_dir") {
-          this.settings.engine_dir = picked;
-          this.root.getElementById("engine_dir_code").textContent = picked;
-        } else {
-          this.settings.models_dir = picked;
-          this.root.getElementById("models_dir_input").value = picked;
-        }
-        this.saveSettings();
+    /** Селект: подписи с пометкой «— установлен» и «(рекомендуется)». */
+    renderBackendSelect() {
+      const sel = this.root.getElementById("backend");
+      const prev = this.state.backend;
+      sel.innerHTML = "";
+      this.backends.forEach((b, i) => {
+        const o = document.createElement("option");
+        o.value = b.id;
+        const marks = [
+          this.localBackends.has(b.id) ? "\u2014 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D" : "",
+          i === 0 ? "(\u0440\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0443\u0435\u0442\u0441\u044F)" : ""
+        ].filter(Boolean);
+        o.textContent = marks.length ? `${b.label} ${marks.join(" ")}` : b.label;
+        sel.appendChild(o);
+      });
+      for (const id of this.localBackends.keys()) {
+        if (this.backends.some((b) => b.id === id)) continue;
+        const o = document.createElement("option");
+        o.value = id;
+        o.textContent = `${id} \u2014 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D (\u043D\u0435\u0442 \u0432 \u0441\u0432\u0435\u0436\u0435\u043C \u0440\u0435\u043B\u0438\u0437\u0435)`;
+        sel.appendChild(o);
       }
-    }
-    async saveSettings() {
-      try {
-        await ttsSaveSettings(this.settings);
-      } catch {
+      if (sel.options.length === 0) {
+        const none = document.createElement("option");
+        none.value = "";
+        none.textContent = "\u2014 \u0441\u043F\u0438\u0441\u043E\u043A \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D (\u043D\u0435\u0442 \u0441\u0435\u0442\u0438) \u2014";
+        sel.appendChild(none);
       }
+      if (prev && Array.from(sel.options).some((o) => o.value === prev)) sel.value = prev;
+      this.state.backend = sel.value;
+      this.applySelectedBackendFromLocal();
+      this.renderEngineState();
     }
-    setStatus(s) {
-      this.status = s;
-      const el = this.root.getElementById("status");
-      if (el) el.textContent = [s, this.updateInfo].filter(Boolean).join(" \u2022 ");
+    /**
+     * Единственное место, где статус, бейдж и кнопки выводятся из состояния.
+     * Установка/обновление/удаление меняют состояние → перерисовка идёт отсюда.
+     */
+    renderEngineState() {
+      const s = this.state;
+      const btn = (id) => this.root.getElementById(id);
+      const status = this.root.getElementById("engine_status");
+      if (status) status.textContent = this.statusText();
+      const badge = this.root.getElementById("update_badge");
+      if (badge) badge.hidden = !s.updateAvailable;
+      btn("install").hidden = s.installed;
+      btn("checkUpdate").hidden = !s.installed;
+      btn("installUpdate").hidden = !(s.installed && s.updateAvailable);
+      btn("remove").hidden = !s.installed;
+      const dir = this.root.getElementById("engine_dir_code");
+      if (dir) dir.textContent = s.engineDir || "\u2014";
     }
-    setEngineStatus(s) {
-      const el = this.root.getElementById("engine_status");
-      if (el) el.textContent = s;
-    }
-    updateProgress() {
-      const box = this.root.getElementById("progress");
-      const bar = box.firstElementChild;
-      if (this.download && this.download.total > 0) {
-        box.style.display = "block";
-        bar.style.width = `${Math.min(100, this.download.current / this.download.total * 100)}%`;
-        this.setStatus(`\u0441\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u0435\u2026 ${Math.round(this.download.total / 1048576)} \u041C\u0411`);
-      } else if (this.download) {
-        box.style.display = "block";
-        bar.style.width = "100%";
+    /** Текст статуса. Никогда не врёт: неизвестное отдаётся как неизвестное. */
+    statusText() {
+      const s = this.state;
+      if (!s.backend) return "\u0431\u044D\u043A\u0435\u043D\u0434 \u043D\u0435 \u0432\u044B\u0431\u0440\u0430\u043D";
+      if (!s.installed) return `\xAB${s.backend}\xBB \u043D\u0435 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D`;
+      const parts = [`\xAB${s.backend}\xBB \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D`];
+      if (s.installedVersion) {
+        parts.push(`\u0432\u0435\u0440\u0441\u0438\u044F ${s.installedVersion}`);
       } else {
-        box.style.display = "none";
+        parts.push("\u0432\u0435\u0440\u0441\u0438\u044F \u043D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u0430");
       }
+      if (s.updateAvailable && s.latestVersion) parts.push(`\u0435\u0441\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 ${s.latestVersion}`);
+      return parts.join(" \xB7 ");
     }
+    /** Проверка обновлений по сети. Сетевая ошибка НЕ трогает локальный статус. */
     async checkUpdate() {
-      const res = await ttsCheckUpdate().catch(() => null);
-      if (!res) return;
-      const infoEl = this.root.getElementById("update_info");
-      if (res.ok) {
-        const need = (res.engines ?? []).filter((e) => e.update_available);
-        this.updateInfo = need.length ? `\u043F\u043E\u0441\u043B\u0435\u0434\u043D\u044F\u044F \u0432\u0435\u0440\u0441\u0438\u044F ${res.latest}: \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u0434\u043B\u044F ${need.map((e) => e.label).join(", ")}` : `\u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0430 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u044F\u044F \u0432\u0435\u0440\u0441\u0438\u044F (${res.latest})`;
-        this.setEngineStatus(need.length ? "\u0435\u0441\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F" : `\u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u0430 \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u044F\u044F \u0432\u0435\u0440\u0441\u0438\u044F (${res.latest})`);
-      } else {
-        this.updateInfo = "\u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u044B: " + (res.error ?? "?");
-        this.setEngineStatus("\u043D\u0435 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D");
+      const btn = this.root.getElementById("checkUpdate");
+      const label = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "\u041F\u0440\u043E\u0432\u0435\u0440\u043A\u0430\u2026";
+      try {
+        const res = await ttsCheckUpdate();
+        if (!res || !res.ok) {
+          const err = res?.error || "\u043D\u0435\u0442 \u043E\u0442\u0432\u0435\u0442\u0430 \u043E\u0442 \u0441\u0435\u0440\u0432\u0435\u0440\u0430";
+          this.setStatus("\u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0439 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430: " + err);
+          return;
+        }
+        this.state.latestVersion = res.latest ?? null;
+        const own = (res.engines ?? []).find((e) => e.id === this.state.backend);
+        if (this.state.installed) {
+          const known = own?.installed_version ?? this.state.installedVersion;
+          this.state.installedVersion = known;
+          this.state.updateAvailable = own?.update_available === true;
+        } else {
+          this.state.updateAvailable = false;
+        }
+        this.renderEngineState();
+        this.setStatus(
+          !this.state.installed ? `\xAB${this.state.backend}\xBB \u043D\u0435 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D \u2014 \u043C\u043E\u0436\u043D\u043E \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C` : this.state.updateAvailable ? "\u043D\u0430\u0439\u0434\u0435\u043D\u043E \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0434\u0432\u0438\u0436\u043A\u0430" : this.state.installedVersion ? "\u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043D\u0430\u044F \u0432\u0435\u0440\u0441\u0438\u044F \u0430\u043A\u0442\u0443\u0430\u043B\u044C\u043D\u0430" : "\u0432\u0435\u0440\u0441\u0438\u044F \u0434\u0432\u0438\u0436\u043A\u0430 \u043D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u0430 \u2014 \u043E\u0431\u043D\u043E\u0432\u0438\u0442\u0435 \u0434\u0432\u0438\u0436\u043E\u043A \u0432\u0440\u0443\u0447\u043D\u0443\u044E"
+        );
+      } catch (e) {
+        this.setStatus("\u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0430 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0439 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u043D\u0430: " + e.message);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = label || "\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435";
       }
-      if (infoEl) {
-        infoEl.textContent = this.updateInfo;
-        infoEl.hidden = false;
-      }
-      this.setStatus(this.status);
     }
+    /** Установка ИЛИ обновление выбранного бэкенда — одна команда, как в llama-плашке. */
     async install() {
       if (this.busy) return;
-      if (!this.backend) {
+      if (!this.state.backend) {
         this.setStatus("\u0432\u044B\u0431\u0435\u0440\u0438\u0442\u0435 \u0431\u044D\u043A\u0435\u043D\u0434");
         return;
       }
       this.busy = true;
-      this.setStatus("\u0441\u043A\u0430\u0447\u0438\u0432\u0430\u044E \u0434\u0432\u0438\u0436\u043E\u043A\u2026");
-      this.download = { current: 0, total: 0 };
-      this.updateProgress();
+      const wasInstalled = this.state.installed;
+      this.setStatus(wasInstalled ? "\u043E\u0431\u043D\u043E\u0432\u043B\u044F\u044E \u0434\u0432\u0438\u0436\u043E\u043A\u2026" : "\u0443\u0441\u0442\u0430\u043D\u0430\u0432\u043B\u0438\u0432\u0430\u044E \u0434\u0432\u0438\u0436\u043E\u043A\u2026");
+      this.download = { current: 0, total: 0, speed: 0 };
+      this.renderProgress();
+      this.setButtonsDisabled(true);
       try {
-        await ttsDownloadEngine(this.backend, this.settings.engine_dir || this.defaults.engine_dir);
-        this.setStatus("\u0434\u0432\u0438\u0436\u043E\u043A \u0441\u043A\u0430\u0447\u0430\u043D");
-        await this.checkUpdate();
+        await ttsDownloadEngine(this.state.backend, this.state.engineDir || this.defaults.engine_dir);
+        this.state.updateAvailable = false;
+        await this.refreshLocalStatus();
+        this.renderBackendSelect();
+        this.setStatus(wasInstalled ? "\u0434\u0432\u0438\u0436\u043E\u043A \u043E\u0431\u043D\u043E\u0432\u043B\u0451\u043D" : "\u0434\u0432\u0438\u0436\u043E\u043A \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D");
       } catch (e) {
         this.setStatus("\u043E\u0448\u0438\u0431\u043A\u0430: " + e.message);
       } finally {
         this.download = null;
-        this.updateProgress();
+        this.renderProgress();
+        this.setButtonsDisabled(false);
         this.busy = false;
       }
+    }
+    openDeleteDialog() {
+      const path = this.root.getElementById("delete_path");
+      if (path) path.textContent = `${this.state.engineDir}\\${this.state.backend}`;
+      const dlg = this.root.getElementById("delete_dialog");
+      dlg.hidden = false;
+    }
+    closeDeleteDialog() {
+      this.root.getElementById("delete_dialog").hidden = true;
+    }
+    async deleteEngine() {
+      if (this.busy) return;
+      this.closeDeleteDialog();
+      this.busy = true;
+      this.setStatus("\u0443\u0434\u0430\u043B\u044F\u044E \u0434\u0432\u0438\u0436\u043E\u043A\u2026");
+      this.setButtonsDisabled(true);
+      try {
+        const res = await ttsDeleteEngine(
+          this.state.backend,
+          this.state.engineDir || this.defaults.engine_dir
+        );
+        const freed = res.freed_bytes ? ` (${(res.freed_bytes / 1048576).toFixed(1)} \u041C\u0411)` : "";
+        this.setStatus(`\u0434\u0432\u0438\u0436\u043E\u043A \u0443\u0434\u0430\u043B\u0451\u043D${freed}`);
+        this.state.updateAvailable = false;
+        this.state.latestVersion = null;
+        await this.refreshLocalStatus();
+        this.renderBackendSelect();
+      } catch (e) {
+        this.setStatus("\u043E\u0448\u0438\u0431\u043A\u0430 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u044F: " + e.message);
+      } finally {
+        this.setButtonsDisabled(false);
+        this.busy = false;
+      }
+    }
+    async unload() {
+      try {
+        await ttsUnload();
+        this.setStatus("\u0434\u0432\u0438\u0436\u043E\u043A \u0432\u044B\u0433\u0440\u0443\u0436\u0435\u043D (VRAM \u043E\u0441\u0432\u043E\u0431\u043E\u0436\u0434\u0451\u043D)");
+      } catch (e) {
+        this.setStatus("\u043E\u0448\u0438\u0431\u043A\u0430 \u0432\u044B\u0433\u0440\u0443\u0437\u043A\u0438: " + e.message);
+      }
+    }
+    /** Блокирует кнопки на время скачивания/удаления — иначе можно кликнуть дважды. */
+    setButtonsDisabled(disabled) {
+      for (const id of ["install", "checkUpdate", "installUpdate", "remove", "unload"]) {
+        const b = this.root.getElementById(id);
+        b.disabled = disabled;
+      }
+    }
+    async pickDir(field) {
+      const picked = await open({ directory: true }).catch(() => null);
+      if (!picked || typeof picked !== "string") return;
+      if (field === "engine_dir") {
+        this.settings.engine_dir = picked;
+        this.state.engineDir = picked;
+      } else {
+        this.settings.models_dir = picked;
+        this.state.modelsDir = picked;
+        this.root.getElementById("models_dir_input").value = picked;
+      }
+      await this.saveSettings();
+      if (field === "engine_dir") {
+        this.clearRemoteUpdateState();
+        await this.refreshLocalStatus();
+        this.renderEngineState();
+      }
+    }
+    async saveSettings() {
+      this.settings.engine_dir = this.state.engineDir;
+      this.settings.models_dir = this.state.modelsDir;
+      this.settings.engine_backend = this.state.backend;
+      try {
+        await ttsSaveSettings(this.settings);
+      } catch (e) {
+        this.setStatus("\u043D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438: " + e.message);
+      }
+    }
+    setStatus(s) {
+      const el = this.root.getElementById("status");
+      if (el) el.textContent = s;
+    }
+    renderProgress() {
+      const box = this.root.getElementById("progress");
+      const bar = box.firstElementChild;
+      const d = this.download;
+      if (!d) {
+        box.style.display = "none";
+        return;
+      }
+      box.style.display = "block";
+      bar.style.width = d.total > 0 ? `${Math.min(100, d.current / d.total * 100)}%` : "100%";
+      const mb = (b) => (b / 1048576).toFixed(1);
+      const speed = d.speed > 1024 ? ` \xB7 ${mb(d.speed)} \u041C\u0411/\u0441` : "";
+      const size = d.total > 0 ? `${mb(d.current)} / ${mb(d.total)} \u041C\u0411` : `${mb(d.current)} \u041C\u0411`;
+      this.setStatus(`\u0441\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u0435\u2026 ${size}${speed}`);
     }
     disconnectedCallback() {
       for (const u of this.unlisteners) u();
       this.unlisteners = [];
     }
   };
+  if (!customElements.get("speech-engine-panel")) {
+    customElements.define("speech-engine-panel", SpeechEnginePanel);
+  }
+
+  // guest-js/web-components.ts
   var SpeechModelsPanel = class extends HTMLElement {
     constructor() {
       super(...arguments);
@@ -346,12 +583,15 @@
         }
       }
       this.initialized = true;
-      void listen("tts-download", (ev) => {
-        const p = ev.payload;
-        if (p.kind !== "model") return;
-        this.download = { current: p.downloaded, total: p.total };
-        this.updateProgress();
-      }).then((u) => this.unlisteners.push(u)).catch(() => {
+      void listen(
+        "downloader:progress",
+        (ev) => {
+          const p = ev.payload;
+          if (p.kind !== "model") return;
+          this.download = { current: p.downloaded, total: p.total };
+          this.updateProgress();
+        }
+      ).then((u) => this.unlisteners.push(u)).catch(() => {
       });
       void this.reload();
     }
@@ -756,9 +996,6 @@
       this.unlisteners = [];
     }
   };
-  if (!customElements.get("speech-engine-panel")) {
-    customElements.define("speech-engine-panel", SpeechEnginePanel);
-  }
   if (!customElements.get("speech-models-panel")) {
     customElements.define("speech-models-panel", SpeechModelsPanel);
   }
@@ -777,7 +1014,7 @@
       language
     });
   }
-  async function ttsPresets2() {
+  async function ttsPresets() {
     return invoke("plugin:speech|tts_presets");
   }
   async function ttsCapabilities() {
@@ -791,6 +1028,15 @@
   }
   async function ttsDownloadEngine(backendId, dest) {
     return invoke("plugin:speech|tts_download_engine", {
+      backendId,
+      dest
+    });
+  }
+  async function ttsGetEngineStatus() {
+    return invoke("plugin:speech|tts_get_engine_status");
+  }
+  async function ttsDeleteEngine(backendId, dest) {
+    return invoke("plugin:speech|tts_delete_engine", {
       backendId,
       dest
     });
@@ -901,14 +1147,16 @@
           ttsCapabilities,
           ttsCheckUpdate,
           ttsDefaultDirs,
+          ttsDeleteEngine,
           ttsDeleteVoice,
           ttsDownloadEngine,
           ttsDownloadModel,
           ttsEngineBackends,
+          ttsGetEngineStatus,
           ttsGetSettings,
           ttsListModels,
           ttsListVoices,
-          ttsPresets: ttsPresets2,
+          ttsPresets,
           ttsSaveSettings,
           ttsSaveWav,
           ttsSpeak,

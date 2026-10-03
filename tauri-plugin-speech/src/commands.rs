@@ -390,7 +390,7 @@ pub async fn tts_download_engine<R: Runtime>(
         &app,
         &format!("ТТС: скачивание движка CrispASR ({}) в {}...", b.label, dest),
     );
-    let path = download::download_engine(&app, &dest, &backend_id, &b.url, &b.tag)
+    let path = download::download_engine(&dest, &backend_id, &b.url, &b.tag)
         .await
         .map_err(|e| {
             log::app_log(&app, &format!("ТТС ОШИБКА загрузки движка: {e}"));
@@ -411,7 +411,7 @@ pub async fn tts_download_model<R: Runtime>(
     dest: String,
 ) -> Result<Value, String> {
     log::app_log(&app, &format!("ТТС: скачивание GGUF модели ({preset}) в {dest}..."));
-    let res = download::download_model(&app, &preset, &dest)
+    let res = download::download_model(&preset, &dest)
         .await
         .map_err(|e| {
             log::app_log(&app, &format!("ТТС ОШИБКА загрузки модели: {e}"));
@@ -542,11 +542,75 @@ pub async fn tts_check_update<R: Runtime>(app: AppHandle<R>) -> Value {
 }
 
 #[tauri::command]
-pub async fn tts_default_dirs() -> Value {
+pub fn tts_default_dirs() -> Value {
     json!({
         "engine_dir": download::default_engine_dir().to_string_lossy(),
         "models_dir": download::default_models_dir().to_string_lossy(),
     })
+}
+
+/// Локальный статус движка CrispASR: читает ТОЛЬКО диск, без сети.
+///
+/// Намеренно разделено с `tts_check_update` (который ходит в GitHub):
+/// «что лежит на диске» и «какая версия свежее в облаке» — разные вопросы,
+/// и второй не должен ломать первый при отсутствии сети (core §2.2).
+#[tauri::command]
+pub fn tts_get_engine_status<R: Runtime>(app: AppHandle<R>) -> Value {
+    let settings = load_tts_settings(&app);
+    let engine_dir = download::engine_base(&settings.engine_dir);
+    let engine_dir = engine_dir.to_string_lossy().to_string();
+    let selected = settings.engine_backend.clone();
+    let installed = download::resolve_engine_exe(&engine_dir, &selected).exists();
+    json!({
+        "engine_dir": engine_dir,
+        "selected_backend": selected,
+        "installed": installed,
+        "installed_version": download::installed_engine_version(&engine_dir, &selected),
+        "installed_backends": download::list_installed_engine_backends(&engine_dir),
+        "models_dir": settings.models_dir,
+    })
+}
+
+/// Удаляет установленный бэкенд движка: папку `<engine_dir>/<backend_id>`.
+///
+/// Сначала глушим процессы движка — на Windows запущенный `crispasr.exe`
+/// удалить нельзя. Папка моделей (`models_dir`) не затрагивается.
+#[tauri::command]
+pub async fn tts_delete_engine<R: Runtime>(
+    app: AppHandle<R>,
+    backend_id: String,
+    dest: String,
+) -> Result<Value, String> {
+    let engine_dir = if dest.trim().is_empty() {
+        let s = load_tts_settings(&app);
+        download::engine_base(&s.engine_dir)
+    } else {
+        std::path::PathBuf::from(dest)
+    };
+    let engine_dir = engine_dir.to_string_lossy().to_string();
+    log::app_log(
+        &app,
+        &format!("ТТС: удаление движка «{backend_id}» из {engine_dir}..."),
+    );
+
+    // Освобождаем файл движка: TTS и STT поднимают один и тот же crispasr.exe.
+    {
+        let state = app.state::<PluginState>();
+        state.tts.stop().await;
+        state.stt.stop(&app).await;
+    }
+
+    let (freed, path) = download::delete_engine(&engine_dir, &backend_id).map_err(|e| {
+        log::app_log(&app, &format!("ТТС ОШИБКА удаления движка: {e}"));
+        e
+    })?;
+
+    let size_txt = match freed {
+        Some(b) => format!(" ({:.1} МБ)", b as f64 / 1_048_576.0),
+        None => String::new(),
+    };
+    log::app_log(&app, &format!("ТТС: движок удалён: {path}{size_txt}"));
+    Ok(json!({ "freed_bytes": freed, "path": path }))
 }
 
 #[tauri::command]

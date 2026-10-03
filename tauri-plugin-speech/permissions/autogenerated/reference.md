@@ -10,6 +10,8 @@ Default permissions for the speech plugin (CrispASR TTS/STT engine).
 - `allow-tts-unload`
 - `allow-tts-save-mp3`
 - `allow-tts-download-engine`
+- `allow-tts-delete-engine`
+- `allow-tts-get-engine-status`
 - `allow-tts-download-model`
 - `allow-tts-engine-backends`
 - `allow-tts-list-models`
@@ -303,6 +305,32 @@ Denies the tts_default_dirs command without any pre-configured scope.
 <tr>
 <td>
 
+`speech:allow-tts-delete-engine`
+
+</td>
+<td>
+
+Enables the tts_delete_engine command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`speech:deny-tts-delete-engine`
+
+</td>
+<td>
+
+Denies the tts_delete_engine command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `speech:allow-tts-delete-voice`
 
 </td>
@@ -400,6 +428,32 @@ Enables the tts_engine_backends command without any pre-configured scope.
 <td>
 
 Denies the tts_engine_backends command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`speech:allow-tts-get-engine-status`
+
+</td>
+<td>
+
+Enables the tts_get_engine_status command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`speech:deny-tts-get-engine-status`
+
+</td>
+<td>
+
+Denies the tts_get_engine_status command without any pre-configured scope.
 
 </td>
 </tr>
@@ -790,6 +844,32 @@ Allow saving synthesized WAV bytes to a user-chosen path as MP3 (local re-encode
 <td>
 
 Allow downloading the CrispASR engine binary.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`speech:allow-tts-delete-engine`
+
+</td>
+<td>
+
+Allow deleting an installed CrispASR engine backend folder (models are untouched).
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`speech:allow-tts-get-engine-status`
+
+</td>
+<td>
+
+Allow reading the local CrispASR engine status (installed backends/versions from disk, no network).
 
 </td>
 </tr>

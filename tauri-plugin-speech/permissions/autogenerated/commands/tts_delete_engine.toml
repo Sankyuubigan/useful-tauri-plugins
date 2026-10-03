@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-tts-delete-engine"
+description = "Enables the tts_delete_engine command without any pre-configured scope."
+commands.allow = ["tts_delete_engine"]
+
+[[permission]]
+identifier = "deny-tts-delete-engine"
+description = "Denies the tts_delete_engine command without any pre-configured scope."
+commands.deny = ["tts_delete_engine"]

@@ -2,11 +2,8 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tauri::{AppHandle, Emitter, Runtime};
-use tokio::io::AsyncWriteExt;
 
 /// Адрес GitHub API последнего релиза CrispASR (для списка бинарей движка и проверки обновлений).
 pub const RELEASE_API: &str = "https://api.github.com/repos/CrispStrobe/CrispASR/releases/latest";
@@ -294,13 +291,21 @@ pub fn default_models_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("tts_models"))
 }
 
-/// Резолвит путь к exe движка для выбранного бэкенда.
-pub fn resolve_engine_exe(engine_dir: &str, backend_id: &str) -> PathBuf {
-    let base: PathBuf = if engine_dir.is_empty() {
+/// Базовая папка движков: явный `engine_dir` из настроек, иначе папка по умолчанию.
+///
+/// Единая точка вычисления корня (core §2.1 SSOT) — её используют все функции,
+/// которые ходят по диску движка, и команда `tts_get_engine_status`.
+pub fn engine_base(engine_dir: &str) -> PathBuf {
+    if engine_dir.trim().is_empty() {
         default_engine_dir()
     } else {
         PathBuf::from(engine_dir)
-    };
+    }
+}
+
+/// Резолвит путь к exe движка для выбранного бэкенда.
+pub fn resolve_engine_exe(engine_dir: &str, backend_id: &str) -> PathBuf {
+    let base = engine_base(engine_dir);
     let folder = base.join(backend_id);
     let direct = folder.join("crispasr.exe");
     if direct.exists() {
@@ -314,71 +319,132 @@ pub fn resolve_engine_exe(engine_dir: &str, backend_id: &str) -> PathBuf {
 
 /// Возвращает сохранённую версию установленного бэкенда (из `version.txt`), если есть.
 pub fn installed_engine_version(engine_dir: &str, backend_id: &str) -> Option<String> {
-    let base: PathBuf = if engine_dir.is_empty() {
-        default_engine_dir()
-    } else {
-        PathBuf::from(engine_dir)
-    };
-    let vf = base.join(backend_id).join("version.txt");
+    let vf = engine_base(engine_dir).join(backend_id).join("version.txt");
     std::fs::read_to_string(&vf).ok().map(|s| s.trim().to_string())
 }
 
-fn emit_progress<R: Runtime>(
-    app: &AppHandle<R>,
-    kind: &str,
-    name: &str,
-    downloaded: u64,
-    total: u64,
-) {
-    let _ = app.emit(
-        "tts-download",
-        json!({ "kind": kind, "name": name, "downloaded": downloaded, "total": total }),
-    );
+/// Локально установленный бэкенд движка, найденный сканированием папки.
+#[derive(Debug, Clone, Serialize)]
+pub struct InstalledEngineBackend {
+    /// Имя папки бэкенда (= `backend_id`, как его создаёт `download_engine`).
+    pub id: String,
+    /// Тег релиза из `version.txt`, если папка его содержит.
+    pub installed_version: Option<String>,
 }
 
-async fn download_to<R: Runtime>(
-    app: &AppHandle<R>,
-    url: &str,
-    dest: &Path,
-    kind: &str,
-) -> Result<(), String> {
-    let name = dest
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("file");
-    emit_progress(app, kind, name, 0, 0);
+/// Бэкенды, реально лежащие на диске: верхнеуровневые подпапки `engine_dir`,
+/// внутри которых рекурсивно находится `crispasr.exe`.
+///
+/// Локальный источник правды для UI: работает без сети и находит папки, которых
+/// уже нет в свежем релизе GitHub (layout менялся — старая раскладка остаётся
+/// рабочей, но в `engine_backends()` её больше нет).
+pub fn list_installed_engine_backends(engine_dir: &str) -> Vec<InstalledEngineBackend> {
+    let base = engine_base(engine_dir);
+    let Ok(entries) = std::fs::read_dir(&base) else {
+        // Папки движка нет — это «ничего не установлено», а не ошибка:
+        // вызывающий код сам сообщает юзеру, что движок не установлен.
+        return Vec::new();
+    };
+    let mut out: Vec<InstalledEngineBackend> = entries
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| {
+            let folder = e.path();
+            let id = folder.file_name()?.to_str()?.to_string();
+            find_exe(&folder).map(|_| InstalledEngineBackend {
+                installed_version: installed_engine_version(engine_dir, &id),
+                id,
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
+}
 
-    let resp = reqwest::Client::new()
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("ошибка запроса {url}: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("сервер вернул {} для {url}", resp.status()));
+/// Отвергает `backend_id`, который мог бы выйти за пределы папки движка
+/// (пустой, `.`, `..`, с разделителями пути или с буквой диска вида `C:`).
+fn validate_backend_id(backend_id: &str) -> Result<(), String> {
+    let id = backend_id.trim();
+    let bad = id.is_empty()
+        || id == "."
+        || id == ".."
+        || id.contains('/')
+        || id.contains('\\')
+        || id.contains(':');
+    if bad {
+        return Err(format!("недопустимый идентификатор бэкенда: {backend_id:?}"));
     }
-    let total = resp.content_length().unwrap_or(0);
-
-    let mut file = tokio::fs::File::create(dest)
-        .await
-        .map_err(|e| format!("не удалось создать файл {}: {e}", dest.display()))?;
-    let mut stream = resp.bytes_stream();
-    let mut downloaded: u64 = 0;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("ошибка скачивания: {e}"))?;
-        file.write_all(&chunk)
-            .await
-            .map_err(|e| format!("ошибка записи: {e}"))?;
-        downloaded += chunk.len() as u64;
-        emit_progress(app, kind, name, downloaded, total);
-    }
-    file.flush().await.ok();
     Ok(())
+}
+
+/// Рекурсивный размер папки в байтах. `None` — корень не читается
+/// (тогда UI не показывает размер, но удаление всё равно можно подтвердить).
+fn dir_size(path: &Path) -> Option<u64> {
+    let entries = std::fs::read_dir(path).ok()?;
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            total += dir_size(&p).unwrap_or(0);
+        } else {
+            total += entry.metadata().map(|m| m.len()).unwrap_or(0);
+        }
+    }
+    Some(total)
+}
+
+/// Удаляет папку установленного движка `<engine_dir>/<backend_id>` целиком.
+///
+/// Папка моделей (`models_dir`) не затрагивается — это соседняя, независимая папка.
+/// Возвращает освобождённый размер (если удалось посчитать) и удалённый путь.
+pub fn delete_engine(engine_dir: &str, backend_id: &str) -> Result<(Option<u64>, String), String> {
+    validate_backend_id(backend_id)?;
+    let target = engine_base(engine_dir).join(backend_id.trim());
+    if !target.exists() {
+        return Err(format!(
+            "движок «{backend_id}» не установлен: папки {} нет",
+            target.display()
+        ));
+    }
+    if !target.is_dir() {
+        return Err(format!("{} — это не папка движка", target.display()));
+    }
+    let size = dir_size(&target);
+    std::fs::remove_dir_all(&target).map_err(|e| {
+        format!(
+            "не удалось удалить папку движка {}: {e} (возможно, движок ещё запущен)",
+            target.display()
+        )
+    })?;
+    Ok((size, target.to_string_lossy().to_string()))
+}
+
+/// Скачивает файл через ЕДИНЫЙ движок проекта (`tauri-plugin-downloader`).
+///
+/// Раньше здесь была своя копия на голом reqwest: без stall-детекта, без
+/// таймаутов, без фолбэков. Зависший ответ CDN (0 байт бесконечно) навечно
+/// блокировал команду: прогресс молчал, логов не было, кнопки не отвечали.
+/// Теперь stall 60с → ошибка → следующий из 6 уровней (curl/PowerShell/…),
+/// каждый шаг пишется в лог хоста, прогресс идёт событием `downloader:progress`.
+///
+/// `kind` попадает в событие прогресса ("engine" | "model") — по нему панели
+/// отделяют движок от моделей.
+async fn download_to(url: &str, dest: &Path, kind: &str) -> Result<(), String> {
+    let label = dest
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| "Загрузка".to_string());
+    let opts = tauri_plugin_downloader::DownloadOptions {
+        label,
+        kind: kind.to_string(),
+        ..Default::default()
+    };
+    tauri_plugin_downloader::download(url, dest, opts, None).await
 }
 
 /// Скачивает prebuilt `crispasr.exe` (Windows, выбранный вариант) в
 /// `dest_dir/<backend_id>/`, распаковывает и сохраняет `version.txt` (тег релиза).
-pub async fn download_engine<R: Runtime>(
-    app: &AppHandle<R>,
+pub async fn download_engine(
     dest_dir: &str,
     backend_id: &str,
     url: &str,
@@ -394,13 +460,20 @@ pub async fn download_engine<R: Runtime>(
         .map_err(|e| format!("не удалось создать папку {}: {e}", target.display()))?;
 
     let zip_path = target.join("crispasr.zip");
-    download_to(app, url, &zip_path, "engine").await?;
+    download_to(url, &zip_path, "engine").await?;
 
     extract_zip(&zip_path, &target)?;
     let _ = std::fs::remove_file(&zip_path);
 
-    // Сохраняем тег релиза для последующей проверки обновлений.
-    let _ = std::fs::write(target.join("version.txt"), tag);
+    // Сохраняем тег релиза для последующей проверки обновлений. Ошибку НЕ
+    // глотаем: молчаливо потерянный version.txt превращает установленный движок
+    // в «версия неизвестна», и апдейты для него больше не проверяются.
+    std::fs::write(target.join("version.txt"), tag).map_err(|e| {
+        format!(
+            "движок распакован, но не удалось записать version.txt в {}: {e}",
+            target.display()
+        )
+    })?;
 
     let exe = find_exe(&target).ok_or_else(|| {
         format!("после распаковки не найден crispasr.exe в {}", target.display())
@@ -410,8 +483,7 @@ pub async fn download_engine<R: Runtime>(
 
 /// Скачивает все GGUF выбранного пресета в папку `dest_dir/<preset_id>/` и возвращает
 /// пути к модели / codec / voice (codec и voice — пустые строки, если не нужны).
-pub async fn download_model<R: Runtime>(
-    app: &AppHandle<R>,
+pub async fn download_model(
     preset_id: &str,
     dest_dir: &str,
 ) -> Result<serde_json::Value, String> {
@@ -423,25 +495,25 @@ pub async fn download_model<R: Runtime>(
         .map_err(|e| format!("не удалось создать папку {}: {e}", dest.display()))?;
 
     let model = dest.join(&preset.model_file);
-    download_to(app, &preset.model_url, &model, "model").await?;
+    download_to(&preset.model_url, &model, "model").await?;
 
     let mut codec_path = String::new();
     if let Some((cf, cu)) = &preset.codec {
         let p = dest.join(cf);
-        download_to(app, cu, &p, "model").await?;
+        download_to(cu, &p, "model").await?;
         codec_path = p.to_string_lossy().to_string();
     }
 
     let mut voice_path = String::new();
     if let Some((vf, vu)) = &preset.voice {
         let p = dest.join(vf);
-        download_to(app, vu, &p, "model").await?;
+        download_to(vu, &p, "model").await?;
         voice_path = p.to_string_lossy().to_string();
     }
 
     for (ef, eu) in &preset.extras {
         let p = dest.join(ef);
-        download_to(app, eu, &p, "model").await?;
+        download_to(eu, &p, "model").await?;
     }
 
     Ok(json!({
@@ -542,5 +614,143 @@ mod tests {
         let (id, label) = classify_backend("crispasr-windows-x86_64-vulkan.zip").unwrap();
         assert_eq!(id, "vulkan");
         assert_eq!(label, "Vulkan (GPU)");
+    }
+
+    #[test]
+    fn backend_id_rejects_path_escapes() {
+        // Защита `delete_engine` от выхода за пределы папки движка.
+        for bad in [
+            "",
+            "   ",
+            ".",
+            "..",
+            "../cuda",
+            "..\\cuda",
+            "a/b",
+            "a\\b",
+            "C:",
+            "C:\\x",
+        ] {
+            assert!(
+                validate_backend_id(bad).is_err(),
+                "ожидался отказ для {bad:?}"
+            );
+        }
+        for ok in ["cuda", "cuda13", "cpu", "cpu-legacy"] {
+            assert!(validate_backend_id(ok).is_ok(), "ожидался пропуск для {ok:?}");
+        }
+    }
+
+    #[test]
+    fn engine_base_falls_back_to_default_when_dir_empty() {
+        // Пустая строка и пробелы = «папка из настроек не задана» → дефолт.
+        assert_eq!(engine_base(""), default_engine_dir());
+        assert_eq!(engine_base("   "), default_engine_dir());
+        assert_eq!(
+            engine_base("D:\\nn\\crispasr"),
+            PathBuf::from("D:\\nn\\crispasr")
+        );
+    }
+
+    /// Временная папка теста с гарантированной уборкой (RAII).
+    ///
+    /// Класс, а не функция: `Drop` вызывается и при раскрутке стека, поэтому
+    /// упавший ассерт больше не оставляет мусор в репозитории (core §1.2).
+    /// Путь — воркспейс `target/test-scratch` (тот, что в `.gitignore` как
+    /// `/target`), а не `target` внутри крейта: `/target` в игноре заякорен на
+    /// корень монорепо, и вложенный `tauri-plugin-speech/target/` всплывал
+    /// в `git status` как untracked.
+    struct Scratch {
+        path: PathBuf,
+    }
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+            let workspace_target = manifest.parent().unwrap_or(manifest).join("target");
+            let path = workspace_target
+                .join("test-scratch")
+                .join(format!("{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("не удалось создать временную папку теста");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn installed_backends_scan_reads_disk_without_network() {
+        // Скан диска: папка с crispasr.exe (в т.ч. в подпапке) = установленный бэкенд,
+        // пустая папка и файл — нет.
+        let scratch = Scratch::new("eng-scan");
+        let root = scratch.path();
+
+        let nested = root.join("cuda13").join("crispasr-windows-x86_64-cuda13");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("crispasr.exe"), b"MZ").unwrap();
+        std::fs::write(root.join("cuda13").join("version.txt"), "v1.2.3").unwrap();
+
+        std::fs::create_dir_all(root.join("empty")).unwrap();
+        std::fs::write(root.join("not-a-dir.txt"), b"x").unwrap();
+
+        let found = list_installed_engine_backends(&root.to_string_lossy());
+
+        assert_eq!(found.len(), 1, "ожидался только cuda13: {found:?}");
+        assert_eq!(found[0].id, "cuda13");
+        assert_eq!(found[0].installed_version.as_deref(), Some("v1.2.3"));
+
+        // Несуществующая папка = «ничего не установлено», НЕ паника.
+        assert!(list_installed_engine_backends("Z:\\нет\\такой\\папки").is_empty());
+    }
+
+    #[test]
+    fn dir_size_sums_nested_files_or_reports_unreadable() {
+        let scratch = Scratch::new("eng-size");
+        let root = scratch.path();
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::write(root.join("a.bin"), vec![0u8; 100]).unwrap();
+        std::fs::write(root.join("nested").join("b.bin"), vec![0u8; 23]).unwrap();
+
+        assert_eq!(dir_size(root), Some(123));
+        assert_eq!(dir_size(Path::new("Z:\\нет\\такой\\папки")), None);
+    }
+
+    #[test]
+    fn delete_engine_removes_only_backend_folder() {
+        // Ключевая гарантия: models_dir (соседняя папка) не затрагивается.
+        let scratch = Scratch::new("eng-del");
+        let root = scratch.path();
+
+        let backend_dir = root.join("crispasr").join("cuda13");
+        std::fs::create_dir_all(&backend_dir).unwrap();
+        std::fs::write(backend_dir.join("crispasr.exe"), b"MZ").unwrap();
+        std::fs::write(backend_dir.join("version.txt"), "v1.2.3").unwrap();
+
+        let models_dir = root.join("tts_models");
+        std::fs::create_dir_all(models_dir.join("cosyvoice3")).unwrap();
+        std::fs::write(models_dir.join("cosyvoice3").join("model.gguf"), b"GGUF").unwrap();
+
+        let base = root.join("crispasr").to_string_lossy().to_string();
+        let (freed, path) = delete_engine(&base, "cuda13").unwrap();
+        assert_eq!(freed, Some(2 + 6), "размер = exe (2) + version.txt (6)");
+        assert!(path.ends_with("cuda13"));
+
+        assert!(!backend_dir.exists(), "папка движка должна быть удалена");
+        assert!(
+            models_dir.join("cosyvoice3").join("model.gguf").exists(),
+            "модели не должны пострадать при удалении движка"
+        );
+
+        // Повторное удаление — честная ошибка, а не «успех».
+        assert!(delete_engine(&base, "cuda13").is_err());
     }
 }

@@ -1,0 +1,26 @@
+{
+  "name": "@my-tauri-plugins/plugin-system1",
+  "version": "0.1.0",
+  "description": "Reusable System-1 fast-decision runtime (ONNX session lifecycle, model provisioning, typed-question inference) for Tauri apps — TS API + Web Component.",
+  "type": "module",
+  "main": "dist-js/index.js",
+  "types": "dist-js/index.d.ts",
+  "files": [
+    "dist-js",
+    "guest-js",
+    "api-iife.js"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:watch": "tsc -p tsconfig.json --watch",
+    "build:global": "node scripts/build-global.cjs"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^5.4.0"
+  },
+  "license": "MIT"
+}

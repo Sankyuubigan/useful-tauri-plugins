@@ -1,14 +1,49 @@
 //! Утилиты чтения GGUF метаданных и валидации GGUF-файлов
 
+use std::collections::HashMap;
 use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::sync::{Arc, Mutex, OnceLock};
 
-fn read_gguf_header(path: &str) -> Option<Vec<u8>> {
+/// Сколько байт заголовка GGUF нужно метаданным (tokenizer, chat template и т.п.).
+const GGUF_HEADER_BYTES: usize = 5 * 1024 * 1024;
+
+/// Кэш заголовков GGUF: путь → (отпечаток файла, байты).
+///
+/// Метаданные GGUF (в т.ч. `tokenizer.chat_template`) неизменны для данного файла,
+/// но читались заново на КАЖДЫЙ запрос: `PromptFormat::detect_from_gguf` вызывается
+/// и при сборке промпта, и при генерации, плюс `find_gguf_value` — по разу на
+/// ключ. Это 5 МиБ чтения + копирования на вызов (десятки MiB на прогон перевода
+/// из 238 чанков) ради данных, которые не меняются.
+///
+/// Ключ кэша — не только путь, но и отпечаток (mtime + длина): если файл модели
+/// заменён на месте, кэш инвалидируется и метаданные перечитываются.
+static HEADER_CACHE: OnceLock<Mutex<HashMap<String, ((std::time::SystemTime, u64), Arc<Vec<u8>>)>>> =
+    OnceLock::new();
+
+fn read_gguf_header(path: &str) -> Option<Arc<Vec<u8>>> {
+    let meta = std::fs::metadata(path).ok()?;
+    let stamp = (meta.modified().ok()?, meta.len());
+
+    let cache = HEADER_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Ok(map) = cache.lock() {
+        if let Some((cached_stamp, data)) = map.get(path) {
+            if *cached_stamp == stamp {
+                return Some(Arc::clone(data));
+            }
+        }
+    }
+
     let mut file = std::fs::File::open(path).ok()?;
-    let mut buffer = vec![0; 5 * 1024 * 1024];
+    let mut buffer = vec![0; GGUF_HEADER_BYTES];
     let bytes_read = file.read(&mut buffer).ok()?;
     let data = &buffer[..bytes_read];
     if data.len() < 24 || &data[0..4] != b"GGUF" { return None; }
-    Some(data.to_vec())
+    let data = Arc::new(data.to_vec());
+
+    if let Ok(mut map) = cache.lock() {
+        map.insert(path.to_string(), (stamp, Arc::clone(&data)));
+    }
+    Some(data)
 }
 
 fn skip_gguf_value(data: &[u8], mut offset: usize, val_type: u32) -> Option<usize> {

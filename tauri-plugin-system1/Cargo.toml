@@ -1,0 +1,35 @@
+[package]
+name = "tauri-plugin-system1"
+version = "0.1.0"
+edition = "2021"
+links = "tauri-plugin-system1"
+description = "Reusable System-1 fast-decision runtime: ONNX session lifecycle, model provisioning, typed-question inference with permutation averaging. Model-agnostic (Laya first). Knows nothing about the host domain."
+license = "MIT"
+
+[dependencies]
+tauri = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "rustls-tls-native-roots", "stream"], default-features = false }
+sha2 = { workspace = true }
+zip = { workspace = true }
+
+# ONNX Runtime грузится динамически (load-dynamic): в бинарь хоста ничего не
+# линкуется, DLL открывается при первом обращении к `ort`. Без этого на машине
+# без DirectML.dll процесс падал с STATUS_DLL_NOT_FOUND ДО main() —
+# см. global_ai_docs AGENTS.md §0.3 и историю хоста (laya_runtime.rs).
+ort = { workspace = true }
+tokenizers = { workspace = true }
+ndarray = { workspace = true }
+
+# Единый движок скачивания хоста (SSOT): multi-chunk + прогресс `downloader:progress`.
+tauri-plugin-downloader = { path = "../tauri-plugin-downloader" }
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[lib]
+name = "tauri_plugin_system1"
+path = "src/lib.rs"

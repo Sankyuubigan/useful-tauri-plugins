@@ -30,6 +30,11 @@ function parseArgs(argv) {
             args.project = tokens[++i];
         } else if (t === '--prep-only') {
             args.flags.prepOnly = true;
+        } else if (t === '--release') {
+            // Флаг cargo, а не флаг тулкита: `test_release.bat` relies on it,
+            // потому что debug-харнесс на некоторых машинах не стартует
+            // (0xc0000139 STATUS_ENTRYPOINT_NOT_FOUND, desktop §6.2).
+            args.extras.push(t);
         } else if (t.startsWith('--')) {
             args.flags[t.slice(2)] = true;
         } else if (!args.command && COMMANDS.includes(t)) {

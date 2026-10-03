@@ -1,0 +1,36 @@
+"$schema" = "../gen/schemas/acl.json"
+
+[[permission]]
+identifier = "allow-get-status"
+description = "Статус System-1: пофайловая проверка комплекта, рантайм ONNX, устройство исполнения"
+commands.allow = ["get_status"]
+
+[[permission]]
+identifier = "allow-download-all"
+description = "Скачать весь комплект System-1: ONNX Runtime, затем модель с токенизатором"
+commands.allow = ["download_all"]
+
+[[permission]]
+identifier = "allow-download-model"
+description = "Скачать модель System-1 в KingOrchData/system1/models"
+commands.allow = ["download_model"]
+
+[[permission]]
+identifier = "allow-remove-model"
+description = "Удалить скачанную модель System-1"
+commands.allow = ["remove_model"]
+
+[[permission]]
+identifier = "allow-decide"
+description = "Выполнить типизированные вопросы и вернуть вероятности"
+commands.allow = ["decide"]
+
+[default]
+description = "Default permissions for the system1 plugin."
+permissions = [
+  "allow-get-status",
+  "allow-download-all",
+  "allow-download-model",
+  "allow-remove-model",
+  "allow-decide",
+]

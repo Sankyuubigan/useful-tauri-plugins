@@ -9,6 +9,7 @@ members = [
     "tauri-plugin-downloader",
     "tauri-plugin-image-engine",
     "tauri-plugin-ytdlp",
+    "tauri-plugin-system1",
     "ko-json-store",
 ]
 
@@ -62,3 +63,10 @@ rusty_mp3 = "0.8"
 
 # Атомарные записи JSON + блокировки (ko-json-store)
 fs2 = "0.4"
+
+# System-1 рантайм (tauri-plugin-system1): ONNX Runtime грузится динамически,
+# поэтому статической линковки нет и CUDA/DirectML не тянутся в бинарь хоста.
+# Версия DLL — ONNX Runtime >= 1.27 (ORT_API_VERSION у ort 2.0.0-rc.13 = 27).
+ort = { version = "2.0.0-rc.9", features = ["load-dynamic", "ndarray"] }
+tokenizers = { version = "0.21", default-features = false, features = ["onig"] }
+ndarray = "0.16"

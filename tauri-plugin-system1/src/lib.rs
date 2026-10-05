@@ -172,7 +172,12 @@ pub fn set_data_dir(path: std::path::PathBuf) {
 /// Подключить плагин: `.plugin(tauri_plugin_system1::init())`.
 pub fn init<R: tauri::Runtime>() -> TauriPlugin<R, Config> {
     Builder::<R, Config>::new("system1")
-        .setup(|app, _config| {
+        .setup(|app, api| {
+            // Флаг автоскачивания — единственный рычаг доставки. Пока он был
+            // мёртвым полем (конфиг читался как `_config` и выбрасывался),
+            // первое обращение к модели падало с «модель не скачана», хотя
+            // комплект из 646 МБ лежал рядом в данных пользователя.
+            state::set_auto_download(api.config().auto_download);
             // Именно `shared()`, а не `ModelSlot::new()`: команды и workflow
             // должны видеть ОДНУ модель. Два слота означали бы, что панель
             // показывает «не загружена» при загруженной графе модели.

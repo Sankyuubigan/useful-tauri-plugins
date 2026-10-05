@@ -27,10 +27,35 @@
 //! Публичная функция вместо `static mut` — сознательно: единственный
 //! глобал, с явным именем и объяснением.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::catalog::{self, ModelEntry};
 use crate::inference::System1Model;
+
+/// Разрешено ли автоматически доставлять недостающие артефакты.
+///
+/// По умолчанию `false`: молча качать 646 МБ без согласия пользователя — тоже
+/// невежливо. Флаг ставится один раз в `init()` из `tauri.conf.json`.
+static AUTO_DOWNLOAD: AtomicBool = AtomicBool::new(false);
+
+/// Разрешить или запретить автоскачивание артефактов System-1.
+///
+/// Вызывается из `init()` хоста. После включения первое обращение к модели
+/// само доставит недостающее (ONNX Runtime, затем файлы модели), вместо того
+/// чтобы падать с «модель не скачана».
+pub fn set_auto_download(enabled: bool) {
+    AUTO_DOWNLOAD.store(enabled, Ordering::SeqCst);
+    log::info!(
+        "[system1] автоскачивание артефактов {}",
+        if enabled { "включено" } else { "выключено" }
+    );
+}
+
+/// Текущее значение флага автоскачивания.
+pub fn auto_download() -> bool {
+    AUTO_DOWNLOAD.load(Ordering::SeqCst)
+}
 
 /// Загруженная модель. `None` = «ещё не грузили», это НЕ ошибка.
 #[derive(Clone, Default)]
@@ -65,6 +90,16 @@ impl ModelSlot {
                 model_id
             );
             *guard = None;
+        }
+
+        // Доставка артефактов — ДО `System1Model::load`, и это не порядок
+        // вежливости, а требование корректности: `runtime::init_environment`
+        // кэширует ошибку в `OnceLock` навсегда («первая попытка провалилась —
+        // повторять нельзя»). Поэтому вариант «сначала попытаться загрузить,
+        // потом скачать, потом повторить» физически нерабочий: вторая попытка
+        // получила бы тот же закешированный Err, даже если DLL уже на диске.
+        if let Err(error) = crate::provisioning::ensure_artifacts(model_id) {
+            return Err(error);
         }
 
         let loaded = Arc::new(System1Model::load(model_id)?);
@@ -145,5 +180,63 @@ mod tests {
         // Проверка идентичности: release() на копии виден через shared().
         managed.release();
         assert!(!shared().is_loaded());
+    }
+
+    /// Поведение автоскачивания. Тесты меняют глобальный флаг, поэтому
+    /// выполняются по одному — иначе они влияли бы друг на друга.
+    mod auto_download {
+        use super::*;
+
+        static SERIAL: Mutex<()> = Mutex::new(());
+
+        /// Выполнить проверку с заданным флагом и вернуть его как было.
+        fn with_flag(value: bool, check: impl FnOnce()) {
+            let guard = SERIAL.lock().unwrap_or_else(|error| error.into_inner());
+            let previous = auto_download();
+            set_auto_download(value);
+            check();
+            set_auto_download(previous);
+            drop(guard);
+        }
+
+        #[test]
+        fn flag_round_trips() {
+            with_flag(true, || {
+                assert!(auto_download(), "флаг не включился");
+            });
+            with_flag(false, || {
+                assert!(!auto_download(), "флаг не выключился");
+            });
+        }
+
+        /// Выключенный флаг = нулевая работа: даже невалидный идентификатор
+        /// проходит без ошибки. Это и есть «поведение как раньше»: путь доставки
+        /// не трогается, ошибку о нескачанной модели даёт сама загрузка.
+        #[test]
+        fn disabled_flag_does_not_enter_delivery_path() {
+            with_flag(false, || {
+                let outcome = crate::provisioning::ensure_artifacts("нет-такой");
+                assert!(
+                    outcome.is_ok(),
+                    "при выключенном флаге доставка не должна вызываться: {:?}",
+                    outcome.err()
+                );
+            });
+        }
+
+        /// Включённый флаг действительно входит в путь доставки: неизвестная
+        /// модель отвергается на разрешении каталога, до всякой сети.
+        #[test]
+        fn enabled_flag_enters_delivery_path() {
+            with_flag(true, || {
+                let error = crate::provisioning::ensure_artifacts("нет-такой")
+                    .expect_err("включённый флаг обязан проверять модель");
+                assert!(
+                    error.contains("неизвестная модель"),
+                    "неожиданная ошибка: {}",
+                    error
+                );
+            });
+        }
     }
 }

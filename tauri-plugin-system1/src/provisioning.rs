@@ -9,10 +9,13 @@
 //! событие `downloader:progress`. Свой загрузчик здесь означал бы второй
 //! механизм доставки файлов в том же приложении.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use tauri_plugin_downloader::{download as download_file, DownloadOptions};
 
 use crate::catalog::{self, ModelEntry};
 use crate::paths;
+use crate::state;
 
 /// Ожидаемый размер `model.onnx`.
 ///
@@ -99,4 +102,94 @@ pub async fn download(entry: &ModelEntry) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Загрузка уже идёт: повторный вход обязан отказать, а не начать второй
+/// поток на 646 МБ. `compare_exchange` вместо `Mutex`, потому что здесь нечего
+/// блокировать — ждать не нужно, нужен только отказ.
+static DOWNLOADING: AtomicBool = AtomicBool::new(false);
+
+/// Доставить недостающие артефакты System-1, если автоскачивание разрешено.
+///
+/// ## Почему это здесь, а не в хосте
+///
+/// Граф workflow исполняется в **синхронном** потоке (`execute_node`,
+/// `run_workflow` — sync), а доставка асинхронная. Если бы плагин отдавал
+/// только `async`-функции, пришлось бы сделать `async` весь конвейер графа
+/// ради одной загрузки. Поэтому здесь ровно одна синхронная точка входа для
+/// движка, а внутри — отдельный поток со своим tokio-runtime: блокировка
+/// допустима (граф последователен, пока эта нода ждёт, делать всё равно
+/// нечего), и при этом ничего не блокирует пул Tokio хоста.
+pub fn ensure_artifacts(model_id: &str) -> Result<(), String> {
+    if !state::auto_download() {
+        return Ok(());
+    }
+
+    let entry = state::resolve_model(model_id)?;
+    let runtime_missing = !crate::runtime::state().present;
+    let model = catalog::model_state(&entry);
+
+    if !runtime_missing && model.present {
+        return Ok(());
+    }
+
+    let mut wanted = Vec::new();
+    if runtime_missing {
+        wanted.push("ONNX Runtime".to_string());
+    }
+    wanted.extend(model.missing.iter().cloned());
+    log::info!(
+        "[system1] автоскачивание: не хватает [{}], начинаю доставку",
+        wanted.join(", ")
+    );
+
+    download_missing(&entry, runtime_missing, !model.present)
+}
+
+/// Скачать недостающее в отдельном потоке с собственным tokio-runtime.
+fn download_missing(
+    entry: &ModelEntry,
+    need_runtime: bool,
+    need_model: bool,
+) -> Result<(), String> {
+    if DOWNLOADING
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err(
+            "System-1 уже скачивается в другой сессии — дождитесь окончания загрузки"
+                .to_string(),
+        );
+    }
+
+    let entry = entry.clone();
+    let outcome = std::thread::Builder::new()
+        .name("system1-download".to_string())
+        .spawn(move || -> Result<(), String> {
+            let net = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| format!("не создать сетевой поток: {}", error))?;
+
+            net.block_on(async move {
+                if need_runtime {
+                    crate::runtime::ensure_downloaded().await?;
+                }
+                if need_model {
+                    download(&entry).await?;
+                }
+                Ok(())
+            })
+        })
+        .map_err(|error| format!("не запустить поток загрузки: {}", error))?
+        .join();
+
+    // Флаг снимается на любом исходе, включая панику в потоке: иначе одна
+    // неудачная загрузка навсегда блокировала бы автодоставку.
+    DOWNLOADING.store(false, Ordering::SeqCst);
+
+    match outcome {
+        Ok(result) => result,
+        Err(_) => Err("поток загрузки System-1 завершился аварийно".to_string()),
+    }
 }

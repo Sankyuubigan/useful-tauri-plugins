@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-get-model-context-size"
+description = "Enables the get_model_context_size command without any pre-configured scope."
+commands.allow = ["get_model_context_size"]
+
+[[permission]]
+identifier = "deny-get-model-context-size"
+description = "Denies the get_model_context_size command without any pre-configured scope."
+commands.deny = ["get_model_context_size"]

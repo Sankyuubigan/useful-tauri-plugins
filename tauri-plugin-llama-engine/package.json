@@ -15,7 +15,7 @@
     "build:watch": "tsc -p tsconfig.json --watch",
     "build:global": "node scripts/build-global.cjs"
   },
-  "dependencies": {
+"dependencies": {
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2"
   },

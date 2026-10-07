@@ -867,6 +867,70 @@
     customElements.define("llama-models-panel", LlamaModelsPanel);
   }
 
+  // guest-js/tokenizer.ts
+  var CHARS_PER_TOKEN = 3;
+  var CDN_TIMEOUT_MS = 5e3;
+  var TRANSFORMERS_CDN = "https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.4.0/+esm";
+  var tokenizerCache = /* @__PURE__ */ new Map();
+  var transformersPromise = null;
+  function withTimeout(promise, ms, label) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`${label}: \u0442\u0430\u0439\u043C\u0430\u0443\u0442 ${ms}\u043C\u0441`)), ms);
+      promise.then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (err) => {
+          clearTimeout(timer);
+          reject(err);
+        }
+      );
+    });
+  }
+  async function loadTransformers() {
+    if (!transformersPromise) {
+      transformersPromise = withTimeout(
+        import(
+          /* @vite-ignore */
+          TRANSFORMERS_CDN
+        ),
+        CDN_TIMEOUT_MS,
+        "\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430 @huggingface/transformers"
+      );
+    }
+    return transformersPromise;
+  }
+  async function getTokenizer(tokenizerId) {
+    if (!tokenizerCache.has(tokenizerId)) {
+      const promise = (async () => {
+        const mod = await loadTransformers();
+        const AutoTokenizer = mod.AutoTokenizer;
+        return withTimeout(
+          AutoTokenizer.from_pretrained(tokenizerId),
+          CDN_TIMEOUT_MS,
+          `\u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u0442\u043E\u043A\u0435\u043D\u0438\u0437\u0430\u0442\u043E\u0440\u0430 ${tokenizerId}`
+        );
+      })();
+      tokenizerCache.set(tokenizerId, promise);
+    }
+    return tokenizerCache.get(tokenizerId);
+  }
+  async function countTokens(text, tokenizerId) {
+    if (!text) {
+      return { tokens: 0, exact: true };
+    }
+    try {
+      const tokenizer = await getTokenizer(tokenizerId);
+      const tokens = await tokenizer.encode(text, { add_special_tokens: false });
+      return { tokens: tokens.length, exact: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message.split("\n")[0] : String(err);
+      console.warn(`[llama-engine] countTokens: \u0442\u043E\u043A\u0435\u043D\u0438\u0437\u0430\u0442\u043E\u0440 ${tokenizerId} \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D, \u0444\u043E\u043B\u043B\u0431\u044D\u043A \u043F\u043E \u0434\u043B\u0438\u043D\u0435: ${message}`);
+      return { tokens: Math.ceil(text.length / CHARS_PER_TOKEN), exact: false };
+    }
+  }
+
   // guest-js/index.ts
   var MODELS_CHANGED_EVENT = "llama:models-changed";
   function notifyModelsChanged() {
@@ -932,6 +996,9 @@
   function getAllCapabilities() {
     return invoke("plugin:llama-engine|get_all_capabilities");
   }
+  function getModelContextSize(modelPath) {
+    return invoke("plugin:llama-engine|get_model_context_size", { modelPath });
+  }
   function estimatePromptMemory(modelPath, contextSize, kvQuantKeys, kvQuantValues, promptTokens, maxGen) {
     return invoke("plugin:llama-engine|estimate_prompt_memory", {
       modelPath,
@@ -973,6 +1040,7 @@
           addModel,
           autoDownloadDefaultModel,
           checkEngineUpdate,
+          countTokens,
           deleteModelFile,
           downloadModel,
           ensureMmproj,
@@ -983,6 +1051,7 @@
           getEngineStatus,
           getMmprojPath,
           getModelCapabilities,
+          getModelContextSize,
           getModelParams,
           getModelsCatalog,
           installEngineUpdate,

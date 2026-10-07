@@ -19,7 +19,17 @@ use crate::engine::{self, LlmMessage};
 use super::commands;
 
 /// Запрос на генерацию текста.
+///
+/// `rename_all = "camelCase"` обязателен: JS-обёртка `generateText` шлёт
+/// `req: { modelPath, maxTokens, temperature }`, а Tauri конвертирует
+/// camelCase→snake_case только для ОТДЕЛЬНЫХ аргументов команды, не внутри
+/// вложенной структуры. Без этого ключи молча терялись, `model_path` был
+/// `None`, и плагин ругался «Модель не выбрана» при реально выбранной модели.
+///
+/// `deny_unknown_fields` — страховка: рассогласование имён даёт явную ошибку
+/// вместо тихой подстановки `#[serde(default)]`.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GenerateTextRequest {
     /// Путь к GGUF-модели. `None`/пусто — взять `last_model` из конфига.
     #[serde(default)]
@@ -51,11 +61,16 @@ fn generate_text_blocking(app: &AppHandle, req: GenerateTextRequest) -> Result<S
         params.temperature = t;
     }
     let max_tokens = req.max_tokens.unwrap_or(256) as usize;
-    let ctx_limit = estimate_context(&req.messages, max_tokens);
+    let model_max_ctx = engine::llm_gguf::extract_context_length(&model_path).ok_or_else(|| {
+        format!(
+            "Не удалось прочитать context_length из GGUF-модели «{model_path}». Проверьте файл."
+        )
+    })?;
+    let ctx_limit = estimate_context(&req.messages, max_tokens, model_max_ctx);
 
     let log_cb = |msg: String| log::info!("[generate_text] {msg}");
     log_cb(format!(
-        "модель: {model_path}, контекст: {ctx_limit}, max_tokens: {max_tokens}"
+        "модель: {model_path}, контекст: {ctx_limit}, max_tokens: {max_tokens}, model_max_ctx: {model_max_ctx}"
     ));
 
     let engine_dir = commands::get_engine_dir(app);
@@ -109,11 +124,15 @@ fn resolve_model_path(app: &AppHandle, explicit: Option<&str>) -> Result<String,
 }
 
 /// Эвристика контекста worst-case (rules.md §6.7): ~3 символа/токен на вход,
-/// плюс лимит генерации, плюс резерв на служебные токены. Кламп 2048..32768.
-fn estimate_context(messages: &[LlmMessage], max_tokens: usize) -> u32 {
+/// плюс лимит генерации, плюс резерв на служебные токены.
+///
+/// Потолок — `model_max_ctx` из GGUF-метаданных модели; если ключ не читается,
+/// `generate_text_blocking` возвращает ошибку, а не подставляет число.
+/// Нижняя граница 2048 — чтобы llama-server согласился стартовать.
+fn estimate_context(messages: &[LlmMessage], max_tokens: usize, model_max_ctx: u32) -> u32 {
     const CHARS_PER_TOKEN: usize = 3;
     const RESERVE: usize = 512;
     let input_tokens: usize = messages.iter().map(|m| m.content.len()).sum::<usize>() / CHARS_PER_TOKEN;
     let needed = input_tokens + max_tokens + RESERVE;
-    needed.clamp(2048, 32768) as u32
+    (needed as u32).min(model_max_ctx).max(2048)
 }

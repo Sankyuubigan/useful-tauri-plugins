@@ -1,17 +1,15 @@
-//! Конфигурация движка llama.cpp (движковые ключи `app_config.json` хоста).
+//! Конфигурация движка llama.cpp (движковые ключи `app_config.json` плагина).
 //!
-//! Плагин и хост делят ОДИН файл `app_config.json`. Чтобы не затирать хостовые
-//! ключи (theme, allow_error_reports, translator_*, …), плагин пишет ТОЛЬКО
-//! движковые ключи через field-preserving merge (`EngineConfig`), а читает
-//! полный JSON с default-значениями. Хост держит свой полный `AppConfig`.
+//! Плагин хранит свой конфиг в СОБСТВЕННОМ каталоге `%APPDATA%\llama-engine\`,
+//! не привязанном к хосту. Все проекты, использующие плагин, читают и пишут
+//! один `app_config.json`. Хостовые ключи (theme, projects, …) живут в
+//! отдельном конфиге хоста и не пересекаются с движковыми ключами плагина.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use tauri::AppHandle;
-use tauri::Manager;
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ModelParams {
@@ -118,30 +116,24 @@ pub struct CatalogEntry {
 
 // ────────────────────────────── Путь к конфигу ──────────────────────────────
 
-/// Имя папки данных приложения (APPDATA/<name>).
+/// Имя папки данных плагина (APPDATA/llama-engine).
 ///
-/// Используется только для чтения конфига до создания Tauri-приложения, когда
-/// `AppHandle` ещё недоступен (движок `LlamaEngine` читает движковые ключи
-/// конфига в рантайме без хендла). Хост обязан вызвать
-/// [`set_app_data_dir_name`] в `main()` (или задать `plugins.llama-engine.data_dir_name`
-/// в tauri.conf.json); по умолчанию — legacy-имя King Orch.
-static APP_DATA_DIR_NAME: OnceLock<String> = OnceLock::new();
-
-/// Задать имя папки данных приложения (обычно = `identifier` из tauri.conf.json
-/// хоста). Вызывать в начале `main()` хоста:
-/// `tauri_plugin_llama_engine::engine::config::set_app_data_dir_name("com.kingorch.app");`
-pub fn set_app_data_dir_name(name: &str) {
-    let _ = APP_DATA_DIR_NAME.set(name.to_string());
+/// Плагин хранит свой конфиг в СОБСТВЕННОМ каталоге, не привязанном к хосту.
+/// Все проекты, использующие плагин, читают и пишут один `app_config.json`.
+///
+/// `set_app_data_dir_name` оставлена как no-op для обратной совместимости:
+/// существующие хосты (King Orch) вызывают её в `main()`, компиляция не ломается,
+/// но значение игнорируется — плагин всегда использует `"llama-engine"`.
+pub fn set_app_data_dir_name(_name: &str) {
+    // Deprecated no-op: плагин владеет своим каталогом.
+    // Существующие хосты продолжают компилироваться, но значение игнорируется.
 }
 
 fn app_data_dir_name() -> &'static str {
-    APP_DATA_DIR_NAME
-        .get()
-        .map(|s| s.as_str())
-        .unwrap_or("com.kingorch.app") // legacy-значение King Orch (обратная совместимость)
+    "llama-engine"
 }
 
-/// Папка данных приложения без AppHandle (APPDATA/<name>).
+/// Папка данных плагина без AppHandle (APPDATA/llama-engine).
 pub fn app_data_dir_early() -> PathBuf {
     let base = std::env::var_os("APPDATA")
         .map(PathBuf::from)
@@ -151,18 +143,60 @@ pub fn app_data_dir_early() -> PathBuf {
     base.join(app_data_dir_name())
 }
 
-/// Путь к `app_config.json` (runtime, через AppHandle).
-pub fn get_config_path(app: &AppHandle) -> PathBuf {
-    let base = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if !base.exists() {
-        let _ = fs::create_dir_all(&base);
+/// Каталоги-доноры для авто-миграции: старые per-app хранилища движка.
+const LEGACY_HOST_DIRS: &[&str] = &["com.kingorch.app", "com.reposcontrol.app"];
+
+/// Разовый перенос движковых ключей из старого каталога хоста, если общего
+/// конфига ещё нет. Не трогает хостовые ключи (projects, theme, …): берём
+/// только те поля, что описаны в `EngineConfig`, и пишем в общий файл.
+fn ensure_migrated(dest: &Path) {
+    if dest.exists() {
+        return;
     }
-    base.join("app_config.json")
+    if let Some(dir) = dest.parent() {
+        if let Err(err) = fs::create_dir_all(dir) {
+            log::warn!("[config] не удалось создать {}: {err}", dir.display());
+            return;
+        }
+    }
+    let Some(appdata) = dest.parent().and_then(Path::parent) else {
+        return;
+    };
+    for host in LEGACY_HOST_DIRS {
+        let src = appdata.join(host).join("app_config.json");
+        let Ok(data) = fs::read_to_string(&src) else {
+            continue;
+        };
+        let Ok(legacy) = serde_json::from_str::<EngineConfig>(&data) else {
+            log::warn!("[config] {} не парсится как EngineConfig, пропускаю", src.display());
+            continue;
+        };
+        match save_engine_config_file(dest, &legacy) {
+            Ok(()) => {
+                log::info!("[config] миграция движка: {} → {}", src.display(), dest.display());
+            }
+            Err(err) => log::warn!("[config] миграция не удалась: {err}"),
+        }
+        return;
+    }
+    log::info!("[config] общий конфиг создан пустым: {}", dest.display());
+}
+
+/// Путь к `app_config.json` плагина.
+///
+/// Использует тот же каталог, что и `load_config_early` — `app_data_dir_early()`.
+/// Раньше здесь был `app.path().app_data_dir()` (каталог хоста), из-за чего
+/// `load_config` и `load_config_early` читали РАЗНЫЕ файлы.
+pub fn get_config_path(_app: &AppHandle) -> PathBuf {
+    let path = app_data_dir_early().join("app_config.json");
+    ensure_migrated(&path);
+    path
 }
 
 /// Читает конфиг ДО создания Tauri-приложения (движок, рантайм без AppHandle).
 pub fn load_config_early() -> EngineConfig {
     let path = app_data_dir_early().join("app_config.json");
+    ensure_migrated(&path);
     if let Ok(data) = fs::read_to_string(path) {
         serde_json::from_str(&data).unwrap_or_default()
     } else {

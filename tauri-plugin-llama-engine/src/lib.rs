@@ -122,6 +122,7 @@ pub fn init() -> TauriPlugin<Wry, Config> {
             commands::ensure_mmproj,
             commands::get_model_capabilities,
             commands::get_all_capabilities,
+            commands::get_model_context_size,
             commands::estimate_prompt_memory,
             commands::get_model_params,
             commands::set_model_params,

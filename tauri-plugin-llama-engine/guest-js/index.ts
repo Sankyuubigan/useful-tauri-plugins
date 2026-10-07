@@ -213,6 +213,11 @@ export function getAllCapabilities(): Promise<Record<string, ModelCapabilities>>
   return invoke<Record<string, ModelCapabilities>>('plugin:llama-engine|get_all_capabilities')
 }
 
+/** Максимальный контекст модели (context_length из GGUF). 0 — не удалось прочитать. */
+export function getModelContextSize(modelPath: string): Promise<number> {
+  return invoke<number>('plugin:llama-engine|get_model_context_size', { modelPath })
+}
+
 export interface PromptMemoryInfo {
   need_mb: number
   vram_used_mb: number
@@ -280,3 +285,5 @@ export {
   initUpdateWatcher,
 } from './updates'
 export type { PluginUpdateState } from './updates'
+export { countTokens } from './tokenizer'
+export type { TokenCountResult } from './tokenizer'

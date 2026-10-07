@@ -207,6 +207,16 @@ pub fn extract_u32_with_arch(path: &str, arch: Option<&str>, suffix: &str) -> Op
     extract_u32_from_gguf(path, &format!("llama.{}", suffix))
 }
 
+/// Извлекает `context_length` (максимальный контекст) из GGUF-файла.
+///
+/// Ключ: `<arch>.context_length` (современная спецификация) или
+/// `llama.context_length` (legacy). Возвращает `None`, если файл не читается
+/// или ключ отсутствует — вызывающий код решает, чем заменить отсутствие.
+pub fn extract_context_length(path: &str) -> Option<u32> {
+    let arch = extract_gguf_arch(path);
+    extract_u32_with_arch(path, arch.as_deref(), "context_length")
+}
+
 // ============================================================
 // Валидация целостности GGUF-файла
 //
@@ -403,10 +413,16 @@ fn read_header(p: &mut GgufReader) -> Result<(u64, u64), String> {
 }
 
 /// Читает метаданные (KV-пары), извлекая только нужное для проверок.
-fn read_metadata(p: &mut GgufReader, kv_count: u64) -> Result<(Option<String>, u64, Option<u32>), String> {
+/// Возвращает (architecture, alignment, block_count, context_length).
+fn read_metadata(
+    p: &mut GgufReader,
+    kv_count: u64,
+) -> Result<(Option<String>, u64, Option<u32>, Option<u32>), String> {
     let mut architecture: Option<String> = None;
     let mut alignment: u64 = 32;
     let mut block_count: Option<u32> = None;
+    let mut context_length: Option<u32> = None;
+    let mut pending: Vec<(String, u32)> = Vec::new();
     for _ in 0..kv_count {
         let key = p.read_string()?;
         let val_type = p.read_u32()?;
@@ -416,17 +432,34 @@ fn read_metadata(p: &mut GgufReader, kv_count: u64) -> Result<(Option<String>, u
                 ("general.architecture", KvVal::Str(s)) => architecture = Some(s),
                 ("general.alignment", KvVal::U32(a)) if a > 0 => alignment = a as u64,
                 (k, KvVal::U32(v)) => {
-                    if let Some(arch) = &architecture {
-                        if k == format!("{}.block_count", arch).as_str() {
-                            block_count = Some(v);
-                        }
+                    let arch_dependent = k.ends_with(".block_count") || k.ends_with(".context_length");
+                    match &architecture {
+                        Some(arch) => match k {
+                            _ if k == format!("{arch}.block_count") => block_count = Some(v),
+                            _ if k == format!("{arch}.context_length") => context_length = Some(v),
+                            _ if arch_dependent => pending.push((k.to_string(), v)),
+                            _ => {}
+                        },
+                        None if arch_dependent => pending.push((k.to_string(), v)),
+                        None => {}
                     }
                 }
                 _ => {}
             }
         }
     }
-    Ok((architecture, alignment, block_count))
+    // general.architecture по спецификации идёт первым, но полагаться на порядок
+    // нельзя: если ключ встретился раньше архитектуры — дочитываем из отложенных.
+    if let Some(arch) = architecture.as_deref() {
+        for (k, v) in pending {
+            if block_count.is_none() && k == format!("{arch}.block_count") {
+                block_count = Some(v);
+            } else if context_length.is_none() && k == format!("{arch}.context_length") {
+                context_length = Some(v);
+            }
+        }
+    }
+    Ok((architecture, alignment, block_count, context_length))
 }
 
 /// Считывает и проверяет tensor-info секцию.
@@ -541,7 +574,7 @@ pub fn validate_gguf(path: &str) -> Result<(), String> {
     let mut p = GgufReader::new(&mut buf, file_size);
 
     let (tensor_count, kv_count) = read_header(&mut p)?;
-    let (_, alignment, block_count) = read_metadata(&mut p, kv_count)?;
+    let (_, alignment, block_count, _context_length) = read_metadata(&mut p, kv_count)?;
     let section = read_tensor_infos(&mut p, tensor_count)?;
 
     check_block_count(block_count, &section.blk_indices)?;

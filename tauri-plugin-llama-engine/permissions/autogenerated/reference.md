@@ -24,6 +24,7 @@ Default permissions for the llama-engine plugin.
 - `allow-ensure-mmproj`
 - `allow-get-model-capabilities`
 - `allow-get-all-capabilities`
+- `allow-get-model-context-size`
 - `allow-estimate-prompt-memory`
 - `allow-get-model-params`
 - `allow-set-model-params`
@@ -400,6 +401,32 @@ Enables the get_model_capabilities command without any pre-configured scope.
 <td>
 
 Denies the get_model_capabilities command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llama-engine:allow-get-model-context-size`
+
+</td>
+<td>
+
+Enables the get_model_context_size command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llama-engine:deny-get-model-context-size`
+
+</td>
+<td>
+
+Denies the get_model_context_size command without any pre-configured scope.
 
 </td>
 </tr>
@@ -972,6 +999,19 @@ Allow reading capabilities (vision/audio/uncen) for one model.
 <td>
 
 Allow reading capabilities for all installed models.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llama-engine:allow-get-model-context-size`
+
+</td>
+<td>
+
+Allow reading the max context length (context_length) from GGUF metadata.
 
 </td>
 </tr>

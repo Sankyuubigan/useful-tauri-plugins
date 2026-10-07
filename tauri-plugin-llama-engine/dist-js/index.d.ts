@@ -126,6 +126,8 @@ export declare function getMmprojPath(modelPath: string): Promise<string | null>
 export declare function ensureMmproj(modelPath: string): Promise<string | null>;
 export declare function getModelCapabilities(modelPath: string): Promise<ModelCapabilities>;
 export declare function getAllCapabilities(): Promise<Record<string, ModelCapabilities>>;
+/** Максимальный контекст модели (context_length из GGUF). 0 — не удалось прочитать. */
+export declare function getModelContextSize(modelPath: string): Promise<number>;
 export interface PromptMemoryInfo {
     need_mb: number;
     vram_used_mb: number;
@@ -144,3 +146,5 @@ export declare function generateText(req: GenerateTextRequest): Promise<string>;
 import './web-components';
 export { getUpdateState, onUpdateState, setUpdateState, checkUpdate, initUpdateWatcher, } from './updates';
 export type { PluginUpdateState } from './updates';
+export { countTokens } from './tokenizer';
+export type { TokenCountResult } from './tokenizer';

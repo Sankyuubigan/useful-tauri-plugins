@@ -105,6 +105,11 @@ description = "Allow reading capabilities for all installed models."
 commands.allow = ["get_all_capabilities"]
 
 [[permission]]
+identifier = "allow-get-model-context-size"
+description = "Allow reading the max context length (context_length) from GGUF metadata."
+commands.allow = ["get_model_context_size"]
+
+[[permission]]
 identifier = "allow-estimate-prompt-memory"
 description = "Allow estimating VRAM usage for a prompt (model + KV cache + NVML facts)."
 commands.allow = ["estimate_prompt_memory"]
@@ -163,6 +168,7 @@ permissions = [
   "allow-ensure-mmproj",
   "allow-get-model-capabilities",
   "allow-get-all-capabilities",
+  "allow-get-model-context-size",
   "allow-estimate-prompt-memory",
   "allow-get-model-params",
   "allow-set-model-params",

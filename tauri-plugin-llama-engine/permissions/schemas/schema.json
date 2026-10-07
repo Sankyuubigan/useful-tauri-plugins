@@ -463,6 +463,18 @@
           "markdownDescription": "Denies the get_model_capabilities command without any pre-configured scope."
         },
         {
+          "description": "Enables the get_model_context_size command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-model-context-size",
+          "markdownDescription": "Enables the get_model_context_size command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_model_context_size command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-model-context-size",
+          "markdownDescription": "Denies the get_model_context_size command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_model_params command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-model-params",
@@ -607,10 +619,10 @@
           "markdownDescription": "Denies the set_model_params command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the llama-engine plugin.\n#### This default permission set includes:\n\n- `allow-get-engine-status`\n- `allow-install-llamacpp`\n- `allow-set-engine-variant`\n- `allow-list-engine-sources`\n- `allow-set-engine-source`\n- `allow-check-engine-update`\n- `allow-install-engine-update`\n- `allow-remove-engine`\n- `allow-set-engine-dir`\n- `allow-get-models-catalog`\n- `allow-get-engine-config`\n- `allow-get-auto-download-info`\n- `allow-auto-download-default-model`\n- `allow-add-model`\n- `allow-remove-model`\n- `allow-delete-model-file`\n- `allow-get-mmproj-path`\n- `allow-ensure-mmproj`\n- `allow-get-model-capabilities`\n- `allow-get-all-capabilities`\n- `allow-estimate-prompt-memory`\n- `allow-get-model-params`\n- `allow-set-model-params`\n- `allow-reset-model-params`\n- `allow-download-model`\n- `allow-generate-text`",
+          "description": "Default permissions for the llama-engine plugin.\n#### This default permission set includes:\n\n- `allow-get-engine-status`\n- `allow-install-llamacpp`\n- `allow-set-engine-variant`\n- `allow-list-engine-sources`\n- `allow-set-engine-source`\n- `allow-check-engine-update`\n- `allow-install-engine-update`\n- `allow-remove-engine`\n- `allow-set-engine-dir`\n- `allow-get-models-catalog`\n- `allow-get-engine-config`\n- `allow-get-auto-download-info`\n- `allow-auto-download-default-model`\n- `allow-add-model`\n- `allow-remove-model`\n- `allow-delete-model-file`\n- `allow-get-mmproj-path`\n- `allow-ensure-mmproj`\n- `allow-get-model-capabilities`\n- `allow-get-all-capabilities`\n- `allow-get-model-context-size`\n- `allow-estimate-prompt-memory`\n- `allow-get-model-params`\n- `allow-set-model-params`\n- `allow-reset-model-params`\n- `allow-download-model`\n- `allow-generate-text`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the llama-engine plugin.\n#### This default permission set includes:\n\n- `allow-get-engine-status`\n- `allow-install-llamacpp`\n- `allow-set-engine-variant`\n- `allow-list-engine-sources`\n- `allow-set-engine-source`\n- `allow-check-engine-update`\n- `allow-install-engine-update`\n- `allow-remove-engine`\n- `allow-set-engine-dir`\n- `allow-get-models-catalog`\n- `allow-get-engine-config`\n- `allow-get-auto-download-info`\n- `allow-auto-download-default-model`\n- `allow-add-model`\n- `allow-remove-model`\n- `allow-delete-model-file`\n- `allow-get-mmproj-path`\n- `allow-ensure-mmproj`\n- `allow-get-model-capabilities`\n- `allow-get-all-capabilities`\n- `allow-estimate-prompt-memory`\n- `allow-get-model-params`\n- `allow-set-model-params`\n- `allow-reset-model-params`\n- `allow-download-model`\n- `allow-generate-text`"
+          "markdownDescription": "Default permissions for the llama-engine plugin.\n#### This default permission set includes:\n\n- `allow-get-engine-status`\n- `allow-install-llamacpp`\n- `allow-set-engine-variant`\n- `allow-list-engine-sources`\n- `allow-set-engine-source`\n- `allow-check-engine-update`\n- `allow-install-engine-update`\n- `allow-remove-engine`\n- `allow-set-engine-dir`\n- `allow-get-models-catalog`\n- `allow-get-engine-config`\n- `allow-get-auto-download-info`\n- `allow-auto-download-default-model`\n- `allow-add-model`\n- `allow-remove-model`\n- `allow-delete-model-file`\n- `allow-get-mmproj-path`\n- `allow-ensure-mmproj`\n- `allow-get-model-capabilities`\n- `allow-get-all-capabilities`\n- `allow-get-model-context-size`\n- `allow-estimate-prompt-memory`\n- `allow-get-model-params`\n- `allow-set-model-params`\n- `allow-reset-model-params`\n- `allow-download-model`\n- `allow-generate-text`"
         },
         {
           "description": "Allow reading the llama.cpp engine status (installed variants, gpu, cuda).",
@@ -731,6 +743,12 @@
           "type": "string",
           "const": "allow-get-all-capabilities",
           "markdownDescription": "Allow reading capabilities for all installed models."
+        },
+        {
+          "description": "Allow reading the max context length (context_length) from GGUF metadata.",
+          "type": "string",
+          "const": "allow-get-model-context-size",
+          "markdownDescription": "Allow reading the max context length (context_length) from GGUF metadata."
         },
         {
           "description": "Allow estimating VRAM usage for a prompt (model + KV cache + NVML facts).",

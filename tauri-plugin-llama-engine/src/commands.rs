@@ -699,6 +699,15 @@ pub async fn ensure_mmproj(app: AppHandle, model_path: String) -> Result<Option<
     engine::ensure_mmproj_for_model(&app, &model_path).await
 }
 
+/// Максимальный контекст модели (context_length из GGUF-метаданных).
+///
+/// Возвращает 0, если файл не читается или ключ отсутствует — вызывающий
+/// код решает, чем заменить отсутствие (например, эвристикой).
+#[tauri::command]
+pub fn get_model_context_size(model_path: String) -> u32 {
+    engine::llm_gguf::extract_context_length(&model_path).unwrap_or(0)
+}
+
 /// Для Live-превью: прогноз потребления VRAM (модель + KV-кэш) + факты текущей
 /// занятости GPU через NVML. `vram_used_mb`/`vram_total_mb` равны 0, если NVML
 /// недоступен (нет NVIDIA GPU/драйвера) — фронт покажет числитель без знаменателя.

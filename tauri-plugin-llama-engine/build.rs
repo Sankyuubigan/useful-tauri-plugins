@@ -20,6 +20,9 @@ const COMMANDS: &[&str] = &[
     "get_model_capabilities",
     "get_all_capabilities",
     "estimate_prompt_memory",
+    "get_model_context_size",
+    "list_engine_sources",
+    "set_engine_source",
     // ── Параметры сэмплинга ──
     "get_model_params",
     "set_model_params",

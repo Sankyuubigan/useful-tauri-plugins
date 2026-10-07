@@ -73,6 +73,10 @@ export function getModelCapabilities(modelPath) {
 export function getAllCapabilities() {
     return invoke('plugin:llama-engine|get_all_capabilities');
 }
+/** Максимальный контекст модели (context_length из GGUF). 0 — не удалось прочитать. */
+export function getModelContextSize(modelPath) {
+    return invoke('plugin:llama-engine|get_model_context_size', { modelPath });
+}
 /** Live-превью: прогноз VRAM (модель + KV-кэш) на эффективный контекст + факты NVML. */
 export function estimatePromptMemory(modelPath, contextSize, kvQuantKeys, kvQuantValues, promptTokens, maxGen) {
     return invoke('plugin:llama-engine|estimate_prompt_memory', {
@@ -112,3 +116,4 @@ export function generateText(req) {
 // Регистрируем Web Components при импорте пакета.
 import './web-components';
 export { getUpdateState, onUpdateState, setUpdateState, checkUpdate, initUpdateWatcher, } from './updates';
+export { countTokens } from './tokenizer';

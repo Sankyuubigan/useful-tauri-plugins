@@ -6,6 +6,8 @@ members = [
     "tauri-plugin-logs",
     "tauri-plugin-llama-engine",
     "tauri-plugin-cloud-routers",
+    "tauri-plugin-cloud-routers/crates/core",
+    "tauri-plugin-cloud-routers/crates/gateway",
     "tauri-plugin-downloader",
     "tauri-plugin-image-engine",
     "tauri-plugin-ytdlp",

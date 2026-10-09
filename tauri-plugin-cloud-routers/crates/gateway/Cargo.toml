@@ -1,0 +1,40 @@
+[package]
+name = "cloud-routers-gateway"
+version = "0.1.1"
+edition = "2021"
+description = "Standalone local LLM gateway process for the cloud-routers plugin: OpenAI-compatible passthrough with multi-key rotation, streaming SSE, provider-preset sync and Vercel relay. Runs detached from any Tauri host."
+license = "MIT"
+
+[[bin]]
+name = "cloud-routers-gateway"
+path = "src/main.rs"
+
+[dependencies]
+# Domain layer (config, key rotation, preset catalog) lives in a separate crate so
+# a Tauri plugin can use it without linking axum/reqwest into the host binary.
+cloud-routers-core = { path = "../core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+axum = { version = "0.7", features = ["json"] }
+# Only the `cors` feature: permissive CORS is a deliberate requirement so local
+# IDE clients (Cursor/Cline/Roo) can talk to the gateway from any origin.
+tower-http = { version = "0.6", default-features = false, features = ["cors"] }
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "stream",
+    "http2",
+    # rustls instead of the OS TLS stack: identical handshake for every host
+    # regardless of Windows/MITM proxies in between.
+    "rustls-tls-native-roots",
+] }
+
+[dev-dependencies]
+# `tower::ServiceExt::oneshot` — прогон axum-роутера без настоящего сокета.
+tower = { version = "0.5", features = ["util"] }
+# Генератор потоков для потоковой передачи в мок-апстриме интеграционных тестов.
+async-stream = "0.3"
+# Тип `bytes::Bytes`, который отдаёт `Body::from_stream`.
+bytes = "1"

@@ -10,19 +10,22 @@ export declare const PROGRESS_EVENT = "cloud-routers-progress";
 /** Tauri-событие порции стриминга: `{ router, text, author, kind }`. */
 export declare const CHUNK_EVENT = "cloud-routers-chunk";
 /** Идентификаторы роутеров — единственный источник истины (тип выводится из списка). */
-export declare const ROUTER_IDS: readonly ["9router", "extremerouter", "omniroute"];
+export declare const ROUTER_IDS: readonly ["9router", "extremerouter", "omniroute", "gateway"];
 /** Идентификатор роутера. */
 export type RouterId = (typeof ROUTER_IDS)[number];
-export interface NineRouterStatus {
-    /** Установлены и node.exe, и бандл роутера. */
+/** Вид роутера: node-бандл из npm либо наш собственный бинарь шлюза. */
+export type RouterKind = 'node-bundle' | 'native-gateway';
+export interface RouterStatus {
+    /** Роутер установлен (для шлюза — наличие бинаря). */
     installed: boolean;
     /** Порт отвечает (сервер жив). */
     running: boolean;
     version: string | null;
+    /** Версия портативного Node.js. У шлюза — `null`: у него нет Node. */
     node_version: string | null;
     port: number;
     base_url: string;
-    /** Папка установки (по умолчанию `<exe>/cloud_routers/<id>`). */
+    /** Папка установки. */
     path: string;
     data_dir: string;
     db_present: boolean;
@@ -30,7 +33,29 @@ export interface NineRouterStatus {
     server_present: boolean;
     /** Человеко-читаемое сообщение для UI. */
     message: string;
+    /**
+     * Вид роутера.
+     *
+     * UI обязан смотреть на это поле, а не угадывать вид по наличию
+     * `node_present`: у шлюза Node нет, и «Node —» выглядит как у node-роутера с
+     * не установленным Node, хотя кнопки у них разные.
+     */
+    kind: RouterKind;
+    /** Нужна ли кнопка установки. */
+    can_install: boolean;
+    /** Есть ли смысл в проверке обновления (только у npm-роутеров). */
+    can_check_update: boolean;
+    /** Показывать ли строки Node и БД. */
+    has_npm_runtime: boolean;
 }
+/**
+ * Историческое имя интерфейса статуса.
+ *
+ * Переименовано в `RouterStatus` вместе с добавлением шлюза: у роутеров больше
+ * одного вида, и имя про один из них вводило в заблуждение. Экспорт оставлен
+ * для совместимости с существующим кодом хоста.
+ */
+export type NineRouterStatus = RouterStatus;
 /** Комбо роутера (LLM-набор провайдеров с авто-fallback). */
 export interface ComboInfo {
     name: string;
@@ -64,28 +89,28 @@ export interface ChunkPayload {
     kind: string;
 }
 /** Статус шлюза (для индикатора). Сервер НЕ запускает. */
-export declare function getStatus(router: RouterId): Promise<NineRouterStatus>;
+export declare function getStatus(router: RouterId): Promise<RouterStatus>;
 /**
  * Установить / обновить роутер (портативный Node.js + npm-бандл).
  * @param force переустановить даже при совпадающей версии
  */
-export declare function installOrUpdate(router: RouterId, force?: boolean): Promise<NineRouterStatus>;
+export declare function installOrUpdate(router: RouterId, force?: boolean): Promise<RouterStatus>;
 /** Ленивый автозапуск по требованию (no-op, если сервер уже жив). */
-export declare function ensureStarted(router: RouterId): Promise<NineRouterStatus>;
+export declare function ensureStarted(router: RouterId): Promise<RouterStatus>;
 /** Остановить сервер. */
-export declare function stop(router: RouterId): Promise<NineRouterStatus>;
+export declare function stop(router: RouterId): Promise<RouterStatus>;
 /**
  * Сменить папку установки и проверить наличие роутера по новому пути.
  * Возвращает статус, пересчитанный под выбранную папку (installed/running).
  */
-export declare function setRouterDir(router: RouterId, path: string): Promise<NineRouterStatus>;
+export declare function setRouterDir(router: RouterId, path: string): Promise<RouterStatus>;
 /** Список LLM-комбо (лениво стартует сервер, если нужно). */
 export declare function getCombos(router: RouterId): Promise<ComboInfo[]>;
 /**
  * Сохранить API-ключ роутера (нужен для `/v1/chat/completions` через комбо).
  * Пустая строка — очистить сохранённый ключ. Возвращает статус шлюза.
  */
-export declare function setApiKey(router: RouterId, key: string): Promise<NineRouterStatus>;
+export declare function setApiKey(router: RouterId, key: string): Promise<RouterStatus>;
 /** Проверить наличие обновления роутера (npm registry). Возвращает версию или null. */
 export declare function checkRouterUpdate(router: RouterId): Promise<string | null>;
 /** Открыть веб-дашборд роутера в браузере по умолчанию. */

@@ -1,10 +1,11 @@
 //! Установка / обновление облачных роутеров БЕЗ системных зависимостей.
 //!
 //! Всё скачивается и распаковывается в папку `<router_dir>` (по умолчанию
-//! `<exe>/cloud_routers/<id>`), терминал и админ-права не нужны:
+//! `APPDATA/cloud-routers/<id>` — каталог плагина, общий для всех проектов),
+//! терминал и админ-права не нужны:
 //!
 //! ```text
-//! <exe>/cloud_routers/<id>/
+//! APPDATA/cloud-routers/<id>/
 //! ├─ runtime/node.exe          ← портативный Node.js (zip c nodejs.org, LTS)
 //! └─ dist/...                  ← standalone роутер (tgz c registry.npmjs.org)
 //!    ├─ app/custom-server.js   (9router, extremerouter)
@@ -26,6 +27,7 @@ use tauri::AppHandle;
 
 use crate::commands::RouterId;
 use crate::router::config::{dist_dir, node_exe, server_script};
+use crate::spec::RouterKind;
 
 /// Прогресс-колбэк: (stage, скачано_байт, всего_байт, текст).
 pub type ProgressFn = Box<dyn Fn(&str, u64, u64, &str) + Send>;
@@ -44,13 +46,21 @@ pub type ProgressFn = Box<dyn Fn(&str, u64, u64, &str) + Send>;
 static INSTALL_LOCKS: OnceLock<Vec<Mutex<()>>> = OnceLock::new();
 
 fn install_locks() -> &'static Vec<Mutex<()>> {
-    INSTALL_LOCKS.get_or_init(|| vec![Mutex::new(()), Mutex::new(()), Mutex::new(())])
+    // Размер берётся из таблицы роутеров, а не из литерала. Литерал «тройка»
+    // перестал бы соответствовать реальности при добавлении четвёртого
+    // роутера — и `install_guard` упал бы с «index out of bounds» уже в
+    // рантайме, то есть у пользователя в момент установки.
+    INSTALL_LOCKS.get_or_init(|| {
+        (0..crate::spec::RouterId::ALL.len())
+            .map(|_| Mutex::new(()))
+            .collect()
+    })
 }
 
 /// Мьютекс установки роутера. Держать на всё время установки и на всё время
 /// запуска сервера (обе операции — внутри `spawn_blocking`, без `.await`).
 pub fn install_guard(router_id: RouterId) -> MutexGuard<'static, ()> {
-    let lock = &install_locks()[router_id.lock_index()];
+    let lock = &install_locks()[router_id.index()];
     match lock.lock() {
         Ok(g) => g,
         // Отравленный мьютекс = паника в другом потоке; восстановление
@@ -74,7 +84,6 @@ pub fn deps_present(dir: &Path, router_id: RouterId) -> bool {
     }
     deps_marker(&dist_dir(dir)).exists()
 }
-
 /// npm распакован целиком? Маркер — вложенный модуль npm с расширением `.cjs`:
 /// именно такие файлы терялись при фильтре по расширениям (регрессия, из-за
 /// которой `npm install` падал с MODULE_NOT_FOUND на `just-diff`).
@@ -142,8 +151,14 @@ pub fn install_is_complete(
 }
 
 /// Ближайшая версия роутера из npm registry.
+///
+/// Роутера без npm-пакета (наш шлюз) эта функция обслуживать не может:
+/// обращение по выдуманному имени молча проверяло бы несуществующий адрес и
+/// возвращало «обновлений нет» — то есть врало бы в обе стороны.
 pub fn latest_npm_version(client: &Client, router_id: RouterId) -> Result<String, String> {
-    let pkg = router_id.npm_package();
+    let pkg = router_id.npm_package().ok_or_else(|| {
+        format!("{} не публикуется в npm — проверять обновления негде", router_id)
+    })?;
     let url = format!("https://registry.npmjs.org/{}/latest", pkg);
     let resp = client.get(url).timeout(Duration::from_secs(15)).send()
         .map_err(|e| format!("Не удалось получить версию {}: {}", router_id, e))?;
@@ -170,6 +185,14 @@ pub fn install_or_update(
     force: bool,
     progress: ProgressFn,
 ) -> Result<InstalledInfo, String> {
+    // Шлюз не в npm: у него нет ни версии на сервере, ни tgz для распаковки.
+    // Общая точка входа уходит в отдельный модуль по ВИДУ роутера, а не по
+    // флагу внутри npm-логики — иначе каждое её место таскало бы `Option`
+    // (ровно то, чего `RouterKind` и создан, чтобы не допустить).
+    if let RouterKind::NativeGateway { .. } = router_id.kind() {
+        return crate::router::gateway_installer::install(app, router_id, force, progress);
+    }
+
     let cfg = crate::router::config::load_config(app, router_id);
     let dir = crate::router::config::router_dir(app, router_id);
 
@@ -190,7 +213,11 @@ pub fn install_or_update(
     if complete {
         progress("installed", 0, 0, &format!("{} v{} уже установлен", router_id, npm_ver));
         log::info!("{} v{} уже установлен", router_id, npm_ver);
-        return Ok(InstalledInfo::current(npm_ver, cfg.node_version.clone().unwrap_or_default()));
+        return Ok(InstalledInfo {
+            version: npm_ver,
+            node_version: cfg.node_version.clone().unwrap_or_default(),
+            path: dir.to_string_lossy().to_string(),
+        });
     }
     if cfg.installed_version.is_some() {
         log::warn!(
@@ -267,7 +294,11 @@ pub fn install_or_update(
     progress("done", 0, 0, &format!("✅ {} v{} установлен (Node {})", router_id, npm_ver, node_ver));
     log::info!("✅ {} v{} установлен (Node {})", router_id, npm_ver, node_ver);
 
-    Ok(InstalledInfo::current(npm_ver, node_ver))
+    Ok(InstalledInfo {
+        version: npm_ver,
+        node_version: node_ver,
+        path: dir.to_string_lossy().to_string(),
+    })
 }
 
 /// Результат установки.
@@ -279,11 +310,17 @@ pub struct InstalledInfo {
 }
 
 impl InstalledInfo {
-    fn current(version: String, node_version: String) -> Self {
+    /// Папка роутера указывается явно, а не вычисляется внутри.
+    ///
+    /// Раньше здесь стоял литерал `RouterId::NineRouter`, и `path` для ЛЮБОГО
+    /// роутера, включая шлюз, отдавал папку 9router. Это ложь в UI (core rules
+    /// §2.2): пользователь нажимал «Изменить путь» и получал чужую папку.
+    pub fn of(version: String, dir: &std::path::Path) -> Self {
         Self {
             version,
-            node_version,
-            path: crate::router::config::default_router_dir(RouterId::NineRouter).to_string_lossy().to_string(),
+            // У шлюза нет Node: пустое значение честнее выдуманной версии.
+            node_version: String::new(),
+            path: dir.to_string_lossy().to_string(),
         }
     }
 }
@@ -296,11 +333,13 @@ fn server_script_exists(dir: &Path, router_id: RouterId) -> bool {
 /// Ищет серверный скрипт внутри `dist`. Сначала проверяет ожидаемый путь,
 /// затем рекурсивно обходит подпапки в поисках файла с нужным именем.
 fn find_server_script(dist: &Path, router_id: RouterId) -> Option<PathBuf> {
-    let expected = server_script(dist, router_id);
+    // У шлюза серверного скрипта нет by design — он не распаковывается из tgz.
+    let rel = router_id.server_script_relative()?;
+    let expected = dist.join(rel);
     if expected.exists() {
         return Some(expected);
     }
-    let filename = Path::new(router_id.server_script_relative()).file_name()?;
+    let filename = Path::new(rel).file_name()?;
     find_file_recursive(dist, filename)
 }
 
@@ -519,7 +558,7 @@ fn run_captured(
 }
 
 fn npm_tgz_url(version: &str, router_id: RouterId) -> String {
-    let pkg = router_id.npm_package();
+    let pkg = router_id.npm_package().unwrap_or_default();
     format!("https://registry.npmjs.org/{}/-/{}-{}.tgz", pkg, pkg.replace('/', "%2F"), version)
 }
 
@@ -803,7 +842,29 @@ mod tests {
         assert!(!install_is_complete(None, "3.8.50", true, true, true), "не установлен");
     }
 
-    /// Мьютекс установки взаимно исключает запуск сервера: пока установка
+    /// Число мьютексов установки обязано совпадать с числом роутеров.
+///
+/// Индекс берётся из таблицы роутеров, а мьютексы — из массива, размер которого
+/// задавался литералом. Расхождение давало панику «index out of bounds» в
+/// момент установки у пользователя, а не ошибку компиляции. Тест закрывает
+/// класс ошибок целиком.
+#[test]
+fn install_locks_count_matches_router_table() {
+    assert_eq!(
+        install_locks().len(),
+        crate::spec::RouterId::ALL.len(),
+        "мьютексов установки меньше, чем роутеров: install_guard упадёт в рантайме"
+    );
+    for router in crate::spec::RouterId::ALL.iter().copied() {
+        assert!(
+            router.index() < install_locks().len(),
+            "индекс роутера {} вне массива мьютексов",
+            router.as_str()
+        );
+    }
+}
+
+/// Мьютекс установки взаимно исключает запуск сервера: пока установка
     /// держит lock, второй поток БЛОКИРУЕТСЯ — значит сервер не поднимется
     /// поверх полураспакованного dist (корень бага «Cannot find module 'next'»).
     #[test]
@@ -811,7 +872,7 @@ mod tests {
         use std::sync::mpsc;
 
         let router = RouterId::OmniRoute;
-        let install_guard_held = install_locks()[router.lock_index()].lock().unwrap();
+        let install_guard_held = install_locks()[router.index()].lock().unwrap();
 
         let (tx, rx) = mpsc::channel();
         let worker = std::thread::spawn(move || {

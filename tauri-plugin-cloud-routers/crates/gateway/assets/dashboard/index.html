@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloud Routers — шлюз</title>
+<link rel="stylesheet" href="/dashboard/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="title">
+    <h1>Локальный LLM-шлюз</h1>
+    <div class="sub" id="subtitle">загрузка…</div>
+  </div>
+  <div class="top-actions">
+    <button id="btn-restart" class="ghost" title="Перезапустить процесс шлюза (нужно после смены порта)">Перезапустить шлюз</button>
+  </div>
+</header>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="providers" class="active">Провайдеры</button>
+  <button data-tab="models">Модели</button>
+  <button data-tab="relay">Релей</button>
+  <button data-tab="log">Журнал</button>
+</nav>
+
+<div id="toast" class="toast" hidden></div>
+
+<!-- ─────────────────────────── Провайдеры ─────────────────────────── -->
+<section class="page" id="page-providers">
+  <div class="row">
+    <button id="btn-add-provider" class="primary">+ Добавить провайдера</button>
+    <button id="btn-sync-presets" class="ghost">Обновить каталог провайдеров</button>
+    <span class="hint" id="presets-hint"></span>
+  </div>
+
+  <div id="providers-list" class="cards"></div>
+</section>
+
+<!-- ───────────────────────────── Модели ───────────────────────────── -->
+<section class="page" id="page-models" hidden>
+  <div class="note">
+    Модели ниже получены <b>реальным запросом</b> <code>GET /models</code> к провайдеру.
+    Они и есть список, который видят IDE: пустой список означает, что провайдер
+    не будет использоваться в чате.
+  </div>
+  <div id="models-list" class="cards"></div>
+</section>
+
+<!-- ────────────────────────────── Релей ────────────────────────────── -->
+<section class="page" id="page-relay" hidden>
+  <div class="note">
+    Релей — Edge-функция на Vercel. Она нужна, когда провайдер недоступен из вашей сети
+    (региональная блокировка или фильтрация трафика). Запросы выходят с территории Vercel.
+  </div>
+
+  <div class="card">
+    <h3>Статус релея</h3>
+    <div class="kv"><span>URL</span><b id="relay-url">—</b></div>
+    <div class="kv"><span>Секрет</span><b id="relay-token">—</b></div>
+    <div class="row">
+      <button id="btn-relay-test" class="ghost">Проверить релей</button>
+      <a id="relay-worker-link" class="ghost btn" target="_blank" rel="noopener"
+         href="/api/relay/worker">Исходник воркера</a>
+    </div>
+    <div id="relay-test-result" class="hint"></div>
+  </div>
+
+  <div class="card">
+    <h3>Развернуть автоматически</h3>
+    <div class="hint">
+      Нужен Vercel Access Token (vercel.com/account/tokens). Шлюз задеплоит
+      воркер сам и подставит URL автоматически.
+    </div>
+    <label>Токен Vercel
+      <input id="relay-token-input" type="password" placeholder="vercel_…" autocomplete="off">
+    </label>
+    <label>Имя проекта (необязательно)
+      <input id="relay-project-input" type="text" placeholder="cloud-routers-relay" autocomplete="off">
+    </label>
+    <div class="row">
+      <button id="btn-relay-deploy" class="primary">Развернуть на Vercel</button>
+    </div>
+    <div id="relay-deploy-result" class="hint"></div>
+  </div>
+
+  <div class="card">
+    <h3>Развернуть вручную</h3>
+    <div class="hint">
+      Надёжный путь, если авто-деплой недоступен. Скопируйте исходник воркера,
+      создайте на Vercel Edge-проект, задайте переменные окружения
+      <code>RELAY_TOKEN</code> (обязательно — нажмите «Показать секрет», чтобы
+      скопировать его здесь) и, по желанию,
+      <code>ALLOWED_HOSTS</code> (список хостов через запятую), затем вставьте
+      выданный адрес ниже.
+    </div>
+    <label>URL релея
+      <input id="relay-url-input" type="text" placeholder="https://my-relay.vercel.app" autocomplete="off">
+    </label>
+    <div class="row">
+      <button id="btn-relay-save" class="primary">Сохранить URL</button>
+      <button id="btn-relay-show-token" class="ghost">Показать секрет RELAY_TOKEN</button>
+    </div>
+    <div id="relay-token-manual" class="hint" hidden></div>
+  </div>
+
+  <div class="card">
+    <h3>Маршрутизация через релей</h3>
+    <div class="hint">Для каждого провайдера галочка «через релей» в карточке на вкладке «Провайдеры».</div>
+  </div>
+</section>
+
+<!-- ────────────────────────────── Журнал ────────────────────────────── -->
+<section class="page" id="page-log" hidden>
+  <div class="row">
+    <button id="btn-log-refresh" class="ghost">Обновить</button>
+    <label class="inline"><input type="checkbox" id="log-autoscroll" checked> Следить за новыми</label>
+  </div>
+  <div id="log-list" class="log"></div>
+</section>
+
+<!-- ───────────────────── Модалка добавления провайдера ───────────────────── -->
+<div class="modal-backdrop" id="add-modal" hidden>
+  <div class="modal">
+    <h3>Новый провайдер</h3>
+
+    <div class="row">
+      <button id="btn-modal-sync" class="ghost">Обновить каталог</button>
+      <span class="hint" id="modal-presets-hint"></span>
+    </div>
+
+    <label>Провайдер из каталога
+      <select id="preset-select">
+        <option value="">— выберите из списка —</option>
+      </select>
+    </label>
+
+    <label>Идентификатор (латиница, цифры, «-» и «_»)
+      <input id="new-id" type="text" placeholder="groq" autocomplete="off">
+    </label>
+    <label>Название
+      <input id="new-name" type="text" placeholder="Groq" autocomplete="off">
+    </label>
+    <label>Базовый URL
+      <input id="new-base-url" type="text" placeholder="https://api.groq.com/openai/v1" autocomplete="off">
+    </label>
+    <label>API-ключи (по одному в строке)
+      <textarea id="new-keys" rows="4" placeholder="gsk_…"></textarea>
+    </label>
+    <div class="hint" id="new-docs" hidden></div>
+
+    <div class="row modal-actions">
+      <button id="btn-modal-cancel" class="ghost">Отмена</button>
+      <button id="btn-modal-save" class="primary">Добавить</button>
+    </div>
+  </div>
+</div>
+
+<script src="/dashboard/app.js"></script>
+</body>
+</html>

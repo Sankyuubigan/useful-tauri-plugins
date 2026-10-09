@@ -2,6 +2,8 @@
 
 pub mod client;
 pub mod config;
+pub mod gateway_installer;
+pub mod gateway_process;
 pub mod installer;
 pub mod process;
 

@@ -34,15 +34,17 @@
 //!
 //! `capabilities/default.json`: добавить `"cloud-routers:default"`.
 //!
-//! Папка установки по умолчанию — `<exe>/cloud_routers/<id>` (правило cwd:
-//! `std::env::current_exe().parent()`, не `app.path().executable_dir()`).
-//! Можно переопределить ключом `<id>.dir` в `app_config.json` хоста.
+//! Папка установки по умолчанию — `APPDATA/cloud-routers/<id>`: конфиг и
+//! бинарники принадлежат плагину, а не хосту, поэтому путь одинаков из любого
+//! проекта (переопределяется ключом `<id>.dir` в `APPDATA/cloud-routers/app_config.json`).
 
 pub mod commands;
 pub mod router;
+pub mod spec;
 
 pub use commands::RouterId;
 pub use router::config::set_app_data_dir_name;
+pub use spec::{RouterKind, RouterSpec, ROUTERS};
 
 use serde::Deserialize;
 use tauri::plugin::{Builder, TauriPlugin};
@@ -89,8 +91,20 @@ pub fn init() -> TauriPlugin<Wry, Config> {
             }
             let handle = app.clone();
             router::config::migrate_legacy_config(&handle);
-            for router_id in [RouterId::NineRouter, RouterId::ExtremeRouter, RouterId::OmniRoute] {
-                router::process::reconcile_server_state(&handle, router_id);
+            for router_id in spec::RouterId::ALL.iter().copied() {
+                match router_id.kind() {
+                    // Node-роутер: бесхозный инстанс останавливаем, чтобы не
+                    // держать на порту процесс из прошлой сессии.
+                    spec::RouterKind::NodeBundle { .. } => {
+                        router::process::reconcile_server_state(&handle, router_id)
+                    }
+                    // Свой шлюз переживает закрытие хоста — значит, в новой
+                    // сессии он закономерно остаётся живым, и его нужно принять,
+                    // а не убить.
+                    spec::RouterKind::NativeGateway { .. } => {
+                        router::gateway_process::reconcile(&handle, router_id)
+                    }
+                }
             }
             Ok(())
         })

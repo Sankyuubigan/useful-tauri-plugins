@@ -1,0 +1,17 @@
+[package]
+name = "cloud-routers-core"
+version = "0.1.1"
+edition = "2021"
+description = "Shared domain layer for the cloud-routers gateway: persisted config, multi-key rotation with cooldowns, combo-id resolution and the remote provider-preset catalog. No HTTP server, no Tauri, no network - so a Tauri plugin can depend on it without dragging axum into the host binary."
+license = "MIT"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+# Atomic JSON writes (tmp -> fsync -> rename) - PLUGIN_STANDARD §2.
+ko-json-store = { path = "../../../ko-json-store" }
+# System CSPRNG for the relay secret (see src/relay_token.rs). No `rand`:
+# a predictable relay token is the same as no token at all, so we need the OS
+# generator directly, not a seeded PRNG.
+getrandom = "0.3"

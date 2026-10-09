@@ -184,7 +184,7 @@ pub fn start_server(app: &AppHandle, router_id: RouterId, cfg: &RouterConfig) ->
             log::info!("🟢 {} уже запущен на порту {} (наш сервер)", router_id, port);
             if read_server_record(&data_dir).is_none() {
                 if let Some(pid) = listener_pid(port) {
-                    write_server_record(&data_dir, pid, port);
+    write_server_record(&data_dir, pid, port, None);
                 }
             }
             return Ok(0);
@@ -249,7 +249,7 @@ pub fn start_server(app: &AppHandle, router_id: RouterId, cfg: &RouterConfig) ->
     let child = cmd.spawn().map_err(|e| format!("Не удалось запустить {}: {}", router_id, e))?;
     let pid = child.id();
     register_server_pid(pid);
-    write_server_record(&data_dir, pid, port);
+    write_server_record(&data_dir, pid, port, None);
 
     if !wait_port(port, Duration::from_secs(20)) {
         log::warn!("⚠️ {} не ответил на порту {} за 20 сек (pid {})", router_id, port, pid);

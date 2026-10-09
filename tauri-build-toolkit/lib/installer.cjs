@@ -1,4 +1,4 @@
-﻿// installer: prep + npx tauri build --bundles nsis + РІРµСЂРёС„РёРєР°С†РёСЏ СѓСЃС‚Р°РЅРѕРІС‰РёРєР°
+// installer: prep + npx tauri build --bundles nsis + РІРµСЂРёС„РёРєР°С†РёСЏ СѓСЃС‚Р°РЅРѕРІС‰РёРєР°
 // Рё СЃРёРіРЅР°С‚СѓСЂС‹ (signer lenient: Р±РµР· РєР»СЋС‡Р° вЂ” РїСЂРµРґСѓРїСЂРµР¶РґР°РµРј Рё СЃРѕР±РёСЂР°РµРј Р±РµР· РїРѕРґРїРёСЃРё).
 
 const fs = require('fs');

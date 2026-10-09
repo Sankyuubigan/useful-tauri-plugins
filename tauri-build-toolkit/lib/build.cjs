@@ -10,6 +10,7 @@ const { bumpVersion, readVersion } = require('./version.cjs');
 const { ensureIcons } = require('./icons.cjs');
 const { syncConfiguredResources } = require('./sync-resources.cjs');
 const { copyVcRedistIfConfigured } = require('./copy-vc-redist.cjs');
+const { checkProjectEncodings } = require('./encoding-check.cjs');
 
 const BUNDLE_DIR = (cfg) => path.join(cfg.projectRoot, 'src-tauri', 'target', 'release', 'bundle');
 const RELEASE_EXE = (cfg) =>
@@ -109,6 +110,7 @@ function getExePath(cfg) {
 // --- prep: version bump + sync resources + npm install + icons. ---
 function prep(cfg, opts = {}) {
     console.log('=== prep ===');
+    checkProjectEncodings(cfg);
     const bump = opts.bump !== false;
     if (bump) {
         const oldVersion = readVersion(cfg.projectRoot);

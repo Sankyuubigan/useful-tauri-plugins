@@ -886,8 +886,7 @@
         <div class="banner banner-info">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:2px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
           <div>
-            \u0428\u043B\u044E\u0437 \u043D\u0430\u0441\u0442\u0440\u0430\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u0447\u0435\u0440\u0435\u0437 \u0441\u043E\u0431\u0441\u0442\u0432\u0435\u043D\u043D\u044B\u0439 UI. \u0416\u043C\u0438 <b>\xABWeb UI\xBB</b> \u0438\u043B\u0438 \u043E\u0442\u043A\u0440\u043E\u0439 \u0432 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435:
-            <code>${s?.base_url ? esc(s.base_url) : "http://localhost:" + port}/dashboard</code>
+            \u0428\u043B\u044E\u0437 \u043D\u0430\u0441\u0442\u0440\u0430\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u0432 \u0441\u0432\u043E\u0451\u043C UI. \u0416\u043C\u0438 <b>\xABWeb UI\xBB</b> \u2014 \u0434\u0430\u0448\u0431\u043E\u0440\u0434 \u043E\u0442\u043A\u0440\u043E\u0435\u0442\u0441\u044F \u0432\u043A\u043B\u0430\u0434\u043A\u043E\u0439 \u043F\u0440\u044F\u043C\u043E \u0432 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u0438.
           </div>
         </div>
       ` : ""}
@@ -952,6 +951,7 @@
   // guest-js/index.ts
   var PROGRESS_EVENT = "cloud-routers-progress";
   var CHUNK_EVENT = "cloud-routers-chunk";
+  var OPEN_DASHBOARD_EVENT = "cloud-routers-open-dashboard";
   var ROUTER_IDS = ["9router", "extremerouter", "omniroute", "gateway"];
   function getStatus(router) {
     return invoke("plugin:cloud-routers|get_status", { router });
@@ -993,6 +993,9 @@
   function onChunk(cb) {
     return listen(CHUNK_EVENT, (e) => cb(e.payload));
   }
+  function onOpenDashboard(cb) {
+    return listen(OPEN_DASHBOARD_EVENT, (e) => cb(e.payload));
+  }
 
   // guest-js/iife-entry.ts
   var g4 = window;
@@ -1008,6 +1011,7 @@
           getStatus,
           installOrUpdate,
           onChunk,
+          onOpenDashboard,
           onProgress,
           openDashboard,
           setRouterDir,

@@ -2,7 +2,7 @@
 // Не содержит голых импортов '@tauri-apps/*' — они заменены алиасами esbuild на shims/,
 // которые биндятся на window.__TAURI__ (вшит Tauri при withGlobalTauri: true).
 // Импорт './index' тянет './web-components' — Web Components регистрируются автоматически.
-import { chatCompletion, ensureStarted, getCombos, getStatus, installOrUpdate, onChunk, onProgress, openDashboard, setRouterDir, stop, } from './index';
+import { chatCompletion, ensureStarted, getCombos, getStatus, installOrUpdate, onChunk, onOpenDashboard, onProgress, openDashboard, setRouterDir, stop, } from './index';
 const g = window;
 if ('__TAURI__' in window) {
     const tauri = g.__TAURI__;
@@ -16,6 +16,7 @@ if ('__TAURI__' in window) {
                 getStatus,
                 installOrUpdate,
                 onChunk,
+                onOpenDashboard,
                 onProgress,
                 openDashboard,
                 setRouterDir,

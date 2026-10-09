@@ -370,7 +370,7 @@ Allow listing cloud router LLM combos for the chat model picker.
 </td>
 <td>
 
-Allow opening the cloud router web dashboard in the default browser.
+Allow requesting the cloud router web dashboard (the host shows it as an in-app tab).
 
 </td>
 </tr>

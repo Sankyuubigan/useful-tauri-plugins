@@ -34,7 +34,7 @@ commands.allow = ["get_combos"]
 
 [[permission]]
 identifier = "allow-open-dashboard"
-description = "Allow opening the cloud router web dashboard in the default browser."
+description = "Allow requesting the cloud router web dashboard (the host shows it as an in-app tab)."
 commands.allow = ["open_dashboard"]
 
 [[permission]]

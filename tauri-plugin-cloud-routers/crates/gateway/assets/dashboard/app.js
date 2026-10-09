@@ -460,15 +460,20 @@ async function syncPresets(btn) {
 
 // ─────────────────────── модалка добавления провайдера ───────────────────────
 
-async function openAddModal() {
-  if (!state.presets) await refreshPresets();
+function openAddModal() {
   $('#new-id').value = '';
   $('#new-name').value = '';
   $('#new-base-url').value = '';
   $('#new-keys').value = '';
   $('#new-docs').hidden = true;
   $('#preset-select').value = '';
+  // Показываем окно ДО загрузки каталога. Раньше `await refreshPresets()` стоял
+  // выше этой строки, и любая задержка или сбой сети съедал показ целиком:
+  // кнопка «Добавить провайдера» выглядела как нерабочая.
   $('#add-modal').hidden = false;
+  if (!state.presets) {
+    refreshPresets().catch((e) => fail('Не удалось загрузить каталог провайдеров', e));
+  }
 }
 
 function closeAddModal() {
@@ -543,7 +548,7 @@ function initTabs() {
 
 function init() {
   initTabs();
-  $('#btn-add-provider').addEventListener('click', () => void openAddModal());
+  $('#btn-add-provider').addEventListener('click', () => openAddModal());
   $('#btn-sync-presets').addEventListener('click', (e) => void syncPresets(e.currentTarget));
   $('#btn-modal-sync').addEventListener('click', (e) => void syncPresets(e.currentTarget));
   $('#btn-modal-cancel').addEventListener('click', closeAddModal);

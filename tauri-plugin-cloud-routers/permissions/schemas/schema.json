@@ -457,10 +457,10 @@
           "markdownDescription": "Allow listing cloud router LLM combos for the chat model picker."
         },
         {
-          "description": "Allow opening the cloud router web dashboard in the default browser.",
+          "description": "Allow requesting the cloud router web dashboard (the host shows it as an in-app tab).",
           "type": "string",
           "const": "allow-open-dashboard",
-          "markdownDescription": "Allow opening the cloud router web dashboard in the default browser."
+          "markdownDescription": "Allow requesting the cloud router web dashboard (the host shows it as an in-app tab)."
         },
         {
           "description": "Allow running an OpenAI-compatible chat completion through cloud routers.",

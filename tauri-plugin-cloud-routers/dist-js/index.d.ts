@@ -9,6 +9,14 @@
 export declare const PROGRESS_EVENT = "cloud-routers-progress";
 /** Tauri-событие порции стриминга: `{ router, text, author, kind }`. */
 export declare const CHUNK_EVENT = "cloud-routers-chunk";
+/** Tauri-событие «открыть дашборд вкладкой в хосте»: `{ router, base_url }`. */
+export declare const OPEN_DASHBOARD_EVENT = "cloud-routers-open-dashboard";
+/** Payload события «открыть дашборд»: роутер и его базовый адрес (роутер к этому
+ * моменту уже поднят — адрес проверен health-вызовом на стороне плагина). */
+export interface OpenDashboardPayload {
+    router: RouterId;
+    base_url: string;
+}
 /** Идентификаторы роутеров — единственный источник истины (тип выводится из списка). */
 export declare const ROUTER_IDS: readonly ["9router", "extremerouter", "omniroute", "gateway"];
 /** Идентификатор роутера. */
@@ -113,7 +121,13 @@ export declare function getCombos(router: RouterId): Promise<ComboInfo[]>;
 export declare function setApiKey(router: RouterId, key: string): Promise<RouterStatus>;
 /** Проверить наличие обновления роутера (npm registry). Возвращает версию или null. */
 export declare function checkRouterUpdate(router: RouterId): Promise<string | null>;
-/** Открыть веб-дашборд роутера в браузере по умолчанию. */
+/**
+ * Запросить показ веб-дашборда роутера.
+ *
+ * Команда поднимает роутер, если он не отвечает, и возвращает управление
+ * событием {@link OPEN_DASHBOARD_EVENT}: вкладку с дашбордом показывает хост.
+ * Сам плагин браузер не запускает.
+ */
 export declare function openDashboard(router: RouterId): Promise<void>;
 /**
  * Чат через роутер (OpenAI-совместимый, стриминг).
@@ -124,6 +138,11 @@ export declare function chatCompletion(router: RouterId, opts: ChatCompletionOpt
 export declare function onProgress(cb: (p: ProgressPayload) => void): Promise<() => void>;
 /** Подписка на порции стриминга чата. Возвращает функцию отписки. */
 export declare function onChunk(cb: (c: ChunkPayload) => void): Promise<() => void>;
+/** Подписка на запрос открыть дашборд вкладкой внутри хоста.
+ *
+ * Событие шлёт плагин после того, как роутер поднят и адрес проверен; хосту
+ * остаётся показать вкладку. Возвращает функцию отписки. */
+export declare function onOpenDashboard(cb: (p: OpenDashboardPayload) => void): Promise<() => void>;
 import './web-components';
 export { getUpdateState, onUpdateState, setUpdateState, checkUpdate, initUpdateWatcher, } from './updates';
 export type { PluginUpdateState } from './updates';

@@ -894,8 +894,7 @@ export class CloudRoutersPanel extends HTMLElement {
         <div class="banner banner-info">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:2px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
           <div>
-            Шлюз настраивается через собственный UI. Жми <b>«Web UI»</b> или открой в браузере:
-            <code>${s?.base_url ? esc(s.base_url) : 'http://localhost:' + port}/dashboard</code>
+            Шлюз настраивается в своём UI. Жми <b>«Web UI»</b> — дашборд откроется вкладкой прямо в приложении.
           </div>
         </div>
       ` : ''}

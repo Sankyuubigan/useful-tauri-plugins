@@ -405,7 +405,13 @@ pub async fn get_combos(app: AppHandle, router: String) -> Result<Vec<client::Co
     }
 }
 
-/// Открыть веб-дашборд роутера в браузере по умолчанию.
+/// Tauri-событие «открой дашборд вкладкой внутри приложения».
+///
+/// Payload: `{ router, base_url }`. Адрес уже проверен и роутер поднят —
+/// хосту остаётся только показать вкладку.
+pub const OPEN_DASHBOARD_EVENT: &str = "cloud-routers-open-dashboard";
+
+/// Открыть веб-дашборд роутера вкладкой внутри приложения-хоста.
 #[tauri::command]
 pub async fn open_dashboard(app: AppHandle, router: String) -> Result<(), String> {
     let router_id = router.parse::<RouterId>()?;
@@ -431,10 +437,15 @@ pub async fn open_dashboard(app: AppHandle, router: String) -> Result<(), String
             .map_err(|e| format!("start task join error: {}", e))??;
         }
     }
-    // Дашборд нашего шлюза лежит по тому же пути `/dashboard`, поэтому кнопка
-    // «Открыть Web UI» работает одинаково для всех роутеров.
-    let url = format!("{}/dashboard", base_url);
-    open_in_browser(&url);
+    // Дашборд открывает ХОСТ, вкладкой внутри приложения: внешний браузер
+    // отдавал дашборд пользователю в стороннем окне, где он терял контекст
+    // приложения (и не был виден в списке вкладок). Поэтому наружу уходит
+    // событие с готовым адресом, а не запуск браузера: адрес уже проверен
+    // health-вызовом выше, роутер при необходимости поднят.
+    let _ = app.emit(
+        OPEN_DASHBOARD_EVENT,
+        json!({ "router": router_id.as_str(), "base_url": base_url }),
+    );
     Ok(())
 }
 
@@ -590,26 +601,6 @@ pub fn set_api_key(app: AppHandle, router: String, key: Option<String>) -> Resul
         log::info!("{}: API-ключ очищен", router_id);
     }
     Ok(build_status(&app, router_id))
-}
-
-/// Открыть URL в браузере по умолчанию (без лишних крейтов).
-fn open_in_browser(url: &str) {
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        let mut cmd = std::process::Command::new("cmd");
-        cmd.args(["/C", "start", "", url]);
-        cmd.creation_flags(0x08000000);
-        let _ = cmd.spawn();
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(url).spawn();
-    }
-    #[cfg(all(unix, not(target_os = "macos")))]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-    }
 }
 
 #[cfg(test)]

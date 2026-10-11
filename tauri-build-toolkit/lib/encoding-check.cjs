@@ -7,12 +7,192 @@ const path = require('path');
 // ВАЖНО: папка проекта "test" исключается лишь частично — вендорные архивы
 // zapret внутри неё пропускаются по расширениям, но собственные исходники
 // (например .py) проверяются наравне со всем остальным.
-const EXCLUDE_DIRS = ['node_modules', 'target', '.git', 'dist', 'build', '.vite', '.next', 'out'];
-const EXCLUDE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.ico', '.exe', '.sys', '.dll', '.bin', '.zip', '.7z', '.rar', '.wixobj', '.wixpdb', '.pdf', '.woff', '.woff2', '.ttf', '.log', '.sqlite', '.db'];
+const EXCLUDE_DIRS = ['node_modules', 'target', '.git', 'dist', 'build', '.vite', '.next', 'out',
+    // Скрап-папка проекта (по core §1.2): промежуточные файлы пайплайна,
+    // отладочные дампы, машинный вывод. По конвенции она под gitignore,
+    // исходников там не бывает, а бинарные артефакты (WAV, SRT-дампы)
+    // только мешали проверке. Проверять в ней нечего.
+    'temp'];
+const EXCLUDE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.ico', '.exe', '.sys', '.dll', '.bin', '.zip', '.7z', '.rar', '.wixobj', '.wixpdb', '.pdf', '.woff', '.woff2', '.ttf', '.log', '.sqlite', '.db',
+    // Медиа и бинарные ресурсы. Перечислены явно, потому что список расширений
+    // неполон по определению, но основную защиту даёт isBinary() ниже.
+    '.wav', '.mp3', '.mp4', '.mkv', '.avi', '.webm', '.mov', '.m4a', '.flac', '.ogg',
+    '.onnx', '.icns', '.gguf', '.bin2', '.safetensors', '.pt', '.pth', '.npy', '.npz'];
 // Файлы-логи сборки: сюда попадает перенаправленный stdout/stderr, их кодировка
 // не имеет отношения к исходникам и всегда будет битой из-за консоли Windows.
-const EXCLUDE_FILES = ['build_out.txt', 'build_err.txt', 'npm-debug.log', 'yarn-error.log'];
+const EXCLUDE_FILES = ['build_out.txt', 'build_err.txt', 'npm-debug.log', 'yarn-error.log',
+    // Зеркало лога приложения (tauri-plugin-logs). Содержит stdout/stderr
+    // внешних процессов — llama-server печатает ANSI-цветом, и escape-последовательности
+    // попадают в файл как есть. Это вывод программы, а не исходник:
+    // кодировка тут не имеет отношения к тому, что проверяем.
+    'last_logs.txt'];
 const SOURCE_EXTENSIONS = ['.rs', '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.json', '.nsh', '.bat', '.cmd', '.ps1', '.py', '.html', '.css', '.yml', '.yaml', '.toml', '.txt', '.md', '.ini', '.cfg'];
+
+// ---------------------------------------------------------------------------
+// Слой `.gitignore`
+// ---------------------------------------------------------------------------
+// Зачем он, если выше есть EXCLUDE_DIRS/EXCLUDE_EXTENSIONS/EXCLUDE_FILES:
+// это перечисления того, что уже сломалось. Каждый новый тип артефакта
+// (venv, веса моделей, перенаправленный вывод консоли, логи стендов) требует
+// дописывать ещё одну строку в чужой файл — список заведомо неполон, и правки
+// копятся в разных проектах отдельно.
+//
+// `.gitignore` отвечает на тот же вопрос («это не наш исходник») и уже ведётся
+// пользователем руками. Читать его — значит не заводить второй список.
+//
+// ОГРАНИЧЕНИЕ (осознанное): читается только `.gitignore` в корне проекта.
+// Вложенные не читаются, как и `.git/info/exclude` и глобальные исключения git.
+// Для цели «не сканировать артефакты» этого достаточно; при появлении проекта,
+// где артефакты описаны во вложенном файле, — доработать здесь.
+
+const GITIGNORE_NAME = '.gitignore';
+
+/** Экранирует символ для RegExp. */
+function escapeRe(char) {
+    return char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Переводит паттерн gitignore в RegExp по правилам git.
+ *
+ * Поддерживается: `*` (не заходит за `/`), `?`, `**`, классы `[...]`,
+ * экранирование `\\`, ведущий `/` (от корня), слэш внутри (корневой паттерн),
+ * хвостовой `/` (только каталоги), ведущий `!` (отрицание).
+ */
+function patternToRegExp(pattern) {
+    let out = '';
+    for (let i = 0; i < pattern.length; i++) {
+        const char = pattern[i];
+        if (char === '*') {
+            if (pattern[i + 1] === '*') {
+                // `**/` — ноль или больше каталогов: `a/**/b` ловит и `a/b`.
+                if (pattern[i + 2] === '/') {
+                    out += '(?:.*/)?';
+                    i += 2;
+                } else {
+                    out += '.*';
+                    i += 1;
+                }
+            } else {
+                out += '[^/]*';
+            }
+        } else if (char === '?') {
+            out += '[^/]';
+        } else if (char === '[') {
+            const end = pattern.indexOf(']', i + 1);
+            if (end === -1) {
+                out += '\\[';
+            } else {
+                let cls = pattern.slice(i + 1, end);
+                if (cls[0] === '!') cls = '^' + cls.slice(1);
+                out += '[' + cls + ']';
+                i = end;
+            }
+        } else if (char === '\\') {
+            if (i + 1 < pattern.length) {
+                out += escapeRe(pattern[i + 1]);
+                i += 1;
+            } else {
+                out += '\\\\';
+            }
+        } else {
+            out += escapeRe(char);
+        }
+    }
+    return out;
+}
+
+/**
+ * Читает `.gitignore` корня проекта в правила проверки.
+ *
+ * Возвращает `null`, если файла нет: вызывающий код тогда ведёт себя как раньше,
+ * и проект без git не ломает чужие инструменты.
+ */
+function loadGitignore(root) {
+    const file = path.join(root, GITIGNORE_NAME);
+    if (!fs.existsSync(file)) return null;
+
+    const text = fs.readFileSync(file, 'utf8');
+    const rules = [];
+    for (const rawLine of text.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#')) continue;
+
+        let negate = false;
+        let pattern = line;
+        if (pattern.startsWith('!')) {
+            negate = true;
+            pattern = pattern.slice(1);
+        }
+
+        let dirOnly = false;
+        if (pattern.endsWith('/')) {
+            dirOnly = true;
+            pattern = pattern.slice(0, -1);
+        }
+        if (!pattern) continue;
+
+        // Без слэша (кроме хвостового) паттерн совпадает с любым сегментом пути,
+        // с ведущим или внутренним — только от корня. Ведущий слэш — это признак
+        // якоря, а не часть имени: `/test` значит «каталог test в корне», и
+        // оставлять его в теле паттерна значит искать подкаталог `/test` где-то
+        // внутри дерева (не сработает никогда).
+        let anchored = pattern.includes('/');
+        if (pattern.startsWith('/')) {
+            anchored = true;
+            pattern = pattern.slice(1);
+        }
+        if (!pattern) continue;
+
+        const body = patternToRegExp(pattern);
+        const source = anchored ? `^${body}` : `^(?:.*/)?${body}`;
+        rules.push({
+            negate,
+            dirOnly,
+            source: `${source}(?:/.*)?$`,
+        });
+    }
+
+    return { file, rules };
+}
+
+/**
+ * Игнорируется ли путь.
+ *
+ * Два правила git, оба важны и оба нарушались простой реализацией «последнее
+ * совпадение выигрывает» по одному пути:
+ *
+ * 1. «Последнее совпадение выигрывает»: отрицание `!` отменяет более раннее
+ *    правило, а не добавляется в конец списка.
+ * 2. Исключённый каталог исключает всё содержимое, и re-include внутрь него
+ *    невозможен (gitignore(5)): «It is not possible to re-include a file if a
+ *    parent directory of that file is excluded». Поэтому сначала проверяются
+ *    каталоги-родители, и любое совпадение там — окончательный ответ.
+ *
+ * Практически правило 2 и так достигается обрезкой в walkDir, но предикат
+ * обязан быть верен сам по себе: иначе он врал бы при вызове без обхода.
+ */
+function makeIgnoreTest(ignore) {
+    if (!ignore || ignore.rules.length === 0) return null;
+    const compiled = ignore.rules.map(rule => ({ ...rule, re: new RegExp(rule.source) }));
+
+    function evaluate(target, isDir) {
+        let ignored = false;
+        for (const rule of compiled) {
+            if (rule.dirOnly && !isDir) continue;
+            if (rule.re.test(target)) ignored = !rule.negate;
+        }
+        return ignored;
+    }
+
+    return function isIgnored(relPath, isDir) {
+        const parts = relPath.split('/');
+        for (let i = 1; i < parts.length; i++) {
+            if (evaluate(parts.slice(0, i).join('/'), true)) return true;
+        }
+        return evaluate(relPath, isDir);
+    };
+}
 
 // ---------------------------------------------------------------------------
 // Таблица CP1251
@@ -203,18 +383,58 @@ function repairLine(line) {
     return { text: out, repaired: true, runs };
 }
 
-function walkDir(dir, fileList = []) {
+/**
+ * Бинарный ли файл — по содержимому, а не по расширению.
+ *
+ * Зачем: список EXCLUDE_EXTENSIONS по определению неполон. В проектах лежат
+ * файлы без расширения (движок пишет рядом с WAV `.cv3reftext`), и новые
+ * форматы моделей появляются быстрее, чем их вносят в список. Список расширений
+ * тогда превращается в ловушку: любой новый бинарник роняет build/test/doctor
+ * с «нарушением кодировки», хотя нарушения нет — файл просто не текст.
+ *
+ * Признак бинарника — NUL-байт в первом блоке. Так же поступает git
+ * (core.bigFileThreshold + is_binary): текст в UTF-8 не содержит нулей,
+ * а WAV/MP4/ONNX/GGUF содержат их с первых байт.
+ *
+ * Эвристика, а не спецификация: гипотетический текстовый файл с NUL внутри
+ * будет пропущен. Для проверки кодировки цена такого пропуска несопоставима
+ * меньше цены ложного падения сборки на каждом медиафайле в temp/.
+ */
+function isBinary(buffer) {
+    const probe = buffer.length > 8192 ? buffer.subarray(0, 8192) : buffer;
+    for (let i = 0; i < probe.length; i++) {
+        if (probe[i] === 0) return true;
+    }
+    return false;
+}
+
+/**
+ * Рекурсивный обход с отсечением по `.gitignore`.
+ *
+ * Отсечение происходит ДО рекурсии: иначе обход всё равно прочитал бы десятки
+ * тысяч файлов вендорного `.venv`, чтобы выбросить их по имени. `stats` виден
+ * наружу — исключение обязано быть наблюдаемым, а не молчаливым (core §2.2).
+ */
+function walkDir(root, dir = root, fileList = [], ignore = null, stats = null) {
     if (!fs.existsSync(dir)) return fileList;
+    const counters = stats || { files: 0, skippedDirs: 0, skippedFiles: 0 };
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        const rel = path.relative(root, full).split(path.sep).join('/');
+        if (ignore && ignore(rel, entry.isDirectory())) {
+            counters[entry.isDirectory() ? 'skippedDirs' : 'skippedFiles']++;
+            continue;
+        }
         if (entry.isDirectory()) {
             if (EXCLUDE_DIRS.includes(entry.name)) continue;
-            walkDir(path.join(dir, entry.name), fileList);
+            walkDir(root, full, fileList, ignore, counters);
         } else if (entry.isFile()) {
             const ext = path.extname(entry.name).toLowerCase();
             if (EXCLUDE_EXTENSIONS.includes(ext)) continue;
             if (EXCLUDE_FILES.includes(entry.name.toLowerCase())) continue;
-            fileList.push(path.join(dir, entry.name));
+            counters.files++;
+            fileList.push(full);
         }
     }
     return fileList;
@@ -250,7 +470,21 @@ function checkProjectEncodings(cfg) {
     const root = cfg.projectRoot;
     console.log(`[encoding-check] Scanning project files in ${root} for strict UTF-8 & Mojibake...`);
 
-    const files = walkDir(root);
+    const ignore = loadGitignore(root);
+    const isIgnored = makeIgnoreTest(ignore);
+    if (isIgnored) {
+        console.log(`[encoding-check] .gitignore loaded (${ignore.rules.length} rule(s)) — artifacts under it are not scanned`);
+    } else {
+        console.log('[encoding-check] .gitignore absent or empty — scanning by EXCLUDE_DIRS/EXTENSIONS/FILES only');
+    }
+
+    const stats = { files: 0, skippedDirs: 0, skippedFiles: 0 };
+    const files = walkDir(root, root, [], isIgnored, stats);
+    console.log(
+        `[encoding-check] Проверяется файлов: ${stats.files}` +
+        (isIgnored ? `, пропущено по .gitignore: каталогов ${stats.skippedDirs}, файлов ${stats.skippedFiles}` : '')
+    );
+
     let errorCount = 0;
     const report = [];
 
@@ -262,6 +496,10 @@ function checkProjectEncodings(cfg) {
         } catch (e) {
             continue;
         }
+
+        // Бинарники не проверяем: у них нет кодировки, о которой имеет смысл
+        // говорить. Ловим по содержимому — расширений на все форматы не наберётся.
+        if (isBinary(buffer)) continue;
 
         // 1. Строгая валидность UTF-8
         const decoder = new TextDecoder('utf-8', { fatal: true });
@@ -333,4 +571,8 @@ module.exports = {
     repairLine,
     findMojibakeRuns,
     repairMojibakeRun,
+    isBinary,
+    loadGitignore,
+    makeIgnoreTest,
+    walkDir,
 };

@@ -2,11 +2,11 @@
 // Здесь живут гарды безопасности:
 //   1) origin проекта обязан совпадать с config.repo (иначе никаких git/gh операций);
 //   2) gh release create всегда с явным --repo owner/repo;
-//   3) ветка push — автодетект (git branch --show-current), без хардкода.
-//
-// git `-C <projectRoot>` исполняется из config.cjs; `tryRun` возвращает null
-// вместо исключения (состояние читается безопасно).
+//   3) ветка push — автодетект (git branch --show-current), без хардкода;
+//   4) файлы релиза (latest.json, версии) не должны быть игнорированы .gitignore.
 
+const path = require('path');
+const { spawnSync } = require('child_process');
 const { run, tryRun } = require('./run.cjs');
 const { normalizeRepo } = require('./config.cjs');
 
@@ -55,6 +55,43 @@ function gitAdd(cfg, paths) {
     for (const p of paths) run(cfg, 'git', ['add', '--', p]);
 }
 
+// Файлы, которые release обязан закоммитить: latest.json — манифест апдейтера
+// (его читает клиент по raw.githubusercontent), версии — источник правды сборки.
+function releaseCommittedFiles(cfg) {
+    return [
+        cfg.latestJsonPath,
+        path.join(cfg.projectRoot, 'src-tauri', 'tauri.conf.json'),
+        path.join(cfg.projectRoot, 'src-tauri', 'Cargo.toml'),
+    ];
+}
+
+// `git check-ignore` сам возвращает признак через код выхода (0 = игнорируется),
+// поэтому читаем состояние через spawnSync, а НЕ через tryRun (он бы проглотил код).
+function isIgnored(cfg, filePath) {
+    const res = spawnSync('git', ['-C', cfg.projectRoot, 'check-ignore', '-q', '--', filePath], {
+        stdio: 'ignore',
+        windowsHide: true,
+    });
+    if (res.error) return false;
+    return res.status === 0;
+}
+
+// ГАРД №3. Проверяется ДО сборки и публикации: `git add` игнорируемого файла
+// падает уже после `gh release create`, и релиз остаётся опубликованным без
+// latest.json в репозитории (апдейтер клиентов не видит новую версию).
+function checkCommittedFilesNotIgnored(cfg) {
+    const ignored = releaseCommittedFiles(cfg).filter((f) => isIgnored(cfg, f));
+    if (ignored.length) {
+        throw new Error(
+            `Git guard failed: файлы релиза игнорируются .gitignore:\n` +
+            ignored.map((f) => `  ${f}`).join('\n') +
+            `\nУберите правило из .gitignore (latest.json должен попадать в репозиторий:\n` +
+            `его читает апдейтер по raw.githubusercontent.com/<repo>/<branch>/latest.json).`
+        );
+    }
+    console.log('Ignored-files guard OK');
+}
+
 function gitCommit(cfg, message) {
     if (!message) return;
     run(cfg, 'git', ['commit', '-m', message], { echo: true });
@@ -83,6 +120,9 @@ module.exports = {
     getBranch,
     checkRepoMatches,
     checkGhAuth,
+    isIgnored,
+    checkCommittedFilesNotIgnored,
+    releaseCommittedFiles,
     ghReleaseCreate,
     gitAdd,
     gitCommit,

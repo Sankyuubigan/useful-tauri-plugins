@@ -3,7 +3,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { getRemoteOrigin, checkRepoMatches } = require('./github.cjs');
+const { getRemoteOrigin, checkRepoMatches, checkCommittedFilesNotIgnored } = require('./github.cjs');
 const { resolveKeyPath } = require('./signing.cjs');
 const { checkProjectEncodings } = require('./encoding-check.cjs');
 
@@ -48,6 +48,16 @@ function run(cfg) {
         console.log('repo guard      : OK');
     } catch (e) {
         console.log('repo guard      : FAIL ->', e.message);
+        repoOk = false;
+        process.exitCode = 1;
+    }
+
+    console.log('\n--- gitignore guard ---');
+    try {
+        checkCommittedFilesNotIgnored(cfg);
+        console.log('ignored guard   : OK');
+    } catch (e) {
+        console.log('ignored guard   : FAIL ->', e.message);
         repoOk = false;
         process.exitCode = 1;
     }

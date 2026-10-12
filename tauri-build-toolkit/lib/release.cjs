@@ -14,11 +14,13 @@ const { generateLatestJson } = require('./latest-json.cjs');
 const { readVersion } = require('./version.cjs');
 const {
     checkRepoMatches,
+    checkCommittedFilesNotIgnored,
     checkGhAuth,
     ghReleaseCreate,
     commitAndPush,
     gitFetchTagsForce,
     getBranch,
+    releaseCommittedFiles,
 } = require('./github.cjs');
 
 function cleanupBundle(cfg) {
@@ -32,7 +34,11 @@ function cleanupBundle(cfg) {
 }
 
 async function run(cfg) {
-    checkRepoMatches(cfg); // Р“РђР Р” в„–1: РґРѕ Р»СЋР±С‹С… git/gh РѕРїРµСЂР°С†РёР№
+    checkRepoMatches(cfg);
+    // Гард №3: latest.json и файлы версий не должны игнорироваться .gitignore.
+    // Без этой проверки падение на `git add` случилось бы уже ПОСЛЕ публикации
+    // релиза на GitHub — релиз есть, а манифеста апдейтера в репозитории нет.
+    checkCommittedFilesNotIgnored(cfg); // Р“РђР Р” в„–1: РґРѕ Р»СЋР±С‹С… git/gh РѕРїРµСЂР°С†РёР№
 
     await prep(cfg);
 
@@ -87,13 +93,10 @@ async function run(cfg) {
 
     generateLatestJson(cfg, { version, exeFileName, notes: `${product} ${version}` });
 
-    const branch = getBranch(cfg);
+const branch = getBranch(cfg);
     commitAndPush(cfg, {
-        files: [
-            cfg.latestJsonPath,
-            path.join(cfg.projectRoot, 'src-tauri', 'tauri.conf.json'),
-            path.join(cfg.projectRoot, 'src-tauri', 'Cargo.toml'),
-        ],
+        // SSOT: тот же список, который проверяет гард checkCommittedFilesNotIgnored.
+        files: releaseCommittedFiles(cfg),
         message: `chore(release): ${tag}`,
         branch,
 });

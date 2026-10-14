@@ -12,6 +12,7 @@
 //                (--with-logs — вложить в проект гайд подключения tauri-plugin-logs)
 
 const { loadProjectConfig } = require('./lib/config.cjs');
+const { isolateBuildTemp, SPAWNING_COMMANDS } = require('./lib/scratch.cjs');
 
 const COMMANDS = ['build', 'prep', 'installer', 'release', 'test', 'version', 'doctor', 'init'];
 
@@ -58,6 +59,21 @@ async function main() {
 
     const projectArg = argv.project || process.cwd();
     const cfg = loadProjectConfig(argv.project, process.cwd());
+
+    // Единственная точка подстановки временной папки сборки. Здесь, а не в
+    // каждом .bat и не в каждом модуле: process.env наследуется ВСЕМИ
+    // дочерними процессами, поэтому подстановка не расходится между
+    // build/test/installer/release и не забывается в новой команде.
+    // Подробности и обоснование — lib/scratch.cjs.
+    if (SPAWNING_COMMANDS.has(command)) {
+        try {
+            const tmp = isolateBuildTemp(cfg);
+            console.log(`[build-temp] ${tmp}`);
+        } catch (e) {
+            console.error('\n[ERROR]', e.message);
+            process.exit(1);
+        }
+    }
 
     switch (command) {
         case 'build':

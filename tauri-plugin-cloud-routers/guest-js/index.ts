@@ -64,6 +64,24 @@ export interface RouterStatus {
   can_check_update: boolean
   /** Показывать ли строки Node и БД. */
   has_npm_runtime: boolean
+  /**
+   * Последняя неудачная попытка обновления.
+   *
+   * `null` — обновление не проваливалось. Присутствие поля обязано быть
+   * видно пользователю: после сбоя состояние иначе неотличимо от «обновлений
+   * не было», и человек решает, что ничего не сломалось (core/rules.md §2.2).
+   */
+  failed_update: FailedUpdateInfo | null
+}
+
+/** Исход последней попытки обновления. */
+export interface FailedUpdateInfo {
+  /** Версия, до которой пытались обновиться. */
+  target_version: string
+  /** Unix-время попытки (секунды). */
+  at_unix: number
+  /** Короткая причина сбоя (с хвостом вывода npm/postinstall). */
+  reason: string
 }
 
 /**

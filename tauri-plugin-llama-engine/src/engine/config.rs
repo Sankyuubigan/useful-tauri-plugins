@@ -133,14 +133,15 @@ fn app_data_dir_name() -> &'static str {
     "llama-engine"
 }
 
-/// Папка данных плагина без AppHandle (APPDATA/llama-engine).
+/// Папка данных плагина без AppHandle (`APPDATA/llama-engine`).
+///
+/// Путь выбирает единая дверь [`ko_json_store::roots`], общая с хостом и
+/// остальными плагинами. Прямой `%APPDATA%` означал, что недоступность
+/// каталога (уровень целостности процесса ниже уровня объекта, антивирус,
+/// квота) превращала запуск движка в «отказано в доступе» без возможности
+/// починить это с стороны хоста.
 pub fn app_data_dir_early() -> PathBuf {
-    let base = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join(app_data_dir_name())
+    ko_json_store::roots::plugin_dir(app_data_dir_name())
 }
 
 /// Каталоги-доноры для авто-миграции: старые per-app хранилища движка.

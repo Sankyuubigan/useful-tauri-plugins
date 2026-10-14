@@ -1,4 +1,4 @@
-//! Tauri-команды плагина cloud-routers. Тонкий слой: вся логика — в `crate::router`.
+﻿//! Tauri-команды плагина cloud-routers. Тонкий слой: вся логика — в `crate::router`.
 
 use std::fs;
 use std::path::PathBuf;
@@ -14,6 +14,7 @@ use crate::router::{
     gateway_process, installer, process,
 };
 pub use crate::spec::{RouterId, RouterKind, RouterSpec, ROUTERS};
+pub use crate::router::config::FailedUpdate;
 
 /// Состояние шлюза для UI (индикатор + кнопки).
 #[derive(Serialize, Clone)]
@@ -51,6 +52,10 @@ pub struct RouterStatus {
     pub can_check_update: bool,
     /// Есть ли смысл показывать строку Node и БД.
     pub has_npm_runtime: bool,
+    /// Последняя неудачная попытка обновления. `None` — обновление не
+    /// проваливалось. Панель показывает её отдельной плашкой: иначе после
+    /// сбоя состояние неотличимо от «обновлений не было».
+    pub failed_update: Option<FailedUpdate>,
 }
 
 fn kind_str(router_id: RouterId) -> &'static str {
@@ -189,6 +194,7 @@ fn build_status(app: &AppHandle, router_id: RouterId) -> RouterStatus {
         can_install: true,
             can_check_update: true,
         has_npm_runtime: router_id.is_node_bundle(),
+        failed_update: cfg.failed_update.clone(),
     }
 }
 
@@ -609,7 +615,7 @@ mod tests {
 
     #[test]
     fn normalize_router_dir_appends_subdir_for_parent_path() {
-        let tmp = std::env::temp_dir().join("cr_test_parent");
+        let tmp = crate::router::test_scratch::scratch_dir("cr_test_parent");
         let _ = fs::remove_dir_all(&tmp);
         let result = normalize_router_dir(tmp.to_str().unwrap(), RouterId::OmniRoute).unwrap();
         assert_eq!(result, tmp.join("omniroute"));
@@ -619,7 +625,7 @@ mod tests {
 
     #[test]
     fn normalize_router_dir_keeps_correct_subdir() {
-        let tmp = std::env::temp_dir().join("cr_test_correct");
+        let tmp = crate::router::test_scratch::scratch_dir("cr_test_correct");
         let _ = fs::remove_dir_all(&tmp);
         let target = tmp.join("omniroute");
         fs::create_dir_all(&target).unwrap();
@@ -630,7 +636,7 @@ mod tests {
 
     #[test]
     fn normalize_router_dir_case_insensitive() {
-        let tmp = std::env::temp_dir().join("cr_test_case");
+        let tmp = crate::router::test_scratch::scratch_dir("cr_test_case");
         let _ = fs::remove_dir_all(&tmp);
         let target = tmp.join("OMNIROUTE");
         fs::create_dir_all(&target).unwrap();

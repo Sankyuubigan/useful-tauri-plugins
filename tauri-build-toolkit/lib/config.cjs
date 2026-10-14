@@ -121,6 +121,13 @@ function loadProjectConfig(projectArg, cwd) {
         syncDirs: Array.isArray(cfgRaw.syncDirs) ? cfgRaw.syncDirs : [],
         devWindow: cfgRaw.devWindow || null,
 
+        // Временная папка сборки. null → <projectRoot>/temp/buildtmp (см.
+        // lib/scratch.cjs). Переопределение нужно для ASCII-пути, когда путь
+        // проекта содержит кириллицу, либо чтобы вынести temp на короткий путь.
+        buildTemp: typeof cfgRaw.buildTemp === 'string' && cfgRaw.buildTemp.trim()
+            ? cfgRaw.buildTemp.trim()
+            : null,
+
         vcRedist: cfgRaw.vcRedist === true,
         vcRedistDir: cfgRaw.vcRedistDir || 'redist',
         vcRedistDlls: Array.isArray(cfgRaw.vcRedistDlls) && cfgRaw.vcRedistDlls.length

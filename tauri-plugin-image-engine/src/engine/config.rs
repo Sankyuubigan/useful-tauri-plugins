@@ -22,27 +22,28 @@ pub struct ImageEngineConfig {
 }
 
 /// Путь к `app_config.json` хоста (runtime, через AppHandle).
-pub fn get_config_path(app: &AppHandle) -> PathBuf {
-    let base = app.path().app_data_dir().unwrap_or_else(|_| PathBuf::from("."));
-    if !base.exists() {
-        let _ = fs::create_dir_all(&base);
-    }
-    base.join("app_config.json")
+pub fn get_config_path(_app: &AppHandle) -> PathBuf {
+    // Конфиг image-engine лежит в каталоге хоста, но путь выбирает общая дверь
+    // `ko-json-store`: прямой `app.path().app_data_dir()` приводил к тому, что
+    // хост писал в один каталог, а плагин искал другой — и обе стороны
+    // выглядели исправными, пока настройки не пропадали.
+    ko_json_store::roots::app_dir(HOST_APP_IDENTIFIER, "").join("app_config.json")
 }
 
+/// Идентификатор приложения-хоста: имя папки данных King Orch.
+const HOST_APP_IDENTIFIER: &str = "com.kingorch.app";
+
 /// Читает image-ключи ДО создания Tauri-приложения (тулы оркестратора, рантайм
-/// без AppHandle). Имя папки данных — как у хоста King Orch.
+/// без AppHandle). Путь — тот же корень, что и у хоста.
 pub fn load_image_config_early() -> ImageEngineConfig {
-    let base = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("."));
-    let path = base.join("com.kingorch.app").join("app_config.json");
-    if let Ok(data) = fs::read_to_string(path) {
-        serde_json::from_str(&data).unwrap_or_default()
-    } else {
-        ImageEngineConfig::default()
+    let path = ko_json_store::roots::app_dir(HOST_APP_IDENTIFIER, "").join("app_config.json");
+    match ko_json_store::read_text(&path) {
+        Ok(Some(data)) => serde_json::from_str(&data).unwrap_or_default(),
+        Ok(None) => ImageEngineConfig::default(),
+        Err(e) => {
+            log::warn!("[image-engine] конфиг {} не прочитан ({}): беру значения по умолчанию", path.display(), e);
+            ImageEngineConfig::default()
+        }
     }
 }
 

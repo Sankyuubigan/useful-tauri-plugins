@@ -348,6 +348,21 @@ const STYLE = `
     box-shadow: 0 0 10px rgba(168, 85, 247, 0.5);
     transition: width 0.2s ease;
   }
+  /* Этап идёт, но процент неизвестен (npm install, распаковка, postinstall).
+     Бегущая полоса означает «работа идёт» и не выдаёт себя за завершение:
+     заполненная полоса на этом этапе была прямой ложью в интерфейсе. */
+  .progress-bar.indeterminate {
+    width: 35%;
+    transition: none;
+    animation: progress-indeterminate 1.4s ease-in-out infinite;
+  }
+  @keyframes progress-indeterminate {
+    0% { margin-left: -35%; }
+    100% { margin-left: 100%; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .progress-bar.indeterminate { animation: none; width: 100%; opacity: 0.5; }
+  }
 
   /* ── Комбо / Доступные роуты ── */
   .combos-wrapper {
@@ -551,15 +566,27 @@ export class CloudRoutersPanel extends HTMLElement {
         const box = this.root.querySelector('.progress-container');
         if (box)
             box.classList.add('on');
-        const pct = total > 0 ? `${Math.min(100, (done / total) * 100).toFixed(0)}%` : '...';
+        // `total === 0` означает «процент НЕИЗВЕСТЕН», а не «всё готово».
+        // Раньше здесь ставилась ширина 100%, и каждый этап без измеримого
+        // прогресса (скачивание Node, распаковка, npm install, postinstall)
+        // выглядел как завершённый: полоса прыгала в конец, а установка
+        // продолжалась ещё минуту. Неизвестный процент показывается бегущей
+        // полосой — она и означает «идёт, жди».
+        const indeterminate = total <= 0;
+        if (bar) {
+            bar.classList.toggle('indeterminate', indeterminate);
+            if (!indeterminate) {
+                bar.style.width = `${Math.min(100, (done / total) * 100).toFixed(1)}%`;
+            }
+        }
+        const pct = indeterminate ? '…' : `${Math.min(100, (done / total) * 100).toFixed(0)}%`;
         if (label)
             label.innerHTML = `<span>${esc(text)}</span><span>${pct}</span>`;
-        if (bar)
-            bar.style.width = total > 0 ? `${Math.min(100, (done / total) * 100).toFixed(1)}%` : '100%';
-        if (total > 0 && done >= total) {
-            logPlugin(`[cloud-routers] установка завершена: ${text}`);
-            void this.refresh();
-        }
+        // Завершённость НЕ выводится из арифметики прогресса. Прогресс — это
+        // сообщение о ходе работы, а вердикт «установлено» приходит из возврата
+        // команды, который разбирает `onInstall`. Раньше условие
+        // `done >= total` срабатывало посреди установки (на попадании в кэш tgz)
+        // и объявляло «установка завершена» за минуту до реального конца.
     }
     setBtnBusy(selector, v) {
         const btn = this.root.querySelector(selector);
@@ -573,11 +600,12 @@ export class CloudRoutersPanel extends HTMLElement {
             detail: { router, combos: this.combosByRouter.get(router) ?? [] },
         }));
     }
-    async onInstall() {
+    async onInstall(force = true) {
         const router = this.router;
         this.setBtnBusy('.install', true);
+        this.setBtnBusy('.install-update', true);
         try {
-            this.setStatus(router, await installOrUpdate(router, true));
+            this.setStatus(router, await installOrUpdate(router, force));
             this.setCombos(router, await getCombos(router).catch(() => []));
         }
         catch (e) {
@@ -590,10 +618,24 @@ export class CloudRoutersPanel extends HTMLElement {
                 box.classList.add('on');
             if (label)
                 label.textContent = `Ошибка: ${String(e)}`;
-            return;
+            // Статус перечитываем ДАЖЕ при ошибке: он несёт failed_update — плашку
+            // «обновление не удалось, работает прежняя версия». Без этого панель
+            // осталась бы в состоянии, неотличимом от «обновлений не было».
+            // null здесь означает «перечитать не удалось» — тогда оставляем прежнее
+            // состояние, а не подменяем его пустым.
+            const fresh = await getStatus(router).catch(() => null);
+            if (fresh)
+                this.setStatus(router, fresh);
+            // Перерисовка обязательна и в ветке ошибки: плашка «обновление не
+            // удалось» появляется именно из свежего статуса. Без неё данные
+            // обновились бы молча и пользователь увидел бы прежнюю картину —
+            // то есть «ничего не изменилось».
+            this.render();
+            throw e;
         }
         finally {
             this.setBtnBusy('.install', false);
+            this.setBtnBusy('.install-update', false);
         }
         this.notifyCombosChanged(router);
         this.render();
@@ -736,7 +778,18 @@ export class CloudRoutersPanel extends HTMLElement {
     }
     async onInstallUpdate() {
         const router = this.router;
-        await this.onInstall();
+        try {
+            // force=false: обновление — это обновление. force=true звал полную
+            // переустановку (заново Node + снос dist + npm с нуля) там, где хватило
+            // обновить версию, и стоил минут вместо секунд.
+            await this.onInstall(false);
+        }
+        catch {
+            // Значок обновления НЕ снимаем: попытка не удалась, значит версия,
+            // которую предлагали поставить, всё ещё доступна. Снимать его здесь
+            // было прямой ложью — «обновлений нет» после неудачного обновления.
+            return;
+        }
         setUpdateState(router, { hasUpdate: false });
     }
     switchRouter(router) {
@@ -769,6 +822,24 @@ export class CloudRoutersPanel extends HTMLElement {
             : state.kind === 'error'
                 ? state.message
                 : 'Синхронизация состояния шлюза…';
+        // Плашка неудачного обновления. Показывается по данным backend
+        // (`failed_update`), а не по локальному флагу: сбой мог произойти вчера,
+        // в другом окне или до перезапуска приложения — локальный флаг этого не
+        // знает, а пользователь должен. Текст прямо говорит, что рабочая версия
+        // цела: обновление транзакционное и не сносит установленную версию.
+        const failedUpdate = s?.failed_update;
+        const failedBanner = failedUpdate
+            ? `
+        <div class="banner banner-warn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:2px;"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <div>
+            Обновление${failedUpdate.target_version ? ` до <b>v${esc(failedUpdate.target_version)}</b>` : ''} не удалось —
+            действующая версия не тронута и продолжает работать.
+            <div style="margin-top:6px;white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:11px;opacity:.85;">${esc(failedUpdate.reason)}</div>
+            <div style="margin-top:6px;">Нажмите <b>«Обновить сейчас»</b>, чтобы повторить попытку.</div>
+          </div>
+        </div>`
+            : '';
         const version = s?.version ? `v${s.version}` : '—';
         const port = s?.port ? `${s.port}` : '—';
         const dbStatus = s?.has_npm_runtime ? (s?.db_present ? 'Подключена' : 'Не найдена') : 'N/A';
@@ -866,6 +937,8 @@ export class CloudRoutersPanel extends HTMLElement {
       </div>
 
       <!-- Уведомления/Баннеры -->
+      ${failedBanner}
+
       ${native ? `
         <div class="banner banner-info">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:2px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
@@ -911,7 +984,12 @@ export class CloudRoutersPanel extends HTMLElement {
         this.root.querySelectorAll('.tabs-nav button').forEach((b) => {
             b.addEventListener('click', () => this.switchRouter(b.dataset.router));
         });
-        this.root.querySelector('.install')?.addEventListener('click', () => void this.onInstall());
+        this.root.querySelector('.install')?.addEventListener('click', () => {
+            // Ошибка уже показана тостом и в строке прогресса; промис заново бросает
+            // её наружу, чтобы вызывающий знал исход — здесь глотаем осознанно,
+            // иначе в консоли браузера остаётся необработанный rejection.
+            void this.onInstall().catch(() => { });
+        });
         this.root.querySelector('.check-update')?.addEventListener('click', () => void this.onCheckUpdate());
         this.root.querySelector('.install-update')?.addEventListener('click', () => void this.onInstallUpdate());
         this.root.querySelector('.start')?.addEventListener('click', () => void this.onStart());

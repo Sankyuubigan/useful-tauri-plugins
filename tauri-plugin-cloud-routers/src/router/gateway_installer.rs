@@ -1,4 +1,4 @@
-//! Установка собственного бинаря шлюза (`RouterKind::NativeGateway`).
+﻿//! Установка собственного бинаря шлюза (`RouterKind::NativeGateway`).
 //!
 //! ## Почему это отдельный модуль, а не флаг в `installer.rs`
 //!
@@ -221,14 +221,56 @@ pub fn install(
             e
         )
     })?;
-    // Замена целиком: прежний файл убираем в последний момент, чтобы при сбое
-    // переименования осталась рабочая предыдущая версия, а не дыра.
+    // Замена целиком через промежуточное имя, а не «удалить → переименовать»:
+// между удалением и переименованием есть окно, в котором рабочего бинаря
+// нет вообще. Переименование в `.old` → переименование нового на место →
+// удаление `.old` такого окна не создаёт, а при сбое возвращает прежний файл.
+    let backup = dir.join(format!("{}.old", file_name));
     if dest.exists() {
-        fs::remove_file(&dest)
-            .map_err(|e| format!("Не удалось убрать прежний {}: {}", dest.display(), e))?;
+        let _ = fs::remove_file(&backup);
+        fs::rename(&dest, &backup).map_err(|e| {
+            format!(
+                "Не удалось освободить место под новый бинарь ({} -> {}): {}. \
+                 Прежний бинарь не тронут.",
+                dest.display(),
+                backup.display(),
+                e
+            )
+        })?;
     }
-    fs::rename(&staged, &dest)
-        .map_err(|e| format!("Не удалось подставить {}: {}", dest.display(), e))?;
+    if let Err(e) = fs::rename(&staged, &dest) {
+        let restore = if !dest.exists() && backup.exists() {
+            fs::rename(&backup, &dest).err()
+        } else {
+            None
+        };
+        return Err(match restore {
+            Some(r) => format!(
+                "Не удалось подставить новый бинарь ({}): {}. Откат не удался: {}. \
+                 Прежний бинарь остался в {}.",
+                staged.display(),
+                e,
+                r,
+                backup.display()
+            ),
+            None => format!(
+                "Не удалось подставить новый бинарь ({}): {}. Прежний бинарь \
+                 восстановлен и продолжает работать.",
+                staged.display(),
+                e
+            ),
+        });
+    }
+    if backup.exists() {
+        if let Err(e) = fs::remove_file(&backup) {
+            log::warn!(
+                "{}: прежний бинарь {} не удалён: {}",
+                router_id,
+                backup.display(),
+                e
+            );
+        }
+    }
 
     let version = probe_version(&dest)?;
     progress("done", 0, 0, &format!("✅ {} v{} установлен", router_id, version));
@@ -251,7 +293,7 @@ mod tests {
         fn new(tag: &str) -> Self {
             static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
             let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let p = std::env::temp_dir().join(format!("cr_gwinst_{tag}_{}", seq));
+            let p = crate::router::test_scratch::scratch_dir(&format!("cr_gwinst_{}_{}", tag, seq));
             let _ = fs::remove_dir_all(&p);
             fs::create_dir_all(&p).expect("создать temp");
             TempDir(p)

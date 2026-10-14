@@ -1,4 +1,4 @@
-//! Конфигурация плагина cloud-routers — вложенная секция `cloud_routers` файла
+﻿//! Конфигурация плагина cloud-routers — вложенная секция `cloud_routers` файла
 //! `app_config.json` САМОГО ПЛАГИНА (`APPDATA/cloud-routers/app_config.json`).
 //!
 //! ## Почему не в файле хоста
@@ -24,6 +24,36 @@ use tauri::AppHandle;
 
 use crate::commands::RouterId;
 
+/// Неудачная попытка обновления. Живёт в конфиге, а не в памяти, потому что
+/// пользователь возвращается к панели после перезапуска приложения: без записи
+/// «обновление не удалось» он видит рабочую прежнюю версию и решает, что
+/// обновлений не было (core/rules.md §2.2 — запрет лжи).
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct FailedUpdate {
+    /// Версия, до которой пытались обновиться.
+    #[serde(default)]
+    pub target_version: String,
+    /// Unix-время попытки.
+    #[serde(default)]
+    pub at_unix: u64,
+    /// Короткая причина (с хвостом вывода npm/postinstall).
+    #[serde(default)]
+    pub reason: String,
+}
+
+impl FailedUpdate {
+    /// Человекочитаемая строка для панели. Время показываем только когда оно
+    /// осмысленно (Unix-время из прошлой эпохи — мусор в конфиге, а не факт).
+    pub fn describe(&self) -> String {
+        let target = if self.target_version.is_empty() {
+            String::new()
+        } else {
+            format!(" до v{}", self.target_version)
+        };
+        format!("Обновление{} не удалось: {}", target, self.reason.trim())
+    }
+}
+
 /// Конфиг роутера (секция `cloud_routers.<id>` в `app_config.json`).
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "snake_case")]
@@ -40,6 +70,10 @@ pub struct RouterConfig {
     /// Версия портативного Node.js (vX.Y.Z), на котором работает шлюз.
     #[serde(default)]
     pub node_version: Option<String>,
+    /// Последняя неудачная попытка обновления. `None` — либо обновлений не
+    /// было, либо последнее прошло успешно (тогда запись затирается).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_update: Option<FailedUpdate>,
     /// Ленивый автозапуск: поднимать сервер, когда хост выбирает комбо роутера.
     #[serde(default = "default_true")]
     pub auto_start: bool,
@@ -91,13 +125,14 @@ const LEGACY_HOST_DIRS: &[&str] = &["com.kingorch.app", "com.reposcontrol.app"];
 const MIGRATED_KEYS: &[&str] = &["cloud_routers", "nine_router"];
 
 /// Каталог данных плагина без `AppHandle` (`APPDATA/cloud-routers`).
+///
+/// Путь выбирает единая дверь [`ko_json_store::roots`]: тот же корень, что у
+/// хоста и остальных плагинов. Раньше здесь был прямой `%APPDATA%` — и когда
+/// каталог оказывался закрыт для записи (уровень целостности процесса ниже
+/// уровня объекта, антивирус, квота), установка роутера падала с «отказано в
+/// доступе», и починить это на стороне хоста было невозможно.
 pub fn app_data_dir() -> PathBuf {
-    let base = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("."));
-    base.join(APP_DATA_DIR_NAME)
+    ko_json_store::roots::plugin_dir(APP_DATA_DIR_NAME)
 }
 
 /// Разовый перенос настроек из старого per-app конфига хоста, если общего файла
@@ -293,16 +328,15 @@ pub fn server_script(dist: &std::path::Path, router_id: RouterId) -> PathBuf {
 
 // ────────────────────────────── Каталог данных ──────────────────────────────
 
-/// Путь к каталогу данных роутера: единый для всех приложений (%APPDATA%/<id>).
+/// Путь к каталогу данных роутера: единый для всех приложений (`APPDATA/<id>`).
 pub fn router_data_dir(_app: &AppHandle, router_id: RouterId) -> PathBuf {
-    let base = std::env::var_os("APPDATA")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("."));
-    let data_dir = base.join(router_id.dir_name());
-    if !data_dir.exists() {
-        let _ = fs::create_dir_all(&data_dir);
+    let data_dir = ko_json_store::roots::plugin_dir(router_id.dir_name());
+    if let Err(e) = fs::create_dir_all(&data_dir) {
+        log::error!(
+            "cloud-routers: не удалось создать {} ({}) — установка и запуск роутера невозможны",
+            data_dir.display(),
+            e
+        );
     }
     data_dir
 }
@@ -413,7 +447,7 @@ mod tests {
     fn unique_temp_dir(tag: &str) -> PathBuf {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let p = std::env::temp_dir().join(format!("{}_{}", tag, seq));
+        let p = crate::router::test_scratch::scratch_dir(&format!("{}_{}", tag, seq));
         let _ = fs::remove_dir_all(&p);
         p
     }
@@ -526,6 +560,69 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// Плашка о неудачном обновлении обязана называть версию И говорить, что
+    /// действующая не тронута: без второго пользователь решит, что роутер
+    /// сломан, и полезет переустанавливать рабочую версию.
+    #[test]
+    fn failed_update_describe_names_target_and_says_version_survived() {
+        let with_version = FailedUpdate {
+            target_version: "3.8.51".to_string(),
+            at_unix: 1_700_000_000,
+            reason: "npm install не завершился (код 1)".to_string(),
+        };
+        let text = with_version.describe();
+        assert!(text.contains("3.8.51"), "названа целевая версия: {}", text);
+        assert!(text.contains("не удалось"), "сказано, что не удалось: {}", text);
+        assert!(text.contains("npm install"), "причина дошла до текста: {}", text);
+
+        // Без версии текст не должен содержать пустого «до v».
+        let no_version = FailedUpdate {
+            target_version: String::new(),
+            at_unix: 0,
+            reason: "сеть недоступна".to_string(),
+        };
+        let text = no_version.describe();
+        assert!(!text.contains("до v"), "пустой тег выглядит как ошибка вёрстки: {}", text);
+    }
+
+    /// Запись о неудаче переживает перезапуск: она в конфиге, а не в памяти.
+    #[test]
+    fn failed_update_survives_config_roundtrip() {
+        let tmp = crate::router::test_scratch::scratch_dir("failed_update_json");
+        let path = tmp.join("app_config.json");
+        let cfg = RouterConfig {
+            installed_version: Some("3.8.50".to_string()),
+            failed_update: Some(FailedUpdate {
+                target_version: "3.8.51".to_string(),
+                at_unix: 42,
+                reason: "postinstall не завершился".to_string(),
+            }),
+            ..Default::default()
+        };
+        save_config_file(&path, RouterId::OmniRoute, &cfg).expect("сохранить");
+        let raw = fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("failed_update"), "запись обязана попасть в файл: {}", raw);
+        assert!(
+            raw.contains("3.8.50"),
+            "рабочая версия сохраняется рядом со сбоем: {}",
+            raw
+        );
+
+        // Секция лежит под cloud_routers.<id> — читаем её же, как это делает
+        // load_config, иначе тест проверял бы разбор всего файла, а не секции.
+        let root: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let section = root
+            .get("cloud_routers")
+            .and_then(|c| c.get(RouterId::OmniRoute.as_str()))
+            .expect("секция omniroute")
+            .clone();
+        let back: RouterConfig = serde_json::from_value(section).unwrap();
+        assert_eq!(back.installed_version.as_deref(), Some("3.8.50"));
+        let failed = back.failed_update.expect("сбой прочитан");
+        assert_eq!(failed.target_version, "3.8.51");
+        assert_eq!(failed.at_unix, 42);
+    }
+
     #[test]
     fn default_ports() {
         assert_eq!(RouterId::NineRouter.default_port(), 20128);
@@ -558,7 +655,7 @@ mod tests {
 
     #[test]
     fn test_server_record() {
-        let tmp = std::env::temp_dir().join("cloud_routers_test_server_record");
+        let tmp = crate::router::test_scratch::scratch_dir("cloud_routers_test_server_record");
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
 
@@ -583,7 +680,7 @@ mod tests {
         // временный каталог приводил к взаимному удалению папок.
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let tmp = std::env::temp_dir().join(format!("cr_test_server_record_legacy_{seq}"));
+        let tmp = crate::router::test_scratch::scratch_dir(&format!("cr_test_server_record_legacy_{}", seq));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
         fs::write(server_record_path(&tmp), r#"{"pid":7,"port":20128}"#).unwrap();

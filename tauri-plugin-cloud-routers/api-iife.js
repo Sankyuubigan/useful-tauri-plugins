@@ -410,6 +410,21 @@
     box-shadow: 0 0 10px rgba(168, 85, 247, 0.5);
     transition: width 0.2s ease;
   }
+  /* \u042D\u0442\u0430\u043F \u0438\u0434\u0451\u0442, \u043D\u043E \u043F\u0440\u043E\u0446\u0435\u043D\u0442 \u043D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u0435\u043D (npm install, \u0440\u0430\u0441\u043F\u0430\u043A\u043E\u0432\u043A\u0430, postinstall).
+     \u0411\u0435\u0433\u0443\u0449\u0430\u044F \u043F\u043E\u043B\u043E\u0441\u0430 \u043E\u0437\u043D\u0430\u0447\u0430\u0435\u0442 \xAB\u0440\u0430\u0431\u043E\u0442\u0430 \u0438\u0434\u0451\u0442\xBB \u0438 \u043D\u0435 \u0432\u044B\u0434\u0430\u0451\u0442 \u0441\u0435\u0431\u044F \u0437\u0430 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0438\u0435:
+     \u0437\u0430\u043F\u043E\u043B\u043D\u0435\u043D\u043D\u0430\u044F \u043F\u043E\u043B\u043E\u0441\u0430 \u043D\u0430 \u044D\u0442\u043E\u043C \u044D\u0442\u0430\u043F\u0435 \u0431\u044B\u043B\u0430 \u043F\u0440\u044F\u043C\u043E\u0439 \u043B\u043E\u0436\u044C\u044E \u0432 \u0438\u043D\u0442\u0435\u0440\u0444\u0435\u0439\u0441\u0435. */
+  .progress-bar.indeterminate {
+    width: 35%;
+    transition: none;
+    animation: progress-indeterminate 1.4s ease-in-out infinite;
+  }
+  @keyframes progress-indeterminate {
+    0% { margin-left: -35%; }
+    100% { margin-left: 100%; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .progress-bar.indeterminate { animation: none; width: 100%; opacity: 0.5; }
+  }
 
   /* \u2500\u2500 \u041A\u043E\u043C\u0431\u043E / \u0414\u043E\u0441\u0442\u0443\u043F\u043D\u044B\u0435 \u0440\u043E\u0443\u0442\u044B \u2500\u2500 */
   .combos-wrapper {
@@ -604,13 +619,15 @@
       const label = this.root.querySelector(".progress-status");
       const box = this.root.querySelector(".progress-container");
       if (box) box.classList.add("on");
-      const pct = total > 0 ? `${Math.min(100, done / total * 100).toFixed(0)}%` : "...";
-      if (label) label.innerHTML = `<span>${esc(text)}</span><span>${pct}</span>`;
-      if (bar) bar.style.width = total > 0 ? `${Math.min(100, done / total * 100).toFixed(1)}%` : "100%";
-      if (total > 0 && done >= total) {
-        logPlugin(`[cloud-routers] \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0430 \u0437\u0430\u0432\u0435\u0440\u0448\u0435\u043D\u0430: ${text}`);
-        void this.refresh();
+      const indeterminate = total <= 0;
+      if (bar) {
+        bar.classList.toggle("indeterminate", indeterminate);
+        if (!indeterminate) {
+          bar.style.width = `${Math.min(100, done / total * 100).toFixed(1)}%`;
+        }
       }
+      const pct = indeterminate ? "\u2026" : `${Math.min(100, done / total * 100).toFixed(0)}%`;
+      if (label) label.innerHTML = `<span>${esc(text)}</span><span>${pct}</span>`;
     }
     setBtnBusy(selector, v) {
       const btn = this.root.querySelector(selector);
@@ -626,11 +643,12 @@
         })
       );
     }
-    async onInstall() {
+    async onInstall(force = true) {
       const router = this.router;
       this.setBtnBusy(".install", true);
+      this.setBtnBusy(".install-update", true);
       try {
-        this.setStatus(router, await installOrUpdate(router, true));
+        this.setStatus(router, await installOrUpdate(router, force));
         this.setCombos(router, await getCombos(router).catch(() => []));
       } catch (e) {
         const msg = `\u041E\u0448\u0438\u0431\u043A\u0430 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0438: ${String(e)}`;
@@ -640,9 +658,13 @@
         const box = this.root.querySelector(".progress-container");
         if (box) box.classList.add("on");
         if (label) label.textContent = `\u041E\u0448\u0438\u0431\u043A\u0430: ${String(e)}`;
-        return;
+        const fresh = await getStatus(router).catch(() => null);
+        if (fresh) this.setStatus(router, fresh);
+        this.render();
+        throw e;
       } finally {
         this.setBtnBusy(".install", false);
+        this.setBtnBusy(".install-update", false);
       }
       this.notifyCombosChanged(router);
       this.render();
@@ -761,7 +783,11 @@
     }
     async onInstallUpdate() {
       const router = this.router;
-      await this.onInstall();
+      try {
+        await this.onInstall(false);
+      } catch {
+        return;
+      }
       setUpdateState(router, { hasUpdate: false });
     }
     switchRouter(router) {
@@ -786,6 +812,17 @@
         statusPill = `<span class="status-pill warn"><span class="pulse-dot"></span> \u0413\u043E\u0442\u043E\u0432 \u043A \u0437\u0430\u043F\u0443\u0441\u043A\u0443</span>`;
       }
       const message = known ? s.message : state.kind === "error" ? state.message : "\u0421\u0438\u043D\u0445\u0440\u043E\u043D\u0438\u0437\u0430\u0446\u0438\u044F \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u044F \u0448\u043B\u044E\u0437\u0430\u2026";
+      const failedUpdate = s?.failed_update;
+      const failedBanner = failedUpdate ? `
+        <div class="banner banner-warn">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:2px;"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          <div>
+            \u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435${failedUpdate.target_version ? ` \u0434\u043E <b>v${esc(failedUpdate.target_version)}</b>` : ""} \u043D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u2014
+            \u0434\u0435\u0439\u0441\u0442\u0432\u0443\u044E\u0449\u0430\u044F \u0432\u0435\u0440\u0441\u0438\u044F \u043D\u0435 \u0442\u0440\u043E\u043D\u0443\u0442\u0430 \u0438 \u043F\u0440\u043E\u0434\u043E\u043B\u0436\u0430\u0435\u0442 \u0440\u0430\u0431\u043E\u0442\u0430\u0442\u044C.
+            <div style="margin-top:6px;white-space:pre-wrap;font-family:ui-monospace,monospace;font-size:11px;opacity:.85;">${esc(failedUpdate.reason)}</div>
+            <div style="margin-top:6px;">\u041D\u0430\u0436\u043C\u0438\u0442\u0435 <b>\xAB\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u0441\u0435\u0439\u0447\u0430\u0441\xBB</b>, \u0447\u0442\u043E\u0431\u044B \u043F\u043E\u0432\u0442\u043E\u0440\u0438\u0442\u044C \u043F\u043E\u043F\u044B\u0442\u043A\u0443.</div>
+          </div>
+        </div>` : "";
       const version = s?.version ? `v${s.version}` : "\u2014";
       const port = s?.port ? `${s.port}` : "\u2014";
       const dbStatus = s?.has_npm_runtime ? s?.db_present ? "\u041F\u043E\u0434\u043A\u043B\u044E\u0447\u0435\u043D\u0430" : "\u041D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u0430" : "N/A";
@@ -882,6 +919,8 @@
       </div>
 
       <!-- \u0423\u0432\u0435\u0434\u043E\u043C\u043B\u0435\u043D\u0438\u044F/\u0411\u0430\u043D\u043D\u0435\u0440\u044B -->
+      ${failedBanner}
+
       ${native ? `
         <div class="banner banner-info">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:2px;"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
@@ -926,7 +965,10 @@
       this.root.querySelectorAll(".tabs-nav button").forEach((b) => {
         b.addEventListener("click", () => this.switchRouter(b.dataset.router));
       });
-      this.root.querySelector(".install")?.addEventListener("click", () => void this.onInstall());
+      this.root.querySelector(".install")?.addEventListener("click", () => {
+        void this.onInstall().catch(() => {
+        });
+      });
       this.root.querySelector(".check-update")?.addEventListener("click", () => void this.onCheckUpdate());
       this.root.querySelector(".install-update")?.addEventListener("click", () => void this.onInstallUpdate());
       this.root.querySelector(".start")?.addEventListener("click", () => void this.onStart());

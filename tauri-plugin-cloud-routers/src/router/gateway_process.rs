@@ -1,4 +1,4 @@
-//! Управление процессом собственного шлюза (`cloud-routers-gateway`).
+﻿//! Управление процессом собственного шлюза (`cloud-routers-gateway`).
 //!
 //! ## Отличие от `router::process` (node-роутеры)
 //!
@@ -372,8 +372,8 @@ mod tests {
         // Нет записи → нечего останавливать. Важно: НЕ убиваем «случайный» pid.
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let data_dir = std::env::temp_dir().join(format!("cr_gwproc_norecord_{seq}"));
-        let install_dir = std::env::temp_dir().join(format!("cr_gwproc_norecord_inst_{seq}"));
+        let data_dir = crate::router::test_scratch::scratch_dir(&format!("cr_gwproc_norecord_{}", seq));
+        let install_dir = crate::router::test_scratch::scratch_dir(&format!("cr_gwproc_norecord_inst_{}", seq));
         let _ = std::fs::remove_dir_all(&data_dir);
         stop_server(&install_dir, 59999, &data_dir); // не должно паниковать
         assert!(!config::server_record_path(&data_dir).exists());
@@ -390,8 +390,8 @@ mod tests {
     fn refuses_to_kill_process_with_foreign_exe() {
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let data_dir = std::env::temp_dir().join(format!("cr_gwproc_foreign_{seq}"));
-        let install_dir = std::env::temp_dir().join(format!("cr_gwproc_foreign_inst_{seq}"));
+        let data_dir = crate::router::test_scratch::scratch_dir(&format!("cr_gwproc_foreign_{}", seq));
+        let install_dir = crate::router::test_scratch::scratch_dir(&format!("cr_gwproc_foreign_inst_{}", seq));
         std::fs::create_dir_all(&data_dir).expect("mkdir");
 
         let my_pid = std::process::id();
@@ -420,8 +420,8 @@ mod tests {
         // временный каталог приводил к взаимному удалению папок.
         static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let data_dir = std::env::temp_dir().join(format!("cr_gwproc_deadpid_{seq}"));
-        let install_dir = std::env::temp_dir().join(format!("cr_gwproc_deadpid_inst_{seq}"));
+        let data_dir = crate::router::test_scratch::scratch_dir(&format!("cr_gwproc_deadpid_{}", seq));
+        let install_dir = crate::router::test_scratch::scratch_dir(&format!("cr_gwproc_deadpid_inst_{}", seq));
         let _ = std::fs::remove_dir_all(&data_dir);
         std::fs::create_dir_all(&data_dir).expect("mkdir");
         // pid 0 — заведомо несуществующий, `pid_alive` вернёт false.
@@ -454,7 +454,7 @@ mod tests {
 
     #[test]
     fn gateway_state_reports_not_listening_for_free_port() {
-        let dir = std::env::temp_dir().join("cr_gwproc_state");
+        let dir = crate::router::test_scratch::scratch_dir("cr_gwproc_state");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
         // Порт 1 на loopback свободен у обычного пользователя.

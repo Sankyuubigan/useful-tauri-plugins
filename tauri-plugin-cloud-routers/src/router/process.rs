@@ -163,6 +163,78 @@ pub fn wait_port(port: u16, timeout: Duration) -> bool {
     false
 }
 
+/// Дождаться, пока процессы с данным node.exe перестанут существовать.
+///
+/// `kill_node_processes` и `taskkill` возвращаются сразу, а Windows ещё
+/// несколько миллисекунд держит открытые файлы. Вызывающий код сразу после
+/// этого удаляет папку с этими файлами — и получает отказ «занято», который
+/// выглядит как ошибка удаления, хотя это ошибка слишком раннего удаления.
+pub fn wait_node_gone(target: &Path, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if node_pids(target).is_empty() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// PID процессов node.exe по точному пути исполняемого файла.
+///
+/// Единственный источник правды о «кто ещё держит наш node»: тот же запрос,
+/// что и в `kill_node_processes`, поэтому «убили» и «действительно умерли»
+/// всегда про одно и то же множество процессов.
+fn node_pids(target: &Path) -> Vec<u32> {
+    #[cfg(windows)]
+    {
+        let target_str = target.to_string_lossy().replace('\'', "''");
+        let ps = format!(
+            "Get-CimInstance Win32_Process | Where-Object {{ $_.Name -eq 'node.exe' -and $_.ExecutablePath -eq '{t}' }} | ForEach-Object {{ $_.ProcessId }}",
+            t = target_str
+        );
+        let mut cmd = std::process::Command::new("powershell");
+        cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &ps]);
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        match cmd.output() {
+            Ok(out) => String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+                .filter_map(|s| s.parse::<u32>().ok())
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = target;
+        Vec::new()
+    }
+}
+
+/// Хвост `server.log` для сообщения об ошибке запуска.
+pub fn server_log_tail(dir: &Path, max_chars: usize) -> String {
+    let path = dir.join("server.log");
+    let Ok(data) = std::fs::read(&path) else {
+        return String::new();
+    };
+    let text = String::from_utf8_lossy(&data);
+    if text.chars().count() <= max_chars {
+        return text.trim().to_string();
+    }
+    let skip = text.chars().count() - max_chars;
+    format!(
+        "…{}",
+        text.chars().skip(skip).collect::<String>().trim_start()
+    )
+}
+
 pub fn wait_port_closed(port: u16, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -252,15 +324,33 @@ pub fn start_server(app: &AppHandle, router_id: RouterId, cfg: &RouterConfig) ->
     write_server_record(&data_dir, pid, port, None);
 
     if !wait_port(port, Duration::from_secs(20)) {
-        log::warn!("⚠️ {} не ответил на порту {} за 20 сек (pid {})", router_id, port, pid);
-        if let Ok(meta) = std::fs::metadata(&log_path) {
-            if meta.len() > 0 {
-                if let Ok(data) = std::fs::read(&log_path) {
-                    let tail = String::from_utf8_lossy(&data[data.len().saturating_sub(2000)..]);
-                    log::warn!("{} server.log хвост:\n{}", router_id, tail);
-                }
-            }
-        }
+        // Раньше здесь стоял только warning, а функция возвращала Ok(pid).
+        // Для вызывающих (ensure_started / get_combos / chat_completion /
+        // open_dashboard) это был ложный успех: UI показывал «запущено»,
+        // а порт не отвечал, и следующий запрос падал уже как чужую ошибку.
+        // Теперь это честный отказ, причина — из server.log, а не «где-то в логе».
+        let tail = server_log_tail(&dir, 1200);
+        log::error!(
+            "❌ {} не ответил на порту {} за 20 сек (pid {})\n--- server.log ---\n{}",
+            router_id,
+            port,
+            pid,
+            tail
+        );
+        kill_pid_tree(pid);
+        unregister_server_pid(pid);
+        clear_server_record(&data_dir);
+        return Err(match tail.is_empty() {
+            false => format!(
+                "{} не ответил на порту {} за 20 сек и был остановлен.\nПоследние строки server.log:\n{}",
+                router_id, port, tail
+            ),
+            true => format!(
+                "{} не ответил на порту {} за 20 сек и был остановлен. \
+                 server.log пуст — сервер умер до первой строки вывода (проверьте node.exe и порт).",
+                router_id, port
+            ),
+        });
     }
 
     Ok(pid)

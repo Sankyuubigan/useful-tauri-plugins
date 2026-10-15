@@ -1,0 +1,25 @@
+[package]
+name = "agent-tools"
+version = "0.1.0"
+edition = "2021"
+description = "CLI-тулы для ИИ-агентов кодеров: эскалация к сильной модели (consult) с жёстким лимитом вызовов"
+license = "MIT"
+
+[lib]
+name = "agent_tools"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agent-tools"
+path = "src/main.rs"
+
+[dependencies]
+clap = { workspace = true }
+# Фича blocking аддитивна: остальные крейты воркспейса её не получают.
+reqwest = { workspace = true, features = ["blocking"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# log без "std" не умеет set_logger: логгер пишет предупреждения ko-json-store в stderr.
+log = { workspace = true, features = ["std"] }
+ko-json-store = { path = "../ko-json-store" }

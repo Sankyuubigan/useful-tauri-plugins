@@ -4,6 +4,10 @@ node_modules/
 *.tsbuildinfo
 /tasks
 
+# Счётчик вызовов агента (agent-tools consult) и его lock-файл
+.consult_state.json
+.consult_state.json.lock
+
 # Сборочный мусор КАЖДОГО крейта воркспейса.
 #
 # `/target` покрывает только корень репозитория: в git ведущий слэш — якорь,

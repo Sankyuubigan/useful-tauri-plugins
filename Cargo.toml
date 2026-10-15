@@ -13,6 +13,7 @@ members = [
     "tauri-plugin-ytdlp",
     "tauri-plugin-system1",
     "ko-json-store",
+    "agent-tools",
 ]
 
 [workspace.dependencies]
@@ -23,6 +24,9 @@ reqwest = { version = "0.12", features = ["json", "stream", "multipart"] }
 chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
 anyhow = "1"
+
+# CLI-крейт agent-tools: парсер команд (без Tauri). derive нужен только ему.
+clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 
 # Аудио (декод + шумоподавление + ресемплинг для голосов TTS)

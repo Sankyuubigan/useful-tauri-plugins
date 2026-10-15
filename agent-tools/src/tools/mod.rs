@@ -9,17 +9,20 @@
 
 use crate::exit::Exit;
 
+pub mod codemap;
 pub mod consult;
 
 /// Реестр инструментов: единственный список, по которому печатается справка
 /// и который обходится при добавлении нового инструмента.
-pub const ALL: &[Tool] = &[Tool::Consult];
+pub const ALL: &[Tool] = &[Tool::Consult, Tool::Codemap];
 
 /// Инструмент набора.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
     /// Эскалация отчёта рабочего агента к умной модели (первый инструмент).
     Consult,
+    /// Карта репозитория: AST → лексика → граф → сжатая карта под бюджет.
+    Codemap,
 }
 
 impl Tool {
@@ -27,6 +30,7 @@ impl Tool {
     pub fn name(self) -> &'static str {
         match self {
             Tool::Consult => "consult",
+            Tool::Codemap => "codemap",
         }
     }
 
@@ -35,6 +39,9 @@ impl Tool {
         match self {
             Tool::Consult => {
                 "Отправить отчёт рабочего агента умной модели (эскалация) с жёстким лимитом вызовов"
+            }
+            Tool::Codemap => {
+                "Построить карту репозитория: AST, граф, ранжирование символов, карта под бюджет токенов"
             }
         }
     }
@@ -46,6 +53,7 @@ impl Tool {
     pub fn from_args(args: &[String]) -> Option<Self> {
         match args.first().map(String::as_str) {
             Some("consult") => Some(Tool::Consult),
+            Some("codemap") => Some(Tool::Codemap),
             _ => None,
         }
     }
@@ -55,6 +63,7 @@ impl Tool {
     pub fn run(self, args: Vec<String>) -> Exit {
         match self {
             Tool::Consult => consult::run(args),
+            Tool::Codemap => codemap::run(args),
         }
     }
 }
@@ -70,6 +79,7 @@ mod tests {
     #[test]
     fn registry_parses_known_tool() {
         assert_eq!(Tool::from_args(&args(&["consult"])), Some(Tool::Consult));
+        assert_eq!(Tool::from_args(&args(&["codemap"])), Some(Tool::Codemap));
     }
 
     #[test]
@@ -83,10 +93,12 @@ mod tests {
     fn tool_names_are_unique_and_documented() {
         assert_eq!(Tool::Consult.name(), "consult");
         assert!(!Tool::Consult.about().is_empty());
+        assert_eq!(Tool::Codemap.name(), "codemap");
+        assert!(!Tool::Codemap.about().is_empty());
     }
 
     #[test]
     fn registry_lists_every_tool() {
-        assert_eq!(ALL, &[Tool::Consult], "новый инструмент обязан попасть в ALL");
+        assert_eq!(ALL, &[Tool::Consult, Tool::Codemap], "новый инструмент обязан попасть в ALL");
     }
 }

@@ -29,6 +29,28 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 
+# agent-tools / codemap: парсеры кода на ЧИСТОМ Rust, без C-компилятора.
+# Версии пиняются точно: oxc версионируется очень активно (0.154.0 на 15.10.26).
+# Проверено рекурсивно по crates.io API: ни у одного из них нет build-dep на cc/cmake.
+# Ветка tree-sitter отклонена (28 грамматик × cc), ast-grep-core отклонён (29 × cc),
+# wasm-грамматики отклонены (emscripten side-модули, ни wasmi ни wasmtime не умеют dylink).
+# Версия syn = "2" совпадает с уже присутствующим в lock king_orch — новых пакетов не добавляет.
+syn = { version = "2", features = ["full", "visit", "extra-traits", "parsing", "printing"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+
+# TS/JS/TSX: парсер + семантический анализ (символьная таблица даёт defs И refs).
+oxc_parser = "0.154.0"
+oxc_semantic = "0.154.0"
+oxc_allocator = "0.154.0"
+oxc_ast = "0.154.0"
+oxc_span = "0.154.0"
+
+# Python: rustpython-parser (чистый Rust, в отличие от ruff_python_parser,
+# который тянет stacker -> обязательный cc build-dep на Windows).
+# Оговорка: последний релиз 06.08.2024, актуальность грамматики не проверена.
+rustpython-parser = "0.4.0"
+rustpython-ast = "0.4.0"
+
 # Аудио (декод + шумоподавление + ресемплинг для голосов TTS)
 symphonia = { version = "0.6", features = ["ogg", "vorbis", "wav", "pcm", "flac", "mp3"] }
 hound = "3"

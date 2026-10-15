@@ -130,7 +130,11 @@ pub fn exclude_from_git(root: &Path) -> Result<bool, String> {
 }
 
 /// Собрать индекс по каталогу, переиспользуя кеш для неизменившихся файлов.
-pub fn build(root: &Path) -> Result<(Index, BuildStats), String> {
+///
+/// `scan` передаётся снаружи, а не обходится здесь: обход дешёвый, но его
+/// результат нужен ещё и для проверки свежести — см. [`refresh`]. Второй обход
+/// того же дерева был бы чистой потерей времени.
+pub fn build(root: &Path, scan: scan::Scan) -> Result<(Index, BuildStats), String> {
     // Старый индекс читается ОДИН раз. Чтение внутри цикла дало бы
     // O(файлов²) работы и на большом репозитории стало бы главным тормозом
     // всей сборки — при том, что весь смысл кеша в экономии этой работы.
@@ -148,8 +152,7 @@ pub fn build(root: &Path) -> Result<(Index, BuildStats), String> {
     let old_tags = tags_by_path(old.as_ref());
     let old_chunks = chunks_by_path(old.as_ref());
 
-    let scan = scan::walk(root)?;
-    let ignored = scan.ignored.clone();
+    let ignored = scan.ignored;
     let mut stats = BuildStats {
         scanned: scan.files.len(),
         ..BuildStats::default()
@@ -169,9 +172,9 @@ pub fn build(root: &Path) -> Result<(Index, BuildStats), String> {
             }
         }
 
-        // «Текст или нет» решается ДО маршрутизации по парсеру. Раньше здесь
-        // стоял `read_to_string`, и первая же иконка в формате PNG обрывала
-        // весь обход репозитория.
+        // Файл новый или изменился — читаем и разбираем. Здесь и только здесь
+        // содержимое попадает в память: неизменившиеся файлы до этого места не
+        // доходят вовсе.
         let source = match super::text::read_content(&root.join(&file.rel_path)) {
             super::text::Content::Text(source) => source,
             super::text::Content::Binary => {
@@ -185,6 +188,9 @@ pub fn build(root: &Path) -> Result<(Index, BuildStats), String> {
                 return Err(format!("не прочитать {}: {reason}", file.rel_path));
             }
         };
+        // Размерность считается здесь же: обход по метаданным её не знает,
+        // а для неизменившегося файла она пришла из кеша вместе с тегами.
+        let file = file.with_content(&source);
 
         match super::parse::tags_of(&file.rel_path, &source, file.lang) {
             Ok(collected) if !collected.is_empty() => {
@@ -223,6 +229,50 @@ pub fn build(root: &Path) -> Result<(Index, BuildStats), String> {
         },
         stats,
     ))
+}
+
+/// Вернуть индекс, актуальный для текущего состояния каталога.
+///
+/// Это то, чем пользуются `map`, `search` и `callers` — всё, что читает индекс
+/// и обязано видеть реальный проект. Разница с [`build`] в одном действии:
+/// индекс сначала **сверяется с диском** и пересобирается, только если
+/// расходится.
+///
+/// Почему сверка нужна и почему она дешёвая: обход берёт только метаданные
+/// (см. [`super::scan`]), поэтому проверка «те же файлы, те же даты» стоит
+/// одного `read_dir` с `stat` на файл. Без неё индекс, попавший на диск, живёт
+/// своей жизнью: удалённый файл навсегда остаётся в карте (и при каждом вызове
+/// пишет предупреждение «не удаётся найти файл»), а новый в неё не попадает,
+/// пока кто-то вручную не запустит `codemap index`.
+pub fn refresh(root: &Path) -> Result<Index, String> {
+    let scan = scan::walk(root)?;
+    match load(root)? {
+        Some(index) if is_fresh(&index, &scan.files) => Ok(index),
+        _ => {
+            let (index, _) = build(root, scan)?;
+            save(root, &index)?;
+            Ok(index)
+        }
+    }
+}
+
+/// Совпадает ли индекс с тем, что лежит на диске.
+///
+/// Сравниваются множество путей и `mtime` каждого файла. Одного числа файлов
+/// мало: файл мог быть удалён, а другой добавлен, и количество бы совпало —
+/// проверка по `mtime` такой случай ловит, потому что нового пути в кеше нет.
+fn is_fresh(index: &Index, scanned: &[FileEntry]) -> bool {
+    if index.files.len() != scanned.len() {
+        return false;
+    }
+    let cached: std::collections::HashMap<&str, u64> = index
+        .files
+        .iter()
+        .map(|f| (f.rel_path.as_str(), f.mtime_secs))
+        .collect();
+    scanned
+        .iter()
+        .all(|f| cached.get(f.rel_path.as_str()) == Some(&f.mtime_secs))
 }
 
 /// Теги старого индекса, сгруппированные по файлу.
@@ -365,6 +415,96 @@ mod tests {
     fn non_git_directory_is_not_an_error() {
         let root = temp_root("nogit");
         assert_eq!(exclude_from_git(&root).expect("не git"), false);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Проекция на настоящий сценарий: файл удалили, а карта продолжала
+    /// показывать его — вместе с предупреждением «не удаётся найти файл».
+    /// Причина была в том, что `map` брал индекс с диска и не сверял его.
+    #[test]
+    fn refresh_drops_a_file_that_was_deleted_from_disk() {
+        let root = temp_root("deleted");
+        fs::create_dir_all(root.join("src")).expect("каталог");
+        fs::write(root.join("src/keep.rs"), "pub fn keep() -> u32 { 1 }\n").expect("файл");
+        fs::write(root.join("src/gone.rs"), "pub fn gone() -> u32 { 2 }\n").expect("файл");
+
+        let built = refresh(&root).expect("первый refresh");
+        assert!(built.files.iter().any(|f| f.rel_path == "src/gone.rs"));
+
+        fs::remove_file(root.join("src/gone.rs")).expect("удалить файл");
+        let healed = refresh(&root).expect("второй refresh");
+        assert!(
+            !healed.files.iter().any(|f| f.rel_path == "src/gone.rs"),
+            "удалённый файл обязан исчезнуть из индекса без ручного `codemap index`: {:?}",
+            healed.files.iter().map(|f| &f.rel_path).collect::<Vec<_>>()
+        );
+        assert!(healed.tags.iter().all(|t| t.rel_path != "src/gone.rs"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Обратная сторона того же: новый файл обязан появляться сам.
+    #[test]
+    fn refresh_picks_up_a_file_created_after_the_index_was_built() {
+        let root = temp_root("created");
+        fs::create_dir_all(root.join("src")).expect("каталог");
+        fs::write(root.join("src/first.rs"), "pub fn first() -> u32 { 1 }\n").expect("файл");
+        refresh(&root).expect("первый refresh");
+
+        fs::write(root.join("src/second.rs"), "pub fn second() -> u32 { 2 }\n").expect("файл");
+        let healed = refresh(&root).expect("второй refresh");
+        assert!(
+            healed.files.iter().any(|f| f.rel_path == "src/second.rs"),
+            "новый файл обязан попасть в индекс без ручного `codemap index`"
+        );
+        assert!(
+            healed.tags.iter().any(|t| t.rel_path == "src/second.rs" && t.name == "second"),
+            "символы нового файла обязаны быть в индексе"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Изменённый файл перечитывается, а не остаётся с прежними символами.
+    #[test]
+    fn refresh_reparses_a_file_whose_mtime_changed() {
+        let root = temp_root("changed");
+        let path = root.join("src/a.rs");
+        fs::create_dir_all(root.join("src")).expect("каталог");
+        fs::write(&path, "pub fn alpha() -> u32 { 1 }\n").expect("файл");
+        let first = refresh(&root).expect("первый refresh");
+        assert!(first.tags.iter().any(|t| t.name == "alpha"));
+        assert!(first.tags.iter().all(|t| t.name != "beta"));
+
+        // Спим секунду: иначе `mtime` новой записи совпадёт с прежним и файл
+        // будет справедливо признан неизменившимся.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        fs::write(&path, "pub fn beta() -> u32 { 2 }\n").expect("файл");
+        let healed = refresh(&root).expect("второй refresh");
+        assert!(
+            healed.tags.iter().any(|t| t.name == "beta"),
+            "изменённый файл обязан быть перечитан"
+        );
+        assert!(
+            healed.tags.iter().all(|t| t.name != "alpha"),
+            "прежние символы изменённого файла обязаны исчезнуть: {:?}",
+            healed.tags
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Неизменившийся проект не должен перечитываться: ради этого обход и
+    /// отделён от чтения содержимого.
+    #[test]
+    fn refresh_reuses_the_index_untouched_when_nothing_changed() {
+        let root = temp_root("stable");
+        fs::create_dir_all(root.join("src")).expect("каталог");
+        fs::write(root.join("src/a.rs"), "pub fn alpha() -> u32 { 1 }\n").expect("файл");
+        refresh(&root).expect("первый refresh");
+
+        let scan = scan::walk(&root).expect("обход");
+        let (rebuilt, stats) = build(&root, scan).expect("пересборка");
+        assert_eq!(stats.reused, 1, "неизменившийся файл обязан прийти из кеша");
+        assert_eq!(stats.parsed, 0, "перечитывать неизменившееся — значит читать впустую");
+        assert!(rebuilt.tags.iter().any(|t| t.name == "alpha"));
         let _ = fs::remove_dir_all(&root);
     }
 }

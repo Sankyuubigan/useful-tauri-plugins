@@ -25,6 +25,7 @@ use super::graph;
 use super::mcp;
 use super::rank;
 use super::render;
+use super::scan;
 use super::search;
 use super::store;
 
@@ -152,7 +153,7 @@ impl Cli {
 
     /// Построить индекс и сохранить его на диск.
     pub fn index(&self, _path: Option<&str>) -> Result<String, String> {
-        let (index, stats) = store::build(&self.root)?;
+        let (index, stats) = store::build(&self.root, scan::walk(&self.root)?)?;
         store::save(&self.root, &index)?;
         // `.codemap` обязан не появляться в `git status` вызывающего: это
         // артефакт инструмента, а не содержимое проекта.
@@ -238,15 +239,16 @@ impl Cli {
         Ok(out)
     }
 
-    /// Взять индекс с диска, а если его нет — построить.
-    fn load_or_build(&self) -> Result<super::model::Index, String> {
-        if let Some(index) = store::load(&self.root)? {
-            return Ok(index);
-        }
-        let (index, _) = store::build(&self.root)?;
-        store::save(&self.root, &index)?;
-        Ok(index)
-    }
+/// Взять индекс, соответствующий текущему состоянию каталога.
+///
+/// Индекс достраивается, если его нет, и **пересобирается, если он разошёлся с
+/// диском**: удалённый файл обязан исчезнуть из карты, а добавленный — появиться
+/// без ручного `codemap index`. Проверка стоит одного обхода метаданных, поэтому
+/// держать карту нарочно устаревшей было бы уже не экономией, а просто
+/// неправдой.
+fn load_or_build(&self) -> Result<super::model::Index, String> {
+    store::refresh(&self.root)
+}
 }
 
 /// Точка входа инструмента: разбор аргументов и выбор режима.

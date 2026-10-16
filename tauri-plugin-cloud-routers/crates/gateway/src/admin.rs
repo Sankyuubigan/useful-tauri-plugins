@@ -120,6 +120,11 @@ struct ProviderDto {
     id: String,
     name: String,
     base_url: String,
+    /// Протокол апстрима (`openai` | `kiro`).
+    protocol: cloud_routers_core::protocol::VendorProtocol,
+    /// Способ авторизации: `api_keys` либо маскированный OAuth-статус.
+    /// Секретов здесь нет — только факт привязки и метаданные.
+    auth: ProviderAuthDto,
     is_enabled: bool,
     use_relay: bool,
     /// Ключи с маской вместо секрета.
@@ -130,6 +135,21 @@ struct ProviderDto {
     routable: bool,
     /// Остаток кулдауна по каждому ключу, секунды.
     cooldowns: Vec<KeyCooldownDto>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum ProviderAuthDto {
+    ApiKeys,
+    OAuth {
+        session_id: String,
+        /// Сессия найдена на диске.
+        session_present: bool,
+        method: Option<cloud_routers_core::protocol::OAuthMethod>,
+        email: Option<String>,
+        expires_at_unix: u64,
+        refreshable: bool,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -160,10 +180,42 @@ struct ConfigDto {
 }
 
 fn provider_dto(state: &AppState, p: &ProviderConfig) -> ProviderDto {
+    let auth = match p.auth.oauth_session_id() {
+        None => ProviderAuthDto::ApiKeys,
+        Some(session_id) => {
+            let sessions = cloud_routers_core::store::load_oauth_sessions(state.data_dir());
+            match sessions.get(session_id) {
+                Some(s) => {
+                    let dto = cloud_routers_core::protocol::OAuthSessionDto::mask(
+                        session_id,
+                        s,
+                    );
+                    ProviderAuthDto::OAuth {
+                        session_id: session_id.to_string(),
+                        session_present: true,
+                        method: Some(dto.method),
+                        email: dto.email,
+                        expires_at_unix: dto.expires_at_unix,
+                        refreshable: dto.refreshable,
+                    }
+                }
+                None => ProviderAuthDto::OAuth {
+                    session_id: session_id.to_string(),
+                    session_present: false,
+                    method: None,
+                    email: None,
+                    expires_at_unix: 0,
+                    refreshable: false,
+                },
+            }
+        }
+    };
     ProviderDto {
         id: p.id.clone(),
         name: p.name.clone(),
         base_url: p.base_url.clone(),
+        protocol: p.protocol,
+        auth,
         is_enabled: p.is_enabled,
         use_relay: p.use_relay,
         keys: p
@@ -396,10 +448,17 @@ async fn add_provider(State(state): State<AppState>, Json(body): Json<NewProvide
     // Подсказки из пресета НЕ попадают в список моделей: он означает «модели,
     // которые провайдер отдал на реальный /models». Пока этого не случилось,
     // провайдер не маршрутизируем. Пользователь жмёт «Обновить список моделей».
+    // Протокол — из пресета каталога: ручной выбор протокола при добавлении
+    // появится в дашборде шагом 5. Пока пресет определяет язык провайдера.
+    let protocol = preset
+        .map(|p| p.protocol)
+        .unwrap_or(cloud_routers_core::protocol::VendorProtocol::Openai);
     let provider = ProviderConfig {
         id: id.clone(),
         name,
         base_url,
+        protocol,
+        auth: cloud_routers_core::protocol::ProviderAuth::ApiKeys,
         is_enabled: true,
         use_relay: false,
         keys,
@@ -697,6 +756,111 @@ async fn test_provider(State(state): State<AppState>, Path(id): Path<String>) ->
             Err(bad_request(e))
         }
     }
+}
+
+// ────────────────────────────── OAuth (Kiro) ──────────────────────────────
+
+/// Начало Device Flow: дашборд показывает user_code + ссылку.
+///
+/// Провайдер обязан быть Kiro: для OpenAI OAuth не существует, и молчаливый
+/// старт потока ввёл бы пользователя в заблуждение.
+async fn oauth_start(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult<Json<crate::kiro_oauth::DeviceFlowPrompt>> {
+    let provider = require_provider(&state, &id)?;
+    if provider.protocol != cloud_routers_core::protocol::VendorProtocol::Kiro {
+        return Err(bad_request(format!(
+            "OAuth есть только у Kiro: провайдер «{}» — {:?}",
+            provider.id, provider.protocol
+        )));
+    }
+    let region = body
+        .get("region")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("us-east-1")
+        .to_string();
+    if !crate::protocol_kiro::valid_region(&region) {
+        return Err(bad_request(format!("некорректный AWS-регион «{region}»")));
+    }
+    crate::kiro_oauth::start_device_flow(&state, &id, &region).await.map(Json).map_err(bad_request)
+}
+
+/// Одна итерация поллинга: дашборд зовёт раз в несколько секунд.
+///
+/// `done` без profileArn — валидно для API-ключа? Нет: этот путь только для
+/// Device Flow, профиль здесь обязателен в строгом смысле? Тоже нет: профиль
+/// может отсутствовать у свежих аккаунтов — тогда чат идёт без profileArn
+/// (токен default). Честно отдаём то, что есть.
+async fn oauth_poll(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let _provider = require_provider(&state, &id)?;
+    let session_id = body
+        .get("session_id")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| bad_request("нет session_id device flow"))?;
+    match crate::kiro_oauth::poll_once(&state, session_id).await.map_err(bad_request)? {
+        crate::kiro_oauth::PollOutcome::Pending => {
+            Ok(Json(serde_json::json!({ "status": "pending" })))
+        }
+        crate::kiro_oauth::PollOutcome::Done { profile_arn } => {
+            // Привязываем провайдера к сессии: без этого чат не найдёт токен.
+            let session_id = session_id.to_string();
+            state
+                .update_config(|c| {
+                    let Some(p) = c.provider_mut(&id) else {
+                        return Err(format!("провайдер «{id}» исчез во время входа"));
+                    };
+                    p.auth = cloud_routers_core::protocol::ProviderAuth::OAuth { session_id };
+                    p.models.clear();
+                    Ok(())
+                })
+                .map_err(internal)?;
+            state.events().info(format!("«{id}»: привязана OAuth-сессия, обновите модели"));
+            Ok(Json(serde_json::json!({
+                "status": "done",
+                "profile_arn": profile_arn,
+            })))
+        }
+    }
+}
+
+/// Статус OAuth-привязки провайдера (маскированный — без секретов).
+async fn oauth_status(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Json<serde_json::Value>> {
+    let provider = require_provider(&state, &id)?;
+    let Some(session_id) = provider.auth.oauth_session_id() else {
+        return Ok(Json(serde_json::json!({ "bound": false })));
+    };
+    let sessions = cloud_routers_core::store::load_oauth_sessions(state.data_dir());
+    match sessions.get(session_id) {
+        Some(s) => Ok(Json(serde_json::json!({
+            "bound": true,
+            "session": cloud_routers_core::protocol::OAuthSessionDto::mask(session_id, s),
+        }))),
+        None => Ok(Json(serde_json::json!({
+            "bound": true,
+            "missing": true,
+            "hint": "сессия удалена: пройдите вход заново",
+        }))),
+    }
+}
+
+/// Отвязка: удалить сессию и перевести провайдера на ключи.
+async fn oauth_disconnect(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_provider(&state, &id)?;
+    let removed = crate::kiro_oauth::disconnect(&state, &id).map_err(internal)?;
+    Ok(Json(serde_json::json!({ "ok": true, "session_removed": removed })))
 }
 
 // ────────────────────────────── Каталог пресетов ──────────────────────────────
@@ -1171,6 +1335,10 @@ pub fn router() -> axum::Router<AppState> {
         )
         .route("/api/providers/{id}/models/refresh", axum::routing::post(refresh_models))
         .route("/api/providers/{id}/test", axum::routing::post(test_provider))
+        .route("/api/providers/{id}/oauth/start", axum::routing::post(oauth_start))
+        .route("/api/providers/{id}/oauth/poll", axum::routing::post(oauth_poll))
+        .route("/api/providers/{id}/oauth", axum::routing::get(oauth_status))
+        .route("/api/providers/{id}/oauth/disconnect", axum::routing::post(oauth_disconnect))
         .route("/api/presets", axum::routing::get(get_presets))
         .route("/api/presets/sync", axum::routing::post(sync_presets))
         .route("/api/relay/worker", axum::routing::get(relay_worker))
@@ -1191,6 +1359,23 @@ mod tests {
         let d = std::env::temp_dir().join(format!("cr_gw_admin_{tag}"));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn provider_auth_dto_serializes_oauth_kind_for_dashboard() {
+        let dto = ProviderAuthDto::OAuth {
+            session_id: "s1".into(),
+            session_present: true,
+            method: None,
+            email: None,
+            expires_at_unix: 0,
+            refreshable: false,
+        };
+        let v = serde_json::to_value(&dto).expect("json");
+        // Дашборд проверяет `p.auth.kind === 'o_auth'`: строка обязана совпадать.
+        assert_eq!(v["kind"], "o_auth", "{v}");
+        let dto = ProviderAuthDto::ApiKeys;
+        assert_eq!(serde_json::to_value(&dto).expect("json")["kind"], "api_keys");
     }
 
     #[tokio::test]

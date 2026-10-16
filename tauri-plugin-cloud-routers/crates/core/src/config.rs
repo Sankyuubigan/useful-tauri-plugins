@@ -90,7 +90,14 @@ pub struct ProviderConfig {
     /// Человекочитаемое имя для UI.
     pub name: String,
     /// Базовый URL OpenAI-совместимого API, без завершающего `/`.
+    ///
+    /// Для не-OpenAI протоколов (`protocol != openai`) поле — подсказка/запасной
+    /// адрес, а не истина: реальные endpoints строит адаптер протокола.
     pub base_url: String,
+    /// Протокол апстрима. Дефолт — OpenAI (нулевая миграция старых конфигов).
+    pub protocol: crate::protocol::VendorProtocol,
+    /// Способ авторизации: ключи (`ApiKeys`, текущее поведение) или OAuth-сессия.
+    pub auth: crate::protocol::ProviderAuth,
     /// Участвует ли провайдер в маршрутизации.
     pub is_enabled: bool,
     /// Пускать ли запросы этого провайдера через Vercel-релей.
@@ -107,6 +114,8 @@ impl Default for ProviderConfig {
             id: String::new(),
             name: String::new(),
             base_url: String::new(),
+            protocol: crate::protocol::VendorProtocol::default(),
+            auth: crate::protocol::ProviderAuth::default(),
             is_enabled: true,
             use_relay: false,
             keys: Vec::new(),
@@ -116,6 +125,45 @@ impl Default for ProviderConfig {
 }
 
 impl ProviderConfig {
+    /// Проверить одного провайдера. Возвращает список проблем; пустой список —
+    /// провайдер корректен.
+    ///
+    /// Вынесено из `GatewayConfig::validate`, чтобы правило жило рядом с
+    /// данными, а не размазывалось по вызывающему: иначе добавление поля
+    /// (как `protocol`) требовало бы синхронных правок в двух местах.
+    pub fn validate(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        if self.id.trim().is_empty() {
+            problems.push("провайдер с пустым id".to_string());
+            return problems;
+        }
+        if self.id.contains('/') {
+            problems.push(format!(
+                "id провайдера «{}» содержит «/» — это разделитель в id комбо",
+                self.id
+            ));
+        }
+        // Для не-OpenAI протоколов base_url — подсказка, а не истина:
+        // endpoints строит адаптер. Пустой допустим, мусорная схема — нет.
+        let needs_base = self.protocol == crate::protocol::VendorProtocol::Openai;
+        if self.base_url.trim().is_empty() {
+            if needs_base {
+                problems.push(format!("у провайдера «{}» пустой base_url", self.id));
+            }
+        } else if !(self.base_url.starts_with("http://") || self.base_url.starts_with("https://")) {
+            problems.push(format!(
+                "base_url провайдера «{}» должен начинаться с http:// или https://",
+                self.id
+            ));
+        }
+        if let crate::protocol::ProviderAuth::OAuth { session_id } = &self.auth {
+            if session_id.trim().is_empty() {
+                problems.push(format!("у провайдера «{}» OAuth без session_id", self.id));
+            }
+        }
+        problems
+    }
+
     /// Ключи, готовые к использованию (включённые). Кулдаун учитывается
     /// вызывающим кодом через [`crate::keys::KeyRotation`].
     pub fn active_keys(&self) -> impl Iterator<Item = &AccountKey> {
@@ -124,8 +172,18 @@ impl ProviderConfig {
 
     /// `true`, если провайдер можно использовать прямо сейчас: включён, есть
     /// живой ключ и хотя бы одна обнаруженная модель.
+    ///
+    /// Для OAuth-провайдеров наличие сессии проверяет шлюз (у него файл сессий),
+    /// а не конфиг: `core` не знает, существует ли сессия на диске. Поэтому
+    /// здесь OAuth считается «авторизация возможна», а точную проверку делает
+    /// прокси перед запросом. Ложного «не маршрутизируется» для настроенного
+    /// OAuth быть не должно — иначе пользователь видит мёртвого провайдера.
     pub fn is_routable(&self) -> bool {
-        self.is_enabled && self.active_keys().next().is_some() && !self.models.is_empty()
+        let has_auth = match &self.auth {
+            crate::protocol::ProviderAuth::ApiKeys => self.active_keys().next().is_some(),
+            crate::protocol::ProviderAuth::OAuth { .. } => true,
+        };
+        self.is_enabled && has_auth && !self.models.is_empty()
     }
 }
 
@@ -226,28 +284,11 @@ impl GatewayConfig {
         }
         let mut seen: Vec<&str> = Vec::new();
         for p in &self.providers {
-            if p.id.trim().is_empty() {
-                problems.push("провайдер с пустым id".to_string());
-                continue;
-            }
-            if p.id.contains('/') {
-                problems.push(format!(
-                    "id провайдера «{}» содержит «/» — это разделитель в id комбо",
-                    p.id
-                ));
-            }
             if seen.contains(&p.id.as_str()) {
                 problems.push(format!("дубликат id провайдера «{}»", p.id));
             }
             seen.push(&p.id);
-            if p.base_url.trim().is_empty() {
-                problems.push(format!("у провайдера «{}» пустой base_url", p.id));
-            } else if !(p.base_url.starts_with("http://") || p.base_url.starts_with("https://")) {
-                problems.push(format!(
-                    "base_url провайдера «{}» должен начинаться с http:// или https://",
-                    p.id
-                ));
-            }
+            problems.extend(p.validate());
         }
         problems
     }
@@ -266,6 +307,7 @@ mod tests {
             use_relay: false,
             keys: vec![AccountKey { id: "k1".into(), key: "sk-1".into(), is_active: true }],
             models: vec![DiscoveredModel { id: "m".into(), object: None, created: None }],
+            ..Default::default()
         }
     }
 
@@ -362,5 +404,41 @@ mod tests {
         p.models.push(DiscoveredModel { id: "m".into(), ..Default::default() });
         p.keys[0].is_active = false;
         assert!(!p.is_routable());
+    }
+
+    #[test]
+    fn oauth_provider_is_routable_without_keys_but_models_required() {
+        let mut p = provider("kiro", "https://q.us-east-1.amazonaws.com");
+        p.keys.clear();
+        p.auth = crate::protocol::ProviderAuth::OAuth { session_id: "s1".into() };
+        assert!(p.is_routable(), "настроенный OAuth не должен выглядеть мёртвым");
+        p.models.clear();
+        assert!(!p.is_routable(), "без моделей маршрутизировать нечего даже по OAuth");
+    }
+
+    #[test]
+    fn kiro_provider_may_have_empty_base_url() {
+        let mut p = provider("kiro", "");
+        p.protocol = crate::protocol::VendorProtocol::Kiro;
+        p.keys.clear();
+        p.auth = crate::protocol::ProviderAuth::OAuth { session_id: "s1".into() };
+        assert!(p.validate().is_empty(), "{:?}", p.validate());
+    }
+
+    #[test]
+    fn validate_rejects_oauth_without_session_id() {
+        let mut p = provider("kiro", "");
+        p.protocol = crate::protocol::VendorProtocol::Kiro;
+        p.auth = crate::protocol::ProviderAuth::OAuth { session_id: "  ".into() };
+        assert!(p.validate().iter().any(|m| m.contains("session_id")), "{:?}", p.validate());
+    }
+
+    #[test]
+    fn old_configs_without_new_fields_parse_with_defaults() {
+        // Нулевая миграция: старые gateway.json без protocol/auth читаются как OpenAI+ApiKeys.
+        let raw = r#"{"port":20131,"providers":[{"id":"groq","name":"Groq","base_url":"https://a.dev"}]}"#;
+        let cfg: GatewayConfig = serde_json::from_str(raw).expect("parse");
+        assert_eq!(cfg.providers[0].protocol, crate::protocol::VendorProtocol::Openai);
+        assert_eq!(cfg.providers[0].auth, crate::protocol::ProviderAuth::ApiKeys);
     }
 }

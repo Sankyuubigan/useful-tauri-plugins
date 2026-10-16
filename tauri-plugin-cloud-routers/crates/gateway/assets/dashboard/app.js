@@ -140,16 +140,54 @@ function renderPresetsHint() {
 
 // ───────────────────────────── провайдеры ─────────────────────────────
 
+function protocolBadge(p) {
+  if (p.protocol === 'kiro') return '<span class="badge info">Kiro</span>';
+  return '<span class="badge">OpenAI</span>';
+}
+
+function authBlock(p) {
+  // OAuth-привязка: секретов в ответе нет (только метаданные) — показываем
+  // статус и кнопки входа/отвязки. API-ключи — как раньше.
+  if (p.auth && p.auth.kind === 'o_auth') {
+    const a = p.auth;
+    const state = !a.session_present
+      ? '<span class="badge err">сессия потеряна — войдите заново</span>'
+      : (a.email ? `<span class="hint">${esc(a.email)}</span>` : '<span class="badge ok">привязан</span>');
+    const exp = a.expires_at_unix
+      ? `<span class="hint">токен до ${new Date(a.expires_at_unix * 1000).toLocaleString()}</span>`
+      : '';
+    return (
+      `<div class="kv"><span>Вход</span><b>Kiro OAuth${a.method ? ` (${esc(String(a.method))})` : ''}</b></div>` +
+      `<div class="row">${state} ${exp}` +
+      `<span class="spacer"></span>` +
+      `<button class="primary btn-oauth-start" data-provider="${esc(p.id)}">Войти заново</button>` +
+      `<button class="ghost btn-oauth-drop" data-provider="${esc(p.id)}">Отвязать</button>` +
+      `</div>` +
+      `<div class="hint">Не вставляйте токен из 9Router: пройдите свой вход — иначе сломаете обе сессии.</div>`
+    );
+  }
+  if (p.protocol === 'kiro') {
+    return (
+      `<div class="row"><span class="badge warn">не привязан</span><span class="spacer"></span>` +
+      `<button class="primary btn-oauth-start" data-provider="${esc(p.id)}">Подключить Kiro (OAuth)</button></div>` +
+      `<div class="hint">Свой вход через AWS Builder ID: дашборд покажет код, подтвердите в браузере.</div>`
+    );
+  }
+  return '';
+}
+
 function providerCard(p) {
   const status = p.routable
     ? '<span class="badge ok">используется</span>'
     : (!p.is_enabled
         ? '<span class="badge">выключен</span>'
-        : (!p.keys.length
-            ? '<span class="badge warn">нужен ключ</span>'
-            : (p.keys.some(k => k.is_active)
-                ? '<span class="badge warn">нажмите «Обновить модели»</span>'
-                : '<span class="badge err">все ключи выключены</span>')));
+        : ((p.auth && p.auth.kind === 'o_auth')
+            ? '<span class="badge warn">войдите через OAuth</span>'
+            : (!p.keys.length
+                ? '<span class="badge warn">нужен ключ</span>'
+                : (p.keys.some(k => k.is_active)
+                    ? '<span class="badge warn">нажмите «Обновить модели»</span>'
+                    : '<span class="badge err">все ключи выключены</span>'))));
   const cooldownByKey = new Map(p.cooldowns.map(c => [c.key_id, c.remaining_sec]));
 
   const keys = p.keys.map((k) => {
@@ -180,6 +218,7 @@ function providerCard(p) {
     `<div class="card-head">` +
     `<span class="name">${esc(p.name)}</span>` +
     `<span class="id">${esc(p.id)}</span>` +
+    protocolBadge(p) +
     status +
     `<span class="spacer"></span>` +
     `<label class="inline"><input type="checkbox" class="prov-toggle" data-provider="${esc(p.id)}"` +
@@ -189,6 +228,7 @@ function providerCard(p) {
     `</div>` +
 
     `<div class="kv"><span>Адрес</span><b class="break">${esc(p.base_url)}</b></div>` +
+    authBlock(p) +
     `<div class="kv"><span>Моделей</span><b>${p.models_count}</b></div>` +
     `<div class="kv"><span>Ключей</span><b>${p.keys.length} (активных ${p.keys.filter(k => k.is_active).length})</b></div>` +
     models +
@@ -229,6 +269,8 @@ function bindProviderButtons() {
   $$('.btn-prov-del').forEach(el => el.addEventListener('click', () => deleteProvider(el)));
   $$('.btn-key-del').forEach(el => el.addEventListener('click', () => deleteKey(el)));
   $$('.btn-key-reset').forEach(el => el.addEventListener('click', () => resetKey(el)));
+  $$('.btn-oauth-start').forEach(el => el.addEventListener('click', () => startOAuth(el)));
+  $$('.btn-oauth-drop').forEach(el => el.addEventListener('click', () => dropOAuth(el)));
 
   $$('.btn-keys-add').forEach(el => el.addEventListener('click', async () => {
     const id = el.dataset.provider;
@@ -278,6 +320,66 @@ async function testProvider(btn) {
     const r = await api(`/api/providers/${encodeURIComponent(id)}/test`, { method: 'POST' });
     toast(`Связь есть: ${r.latency_ms} мс, моделей ${r.models_count}${r.via_relay ? ' (через релей)' : ''}`);
   } catch (e) { fail('Проверка не удалась', e); }
+  finally { busy(btn, false); }
+}
+
+// ─────────────────────── OAuth Kiro ───────────────────────
+
+let oauthTimer = null;
+
+function stopOAuthPolling() {
+  if (oauthTimer) { clearInterval(oauthTimer); oauthTimer = null; }
+  $('#oauth-modal').hidden = true;
+}
+
+async function startOAuth(btn) {
+  const id = btn.dataset.provider;
+  busy(btn, true);
+  try {
+    const r = await api(`/api/providers/${encodeURIComponent(id)}/oauth/start`, {
+      method: 'POST',
+      body: JSON.stringify({ region: 'us-east-1' }),
+    });
+    $('#oauth-user-code').textContent = r.user_code;
+    $('#oauth-uri').textContent = r.verification_uri_complete || r.verification_uri;
+    $('#oauth-open').href = r.verification_uri_complete || r.verification_uri;
+    $('#oauth-status').textContent = 'Ожидание подтверждения в браузере…';
+    $('#oauth-modal').hidden = false;
+    stopOAuthPolling();
+    // Поллинг раз в 5 секунд: чаще AWS просит замедлиться (slow_down).
+    oauthTimer = setInterval(() => void pollOAuth(id, r.session_id), 5000);
+  } catch (e) { fail('Не удалось начать вход', e); }
+  finally { busy(btn, false); }
+}
+
+async function pollOAuth(id, sessionId) {
+  try {
+    const r = await api(`/api/providers/${encodeURIComponent(id)}/oauth/poll`, {
+      method: 'POST',
+      body: JSON.stringify({ session_id: sessionId }),
+    });
+    if (r.status === 'done') {
+      stopOAuthPolling();
+      toast('Kiro подключён. Нажмите «Обновить модели».');
+      await refreshAll();
+      notifyHost('provider-patched');
+    }
+  } catch (e) {
+    stopOAuthPolling();
+    fail('Вход не удался', e);
+  }
+}
+
+async function dropOAuth(btn) {
+  const id = btn.dataset.provider;
+  if (!window.confirm(`Отвязать Kiro-сессию провайдера «${id}»? Токены будут удалены.`)) return;
+  busy(btn, true);
+  try {
+    await api(`/api/providers/${encodeURIComponent(id)}/oauth/disconnect`, { method: 'POST' });
+    toast('Сессия удалена');
+    await refreshAll();
+    notifyHost('provider-patched');
+  } catch (e) { fail('Не удалось отвязать', e); }
   finally { busy(btn, false); }
 }
 
@@ -587,6 +689,8 @@ function init() {
   $('#btn-modal-cancel').addEventListener('click', closeAddModal);
   $('#btn-modal-save').addEventListener('click', () => void saveNewProvider());
   $('#add-modal').addEventListener('click', (e) => { if (e.target.id === 'add-modal') closeAddModal(); });
+  $('#btn-oauth-cancel').addEventListener('click', stopOAuthPolling);
+  $('#oauth-modal').addEventListener('click', (e) => { if (e.target.id === 'oauth-modal') stopOAuthPolling(); });
 
   $('#preset-search').addEventListener('input', () => fillPresetSelect());
   $('#preset-select').addEventListener('change', (e) => {

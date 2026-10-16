@@ -182,6 +182,7 @@ mod tests {
             use_relay: false,
             keys: vec![AccountKey { id: "k1".into(), key: "sk-1".into(), is_active: true }],
             models: models.iter().map(|m| DiscoveredModel { id: m.to_string(), ..Default::default() }).collect(),
+            ..Default::default()
         }
     }
 

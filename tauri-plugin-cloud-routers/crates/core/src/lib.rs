@@ -32,6 +32,7 @@ pub mod config;
 pub mod keys;
 pub mod models;
 pub mod presets;
+pub mod protocol;
 pub mod relay_token;
 pub mod store;
 
@@ -39,6 +40,7 @@ pub use config::{AccountKey, DiscoveredModel, GatewayConfig, ProviderConfig};
 pub use keys::{FailureKind, KeyRotation};
 pub use models::{combo_id, resolve_combo};
 pub use presets::{ProviderPreset, ProviderPresetsCatalog};
+pub use protocol::{OAuthMethod, OAuthSession, OAuthSessionDto, ProviderAuth, VendorProtocol};
 pub use relay_token::{generate_relay_token, is_usable_token, TokenError};
 pub use store::{ServerRecord, load as load_config, save as save_config};
 

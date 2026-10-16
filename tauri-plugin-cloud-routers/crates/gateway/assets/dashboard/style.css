@@ -163,6 +163,7 @@ textarea { font-family: var(--mono); resize: vertical; }
 .badge.ok { color: var(--success); border-color: var(--success); }
 .badge.warn { color: var(--warning); border-color: var(--warning); }
 .badge.err { color: var(--danger); border-color: var(--danger); }
+.badge.info { color: var(--primary); border-color: var(--primary); }
 
 .kv { display: flex; gap: 10px; padding: 3px 0; font-size: 12px; }
 .kv span { color: var(--muted); min-width: 120px; }

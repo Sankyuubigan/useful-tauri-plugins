@@ -81,6 +81,15 @@ pub struct ProviderPreset {
     /// Подсказки по моделям на случай офлайна. Не заменяют реальный опрос.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_models_hint: Option<Vec<String>>,
+    /// Протокол апстрима. Дефолт — OpenAI: старые каталоги без поля читаются
+    /// как раньше. Версия формата НЕ растёт: поле опционально с дефолтом
+    /// (правило версионирования выше).
+    #[serde(default, skip_serializing_if = "is_openai_protocol")]
+    pub protocol: crate::protocol::VendorProtocol,
+}
+
+fn is_openai_protocol(p: &crate::protocol::VendorProtocol) -> bool {
+    *p == crate::protocol::VendorProtocol::Openai
 }
 
 impl Default for ProviderPreset {
@@ -92,6 +101,7 @@ impl Default for ProviderPreset {
             api_docs_url: None,
             icon_url: None,
             default_models_hint: None,
+            protocol: crate::protocol::VendorProtocol::Openai,
         }
     }
 }

@@ -51,6 +51,7 @@ struct Inner {
     rotation: KeyRotation,
     http: reqwest::Client,
     events: EventLog,
+    oauth: crate::kiro_oauth::OAuthState,
     started_at: Instant,
 }
 
@@ -85,6 +86,7 @@ impl AppState {
                 rotation: KeyRotation::new(),
                 http,
                 events: EventLog::new(),
+                oauth: crate::kiro_oauth::OAuthState::new(),
                 started_at: Instant::now(),
             }),
         })
@@ -108,6 +110,10 @@ impl AppState {
 
     pub fn events(&self) -> &EventLog {
         &self.inner.events
+    }
+
+    pub fn oauth_state(&self) -> &crate::kiro_oauth::OAuthState {
+        &self.inner.oauth
     }
 
     /// Снимок конфигурации.

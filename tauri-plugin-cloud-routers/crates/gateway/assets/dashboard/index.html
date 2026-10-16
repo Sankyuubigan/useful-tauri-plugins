@@ -119,6 +119,24 @@
   <div id="log-list" class="log"></div>
 </section>
 
+<!-- ───────────────────── Модалка входа Kiro (OAuth) ───────────────────── -->
+<div class="modal-backdrop" id="oauth-modal" hidden>
+  <div class="modal">
+    <h3>Вход Kiro через AWS Builder ID</h3>
+    <div class="hint">
+      Свой вход: дашборд покажет код — введите его в браузере по ссылке ниже.
+      Не вставляйте токен из 9Router: один refresh-токен на два места уронит обе сессии.
+    </div>
+    <div class="kv"><span>Код</span><b id="oauth-user-code">—</b></div>
+    <div class="kv"><span>Ссылка</span><b class="break" id="oauth-uri">—</b></div>
+    <div class="row">
+      <a id="oauth-open" class="primary btn" target="_blank" rel="noopener" href="#">Открыть вход</a>
+      <button id="btn-oauth-cancel" class="ghost">Отмена</button>
+    </div>
+    <div class="hint" id="oauth-status">Ожидание подтверждения в браузере…</div>
+  </div>
+</div>
+
 <!-- ───────────────────── Модалка добавления провайдера ───────────────────── -->
 <div class="modal-backdrop" id="add-modal" hidden>
   <div class="modal">

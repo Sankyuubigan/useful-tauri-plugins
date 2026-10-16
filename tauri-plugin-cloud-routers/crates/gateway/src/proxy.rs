@@ -35,7 +35,6 @@ use cloud_routers_core::models::resolve_combo;
 use serde_json::json;
 
 use crate::app::AppState;
-use crate::upstream::{apply_route_headers, auth_header, forward_headers, resolve_route, rewrite_body, Route};
 
 /// Максимальный размер тела запроса.
 ///
@@ -80,7 +79,7 @@ fn unknown_model(model: &str, known: &[String]) -> Response {
 
 /// Точка входа обработчика `POST /v1/chat/completions`.
 pub async fn chat_completions(state: axum::extract::State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
-    let mut payload: serde_json::Value = match serde_json::from_slice(&body) {
+    let payload: serde_json::Value = match serde_json::from_slice(&body) {
         Ok(v) => v,
         Err(e) => {
             return openai_error(
@@ -127,27 +126,49 @@ pub async fn chat_completions(state: axum::extract::State<AppState>, headers: He
         None => return unknown_model(&model, &known),
     };
 
-    let route = match resolve_route(&provider, &config, "/v1/chat/completions") {
-        Ok(r) => r,
+    let adapter = match crate::protocol::adapter_for(provider.protocol) {
+        Ok(a) => a,
         Err(e) => return openai_error(StatusCode::BAD_GATEWAY, e, "configuration_error"),
     };
-    let request_body = match rewrite_body(&mut payload, &upstream_model) {
-        Ok(b) => b,
-        Err(e) => return openai_error(StatusCode::BAD_REQUEST, e, "invalid_request_error"),
-    };
-    let forwarded = forward_headers(&headers);
 
     // ── Кандидаты ────────────────────────────────────────────────────────────
+    // API-ключи: ротация с кулдаунами (прежнее поведение). OAuth: сессия одна,
+    // ретраить нечего — один кандидат с id сессии для журнала и диагностики.
     let provider_id = provider.id.clone();
-    let mut candidates = state.rotation().candidates(&provider_id, &provider.keys);
-    if candidates.is_empty() && state.rotation().reset_if_all_sleeping(&provider_id, &provider.keys) {
-        state.events().warn(format!(
-            "провайдер «{}»: все ключи были в кулдауне — сброшены кулдауны, пробуем снова",
-            provider_id
-        ));
-        candidates = state.rotation().candidates(&provider_id, &provider.keys);
+    let oauth_credential: Option<String> = match &provider.auth {
+        cloud_routers_core::protocol::ProviderAuth::ApiKeys => None,
+        cloud_routers_core::protocol::ProviderAuth::OAuth { .. } => {
+            match credential_for(&state, &provider).await {
+                Ok(c) => Some(c),
+                Err(e) => {
+                    return openai_error(StatusCode::SERVICE_UNAVAILABLE, e, "insufficient_quota")
+                }
+            }
+        }
+    };
+    // Пары (id_для_журнала, секрет). Для OAuth секрет один на всех.
+    let mut attempts: Vec<(String, String)> = Vec::new();
+    if let Some(cred) = oauth_credential {
+        attempts.push(("oauth".to_string(), cred));
+    } else {
+        let mut key_ids = state.rotation().candidates(&provider_id, &provider.keys);
+        if key_ids.is_empty()
+            && state.rotation().reset_if_all_sleeping(&provider_id, &provider.keys)
+        {
+            state.events().warn(format!(
+                "провайдер «{}»: все ключи были в кулдауне — сброшены кулдауны, пробуем снова",
+                provider_id
+            ));
+            key_ids = state.rotation().candidates(&provider_id, &provider.keys);
+        }
+        for key_id in key_ids {
+            let Some(key) = provider.keys.iter().find(|k| k.id == key_id) else {
+                continue;
+            };
+            attempts.push((key.id.clone(), key.key.clone()));
+        }
     }
-    if candidates.is_empty() {
+    if attempts.is_empty() {
         let total = provider.keys.len();
         let active = provider.keys.iter().filter(|k| k.is_active).count();
         return openai_error(
@@ -163,15 +184,24 @@ pub async fn chat_completions(state: axum::extract::State<AppState>, headers: He
     let mut last: Option<Response> = None;
     let mut attempted: Vec<String> = Vec::new();
 
-    for key_id in candidates {
-        let Some(key) = provider.keys.iter().find(|k| k.id == key_id) else {
-            continue;
-        };
-        let key_id = key.id.clone();
-        let api_key = key.key.clone();
+    for (key_id, api_key) in attempts {
         attempted.push(key_id.clone());
 
-        let req = build_request(&state, &route, &forwarded, &api_key, reqwest::Method::POST, request_body.clone());
+        let up = match adapter.chat_request(
+            &provider,
+            &config,
+            &api_key,
+            &headers,
+            &payload,
+            &upstream_model,
+        ) {
+            Ok(u) => u,
+            // Построение запроса упало на серверной конфигурации (нет URL
+            // релея, сломан маршрут), а не на запросе клиента: 502, как было
+            // до выноса в адаптер (гейт: relay_configured_without_url_*).
+            Err(e) => return openai_error(StatusCode::BAD_GATEWAY, e, "configuration_error"),
+        };
+        let req = build_reqwest(&state, &up);
         state.events().info(format!(
             "запрос {} → провайдер «{}» модель «{}» ключ {}",
             model, provider_id, upstream_model, key_id
@@ -200,14 +230,27 @@ pub async fn chat_completions(state: axum::extract::State<AppState>, headers: He
                 // ── Отказ, который имеет смысл повторить ────────────────────
                 let retry_after = parse_retry_after(response.headers().get("retry-after").and_then(|v| v.to_str().ok()));
                 let detail = response.text().await.unwrap_or_default();
-                state.rotation().mark_failure(&provider_id, &key_id, kind, retry_after);
+                let is_oauth = key_id == "oauth";
+                if !is_oauth {
+                    state.rotation().mark_failure(&provider_id, &key_id, kind, retry_after);
+                }
                 let cooldown = kind.cooldown(retry_after);
 
-                if kind.deactivates_key() {
+                if kind.deactivates_key() && !is_oauth {
                     deactivate_key(&state, &provider_id, &key_id);
                     state.events().error(format!(
                         "ключ {} провайдера «{}» отклонён апстримом (HTTP {}) — ключ выключен",
                         key_id, provider_id, status.as_u16()
+                    ));
+                } else if kind.deactivates_key() && is_oauth {
+                    // OAuth-сессию деактивацией ключа не лечат: 401/403 здесь —
+                    // протухший access-токен, а не мёртвый секрет. Сессия
+                    // помечается протухшей проактивным рефрешем (шаг 4), а не
+                    // выключением несуществующего ключа.
+                    state.events().error(format!(
+                        "OAuth-сессия провайдера «{}» отклонена апстримом (HTTP {}) — нужен рефреш токена",
+                        provider_id,
+                        status.as_u16()
                     ));
                 } else {
                     state.events().warn(format!(
@@ -230,7 +273,8 @@ pub async fn chat_completions(state: axum::extract::State<AppState>, headers: He
                 // Всё, что ниже, не содержит ни одного `continue` по ключу:
                 // байты уйдут клиенту, повтор приведёт к склейке двух ответов.
                 let final_status = status;
-                let passthrough = build_passthrough_response(response).await;
+                let passthrough =
+                    build_passthrough_response(response, adapter.as_ref()).await;
                 let body_hint = summarize(passthrough.body_hint.as_deref());
                 state.events().info(format!(
                     "ответ {} от провайдера «{}» ключ {} (HTTP {}){}",
@@ -277,11 +321,15 @@ struct Passthrough {
 
 /// Превратить ответ апстрима в ответ клиенту без буферизации потока.
 ///
-/// Если апстрим отдал `text/event-stream`, тело переносится чанками через
-/// `Body::from_stream(reqwest_stream)`: ни байта не копится в памяти, задержка
+/// Потоковость определяет адаптер по content-type (`text/event-stream` у
+/// OpenAI, бинарный EventStream у Kiro): тело переносится чанками через
+/// `Body::from_stream(reqwest_stream)` — ни байта не копится в памяти, задержка
 /// между токенами определяется только сетью. Иначе тело читается целиком — там
 /// буферизация обязательна, иначе клиент не узнает длину ответа.
-async fn build_passthrough_response(upstream: reqwest::Response) -> Passthrough {
+async fn build_passthrough_response(
+    upstream: reqwest::Response,
+    adapter: &dyn crate::protocol::VendorProtocol,
+) -> Passthrough {
     let status = upstream.status();
     let content_type = upstream
         .headers()
@@ -290,8 +338,7 @@ async fn build_passthrough_response(upstream: reqwest::Response) -> Passthrough 
         .unwrap_or("")
         .to_string();
 
-    let is_stream = content_type.starts_with("text/event-stream");
-    if is_stream {
+    if adapter.is_stream_response(&content_type) {
         let stream = upstream.bytes_stream();
         let response = Response::builder()
             .status(status)
@@ -338,44 +385,26 @@ async fn build_passthrough_response(upstream: reqwest::Response) -> Passthrough 
     }
 }
 
-/// Собрать запрос к апстриму из подготовленных частей.
+/// Собрать `reqwest::Request` из запроса адаптера — тонкая склейка.
 ///
-/// `method` передаётся явно: `/chat/completions` — это `POST`, а `/models` —
-/// `GET`. Раньше здесь был жёсткий `POST`, из-за чего опрос моделей получал
-/// `405 Method Not Allowed` от любого апстрима (поймано интеграционным тестом
-/// `fetch_models_*`).
-fn build_request(
-    state: &AppState,
-    route: &Route,
-    forwarded: &HeaderMap,
-    api_key: &str,
-    method: reqwest::Method,
-    body: Vec<u8>,
-) -> reqwest::Request {
-    let mut req = state
-        .http()
-        .request(method, route.request_url())
-        .header("authorization", auth_header(api_key));
-    for (name, value) in forwarded.iter() {
+/// Вся политика (метод, путь, заголовки, `content-type` только при непустом
+/// теле) живёт в адаптерах (`protocol.rs`). Здесь только перенос в `reqwest`:
+/// дублировать политику в двух местах запрещено.
+///
+/// `accept-encoding` намеренно не пересылается: клиентский клиент сжатия не
+/// должен влиять на то, что получит шлюз. Ответ приходит без сжатия, и поток
+/// читается без распаковки на лету.
+fn build_reqwest(state: &AppState, up: &crate::protocol::UpstreamRequest) -> reqwest::Request {
+    let mut req = state.http().request(up.method.clone(), up.route.request_url());
+    for (name, value) in up.headers.iter() {
         req = req.header(name, value);
     }
-    let mut extra = HeaderMap::new();
-    apply_route_headers(route, &mut extra);
-    for (name, value) in extra.iter() {
-        req = req.header(name, value);
-    }
-    // `content-type` задаём только когда есть тело: у `GET /models` его быть
-    // не должно, а лишний заголовок сбивает некоторые прокси-апстримы.
-    if !body.is_empty() {
-        req = req.header("content-type", "application/json");
-    }
-    // `accept-encoding` намеренно не пересылается: клиентский клиент сжатия не
-    // должен влиять на то, что получит шлюз. Ответ приходит без сжатия, и поток
-    // читается без распаковки на лету.
     // `body()` уже проверяет, что тело — `Vec<u8>`, поэтому `build()` здесь не
-// падает: единственная причина ошибки здесь — сетевой уровень, и она
-// всплывёт при отправке с понятным текстом.
-req.body(body).build().expect("тело — Vec<u8>; ошибку сборки дать не может")
+    // падает: единственная причина ошибки здесь — сетевой уровень, и она
+    // всплывёт при отправке с понятным текстом.
+    req.body(up.body.clone()).build().expect(
+        "тело — Vec<u8>; ошибку сборки дать не может (бывший инвариант build_request)",
+    )
 }
 
 /// Ответ клиенту по последней неуспешной попытке.
@@ -465,7 +494,7 @@ fn summarize(body: Option<&str>) -> String {
     }
 }
 
-/// `GET {base_url}/models` провайдера: реальный опрос, без хардкода.
+/// Реальный опрос списка моделей провайдера через его адаптер, без хардкода.
 ///
 /// Ошибка возвращается пользователю как есть: молчаливый пустой список означал
 /// бы «у провайдера нет моделей», хотя на деле сломался ключ или сеть.
@@ -474,15 +503,10 @@ pub async fn fetch_provider_models(
     provider: &ProviderConfig,
     config: &GatewayConfig,
 ) -> Result<Vec<cloud_routers_core::config::DiscoveredModel>, String> {
-    let route = resolve_route(provider, config, "/models")?;
-    let key = provider
-        .active_keys()
-        .map(|k| k.key.clone())
-        .next()
-        .ok_or_else(|| {
-            format!("У провайдера «{}» нет включённых ключей", provider.id)
-        })?;
-    let req = build_request(&state, &route, &HeaderMap::new(), &key, reqwest::Method::GET, Vec::new());
+    let adapter = crate::protocol::adapter_for(provider.protocol)?;
+    let credential = credential_for(state, provider).await?;
+    let up = adapter.models_request(provider, config, &credential)?;
+    let req = build_reqwest(state, &up);
     let response = state.http().execute(req).await.map_err(|e| {
         format!("Не удалось получить список моделей у «{}»: {}", provider.name, e)
     })?;
@@ -490,16 +514,55 @@ pub async fn fetch_provider_models(
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
         return Err(format!(
-            "Провайдер «{}» ответил HTTP {} на /models: {}",
+            "Провайдер «{}» ответил HTTP {} на запрос моделей: {}",
             provider.name,
             status.as_u16(),
             text.chars().take(300).collect::<String>()
         ));
     }
-    cloud_routers_core::models::parse_models_response(&text)
+    adapter.parse_models(&text)
 }
 
-/// Проверка связи с провайдером: замер латентности `GET /models`.
+/// Секрет для апстрима: ключ из ротации либо access-токен OAuth-сессии.
+///
+/// OAuth-сессия обязана существовать (привязка в конфиге без файла сессии —
+/// состояние, о котором пользователь должен узнать честно, а не 500).
+/// Рефреш здесь не делаем: проактивный рефреш — задача OAuth-модуля (шаг 4);
+/// здесь только читаем то, что есть.
+async fn credential_for(state: &AppState, provider: &ProviderConfig) -> Result<String, String> {
+    use cloud_routers_core::protocol::ProviderAuth;
+    match &provider.auth {
+        ProviderAuth::ApiKeys => provider
+            .active_keys()
+            .map(|k| k.key.clone())
+            .next()
+            .ok_or_else(|| format!("У провайдера «{}» нет включённых ключей", provider.id)),
+        ProviderAuth::OAuth { session_id } => {
+            // Проактивный рефреш до истечения: токен, умирающий во время
+            // запроса, — та же ложь, что и протухший заранее.
+            crate::kiro_oauth::ensure_fresh(state, session_id).await.map_err(|e| {
+                format!("У провайдера «{}»: {e}", provider.id)
+            })?;
+            let sessions =
+                cloud_routers_core::store::load_oauth_sessions(state.data_dir());
+            let s = sessions.get(session_id).ok_or_else(|| {
+                format!(
+                    "У провайдера «{}» OAuth-сессия «{session_id}» не найдена: пройдите вход заново",
+                    provider.id
+                )
+            })?;
+            if s.access_token.trim().is_empty() {
+                return Err(format!(
+                    "У провайдера «{}» пустой access-токен в сессии «{session_id}»",
+                    provider.id
+                ));
+            }
+            Ok(s.access_token.clone())
+        }
+    }
+}
+
+/// Проверка связи с провайдером: замер латентности запроса моделей.
 pub struct PingResult {
     pub latency_ms: u64,
     pub models_count: usize,
@@ -512,15 +575,11 @@ pub async fn ping_provider(
     provider: &ProviderConfig,
     config: &GatewayConfig,
 ) -> Result<PingResult, String> {
-    let route = resolve_route(provider, config, "/models")?;
-    let key = provider
-        .active_keys()
-        .map(|k| k.key.clone())
-        .next()
-        .ok_or_else(|| format!("У провайдера «{}» нет включённых ключей", provider.id))?;
+    let adapter = crate::protocol::adapter_for(provider.protocol)?;
+    let credential = credential_for(state, provider).await?;
+    let up = adapter.models_request(provider, config, &credential)?;
     let started = std::time::Instant::now();
-    let req = build_request(state, &route, &HeaderMap::new(), &key, reqwest::Method::GET, Vec::new());
-    let response = state.http().execute(req).await.map_err(|e| {
+    let response = state.http().execute(build_reqwest(state, &up)).await.map_err(|e| {
         format!("Не удалось связаться с провайдером «{}»: {}", provider.name, e)
     })?;
     let status = response.status();
@@ -534,13 +593,11 @@ pub async fn ping_provider(
             latency_ms
         ));
     }
-    let models_count = cloud_routers_core::models::parse_models_response(&text)
-        .map(|m| m.len())
-        .unwrap_or(0);
+    let models_count = adapter.parse_models(&text).map(|m| m.len()).unwrap_or(0);
     Ok(PingResult {
         latency_ms,
         models_count,
-        via_relay: route.is_relay(),
+        via_relay: up.route.is_relay(),
         target: trim_base_url(&provider.base_url),
     })
 }

@@ -94,7 +94,8 @@ pub struct BaseUrlOverride {
 }
 
 impl BaseUrlOverride {
-    /// Запись таблицы как пресет каталога.
+    /// Запись таблицы как пресет каталога. Протокол — OpenAI: overrides
+    /// покрывают только OpenAI-совместимые endpoints (см. `_note` в JSON).
     pub fn as_preset(&self) -> ProviderPreset {
         ProviderPreset {
             id: self.id.clone(),
@@ -103,6 +104,7 @@ impl BaseUrlOverride {
             api_docs_url: self.api_docs_url.clone(),
             icon_url: None,
             default_models_hint: None,
+            protocol: crate::protocol::VendorProtocol::Openai,
         }
     }
 }
@@ -231,6 +233,10 @@ pub fn merge_catalogs(
             api_docs_url,
             icon_url: None,
             default_models_hint: if models.is_empty() { None } else { Some(models) },
+            // Внешние каталоги протокола не знают: их провайдеры — OpenAI по
+            // определению (иначе base_url из них был бы непригоден). Kiro
+            // приходит только curated-путём (шаг 4/5).
+            protocol: crate::protocol::VendorProtocol::Openai,
         });
     }
 

@@ -6,7 +6,8 @@
 //! <data_dir>/
 //!   gateway.json          конфигурация (провайдеры, ключи, модели, релей)
 //!   presets_cache.json    кэш каталога провайдеров (см. [`crate::presets`])
-//!   server.json           pid/порт/версия живого шлюза
+//!   oauth_sessions.json   OAuth-сессии (токены; см. [`crate::protocol`])
+//!   server.json           pid/порт/версия живого процесса
 //!   gateway.log           stdout+stderr шлюза
 //! ```
 //!
@@ -38,6 +39,46 @@ pub fn config_path(data_dir: &Path) -> PathBuf {
 /// Путь к кэшу каталога провайдеров.
 pub fn presets_cache_path(data_dir: &Path) -> PathBuf {
     data_dir.join("presets_cache.json")
+}
+
+/// Путь к OAuth-сессиям (`session_id → OAuthSession`, см. [`crate::protocol`]).
+///
+/// Отдельный файл, а не поле `gateway.json`: конфиг целиком отдаётся в
+/// дашборд (с масками), а токены не должны покидать процесс шлюза.
+pub fn oauth_sessions_path(data_dir: &Path) -> PathBuf {
+    data_dir.join("oauth_sessions.json")
+}
+
+/// Прочитать OAuth-сессии. Отсутствие файла — пустая карта, битый файл —
+/// пустая карта с `warn!` (тот же договор, что у конфига: не ронять шлюз).
+pub fn load_oauth_sessions(
+    data_dir: &Path,
+) -> std::collections::BTreeMap<String, crate::protocol::OAuthSession> {
+    let path = oauth_sessions_path(data_dir);
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return std::collections::BTreeMap::new();
+    };
+    match serde_json::from_str(&raw) {
+        Ok(map) => map,
+        Err(e) => {
+            log::warn!(
+                "cloud-routers: {} не разобран ({}), сессии считаются отсутствующими",
+                path.display(),
+                e
+            );
+            std::collections::BTreeMap::new()
+        }
+    }
+}
+
+/// Сохранить OAuth-сессии атомарно.
+pub fn save_oauth_sessions(
+    data_dir: &Path,
+    sessions: &std::collections::BTreeMap<String, crate::protocol::OAuthSession>,
+) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(sessions).map_err(|e| e.to_string())?;
+    ko_json_store::write_atomic(&oauth_sessions_path(data_dir), &json)
+        .map_err(|e| format!("Не удалось записать {}: {}", oauth_sessions_path(data_dir).display(), e))
 }
 
 /// Прочитать конфигурацию.
@@ -204,6 +245,7 @@ mod tests {
             use_relay: false,
             keys: vec![AccountKey { id: "k1".into(), key: "gsk_test".into(), is_active: true }],
             models: vec![DiscoveredModel { id: "llama-3.3-70b-versatile".into(), ..Default::default() }],
+            ..Default::default()
         });
         cfg
     }
@@ -363,5 +405,44 @@ mod tests {
         let eff = cfg.effective_presets_sources();
         assert_eq!(eff.len(), crate::presets::sources::DEFAULT_SOURCES.len());
         assert_eq!(eff[0], crate::presets::sources::MODELS_DEV_API);
+    }
+
+    fn sample_session() -> crate::protocol::OAuthSession {
+        crate::protocol::OAuthSession {
+            provider_id: "kiro".into(),
+            access_token: "tok".into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn oauth_sessions_roundtrip() {
+        let d = tmp_dir("oauth1");
+        std::fs::create_dir_all(&d).expect("mkdir");
+        let mut map = std::collections::BTreeMap::new();
+        map.insert("s1".to_string(), sample_session());
+        save_oauth_sessions(&d, &map).expect("save");
+        let back = load_oauth_sessions(&d);
+        assert_eq!(back.get("s1").map(|s| s.access_token.as_str()), Some("tok"));
+        assert!(oauth_sessions_path(&d).exists());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn oauth_sessions_missing_file_is_empty_not_error() {
+        let d = tmp_dir("oauth2");
+        std::fs::create_dir_all(&d).expect("mkdir");
+        assert!(load_oauth_sessions(&d).is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn oauth_sessions_corrupt_file_is_empty_and_kept() {
+        let d = tmp_dir("oauth3");
+        std::fs::create_dir_all(&d).expect("mkdir");
+        std::fs::write(oauth_sessions_path(&d), "{oops").expect("write");
+        assert!(load_oauth_sessions(&d).is_empty(), "битый файл — не падение");
+        assert!(oauth_sessions_path(&d).exists(), "битый файл не перетираем");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }

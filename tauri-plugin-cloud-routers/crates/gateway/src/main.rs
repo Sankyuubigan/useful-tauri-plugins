@@ -25,7 +25,12 @@
 
 mod admin;
 mod app;
+mod eventstream;
+mod kiro_oauth;
+mod kiro_stream;
 mod logbuf;
+mod protocol;
+mod protocol_kiro;
 mod proxy;
 mod relay;
 mod respawn;

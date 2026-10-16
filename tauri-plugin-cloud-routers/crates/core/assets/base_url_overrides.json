@@ -1,0 +1,59 @@
+[
+  {
+    "_note": "Переопределения base_url для провайдеров, которые его НЕ публикуют в models.dev (проверено 2026-10-16: поля `api` у них нет). Каждый URL — со ссылкой-доказательством. ПРАВИЛО ВКЛЮЧЕНИЯ: только OpenAI-совместимые endpoints (`/chat/completions`, `/models` с Bearer-ключом) — шлюз не умеет в vendor-протоколы. Вендоры без OpenAI-совместимого входа (голый Anthropic API, Bedrock-подписи, OAuth) сюда НЕ входят: каталог с нерабочим base_url — та же ложь, что и отсутствие провайдера.",
+    "id": "google",
+    "name": "Google (Gemini)",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+    "proof": "GET /v1beta/openai/models без ключа → 400 (путь существует, ждёт ключ); GET /v1beta/models → 401. Проверено curl 2026-10-16.",
+    "api_docs_url": "https://ai.google.dev/gemini-api/docs/openai"
+  },
+  {
+    "id": "openai",
+    "name": "OpenAI",
+    "base_url": "https://api.openai.com/v1",
+    "proof": "Встроенный каталог default_providers.json (та же строка с 2026-10-08); канонический endpoint из документации OpenAI.",
+    "api_docs_url": "https://platform.openai.com/docs/api-reference"
+  },
+  {
+    "id": "groq",
+    "name": "Groq",
+    "base_url": "https://api.groq.com/openai/v1",
+    "proof": "Встроенный каталог default_providers.json; строка используется в интеграционных тестах шлюза (upstream.rs).",
+    "api_docs_url": "https://console.groq.com/docs/openai"
+  },
+  {
+    "id": "cerebras",
+    "name": "Cerebras",
+    "base_url": "https://api.cerebras.ai/v1",
+    "proof": "Встроенный каталог default_providers.json.",
+    "api_docs_url": "https://inference-docs.cerebras.ai/api-reference"
+  },
+  {
+    "id": "mistral",
+    "name": "Mistral",
+    "base_url": "https://api.mistral.ai/v1",
+    "proof": "Встроенный каталог default_providers.json.",
+    "api_docs_url": "https://docs.mistral.ai/api"
+  },
+  {
+    "id": "cohere",
+    "name": "Cohere",
+    "base_url": "https://api.cohere.com/compatibility/v1",
+    "proof": "Встроенный каталог default_providers.json.",
+    "api_docs_url": "https://docs.cohere.com"
+  },
+  {
+    "id": "xai",
+    "name": "xAI (Grok)",
+    "base_url": "https://api.x.ai/v1",
+    "proof": "Встроенный каталог default_providers.json.",
+    "api_docs_url": "https://docs.x.ai"
+  },
+  {
+    "id": "together",
+    "name": "Together AI",
+    "base_url": "https://api.together.xyz/v1",
+    "proof": "Встроенный каталог default_providers.json.",
+    "api_docs_url": "https://docs.together.ai"
+  }
+]

@@ -439,20 +439,51 @@ async function showRelayToken() {
 
 // ──────────────────────────── каталог пресетов ────────────────────────────
 
+/**
+ * Поиск по каталогу: каталог после sync — сотни провайдеров, листать
+ * `<select>` вручную непригодно. Фильтр ищет подстроку без учёта регистра по
+ * имени, id и base_url.
+ *
+ * Выбранное значение принудительно остаётся в списке, даже если под фильтр
+ * не попадает: иначе `<select>` молча терял бы выбор пользователя при каждом
+ * вводе символа.
+ */
+function presetMatches(p, q) {
+  if (!q) return true;
+  const hay = `${p.name || ''} ${p.id || ''} ${p.default_base_url || ''}`.toLowerCase();
+  return hay.includes(q);
+}
+
 function fillPresetSelect() {
   const sel = $('#preset-select');
+  const search = $('#preset-search');
+  const q = (search && search.value || '').trim().toLowerCase();
   const providers = (state.presets && state.presets.providers) || [];
+  const current = sel.value;
+  const visible = providers.filter(p => p.id === current || presetMatches(p, q));
   sel.innerHTML = '<option value="">— выберите из списка —</option>' +
-    providers.map(p =>
+    visible.map(p =>
       `<option value="${esc(p.id)}" data-base="${esc(p.default_base_url)}" data-name="${esc(p.name)}"` +
       ` data-docs="${esc(p.api_docs_url || '')}">${esc(p.name)}</option>`).join('');
+  sel.value = current;
+  const hint = $('#preset-count');
+  if (hint) {
+    hint.textContent = q
+      ? `показано ${visible.length} из ${providers.length}`
+      : `${providers.length} провайдеров`;
+  }
 }
 
 async function syncPresets(btn) {
   busy(btn, true);
   try {
     const r = await api('/api/presets/sync', { method: 'POST' });
-    toast(`Каталог обновлён: ${r.count} провайдеров (+${r.added} / -${r.removed})`);
+    const failed = (r.attempts || []).filter(a => !a.ok);
+    let msg = `Каталог обновлён: ${r.count} провайдеров (+${r.added} / -${r.removed}), источник ${r.from_url}`;
+    if (failed.length) {
+      msg += `; не ответили: ${failed.map(a => a.url).join(', ')}`;
+    }
+    toast(msg, failed.length ? 'err' : 'ok');
     await refreshPresets();
   } catch (e) { fail('Не удалось обновить каталог', e); }
   finally { busy(btn, false); }
@@ -466,6 +497,8 @@ function openAddModal() {
   $('#new-base-url').value = '';
   $('#new-keys').value = '';
   $('#new-docs').hidden = true;
+  $('#preset-search').value = '';
+  fillPresetSelect();
   $('#preset-select').value = '';
   // Показываем окно ДО загрузки каталога. Раньше `await refreshPresets()` стоял
   // выше этой строки, и любая задержка или сбой сети съедал показ целиком:
@@ -555,6 +588,7 @@ function init() {
   $('#btn-modal-save').addEventListener('click', () => void saveNewProvider());
   $('#add-modal').addEventListener('click', (e) => { if (e.target.id === 'add-modal') closeAddModal(); });
 
+  $('#preset-search').addEventListener('input', () => fillPresetSelect());
   $('#preset-select').addEventListener('change', (e) => {
     const opt = e.target.selectedOptions[0];
     if (!opt || !opt.value) return;

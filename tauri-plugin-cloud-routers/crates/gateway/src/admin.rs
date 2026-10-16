@@ -80,7 +80,7 @@ struct StatusDto {
     relay_url: Option<String>,
     relay_token_set: bool,
     auto_start: bool,
-    presets_sync_url: String,
+    presets_sources: Vec<String>,
     log_hint: String,
 }
 
@@ -106,10 +106,7 @@ async fn status(State(state): State<AppState>) -> Response {
             .map(|t| !t.trim().is_empty())
             .unwrap_or(false),
         auto_start: config.auto_start,
-        presets_sync_url: config
-            .presets_sync_url
-            .clone()
-            .unwrap_or_else(|| presets::DEFAULT_SYNC_URL.to_string()),
+        presets_sources: config.effective_presets_sources(),
         log_hint: "События последних запросов и ретраев".to_string(),
     };
     Json(dto).into_response()
@@ -155,7 +152,7 @@ struct ConfigDto {
     auto_start: bool,
     vercel_relay_url: Option<String>,
     vercel_relay_token_set: bool,
-    presets_sync_url: String,
+    presets_sources: Vec<String>,
     providers: Vec<ProviderDto>,
     problems: Vec<String>,
     data_dir: String,
@@ -206,10 +203,7 @@ async fn get_config(State(state): State<AppState>) -> Response {
             .as_deref()
             .map(|t| !t.trim().is_empty())
             .unwrap_or(false),
-        presets_sync_url: config
-            .presets_sync_url
-            .clone()
-            .unwrap_or_else(|| presets::DEFAULT_SYNC_URL.to_string()),
+        presets_sources: config.effective_presets_sources(),
         providers: config.providers.iter().map(|p| provider_dto(&state, p)).collect(),
         problems: config.validate(),
         data_dir: state.data_dir().to_string_lossy().to_string(),
@@ -231,7 +225,11 @@ struct ConfigPatch {
     /// В ответе НЕ возвращается: значение секрета отдаёт отдельный обработчик
     /// `GET /api/relay/token` и только по прямому запросу (см. модульный док).
     vercel_relay_token: Option<String>,
-    presets_sync_url: Option<String>,
+    /// Новый список источников каталога. Пустой список = сброс к дефолтам.
+    ///
+    /// `None` = «не трогать». Отдельного «удалить один» нет: список обычно из
+    /// 2–4 элементов, целиком его прислать проще, чем изобретать операции.
+    presets_sources: Option<Vec<String>>,
 }
 
 async fn put_config(State(state): State<AppState>, Json(patch): Json<ConfigPatch>) -> ApiResult<Json<ConfigDto>> {
@@ -274,12 +272,23 @@ async fn put_config(State(state): State<AppState>, Json(patch): Json<ConfigPatch
                 let v = v.trim();
                 c.vercel_relay_token = if v.is_empty() { None } else { Some(v.to_string()) };
             }
-            if let Some(v) = patch.presets_sync_url.as_deref() {
-                let v = v.trim();
-                if !v.is_empty() && !(v.starts_with("http://") || v.starts_with("https://")) {
-                    return Err("URL каталога пресетов должен начинаться с http:// или https://".to_string());
+            if let Some(list) = patch.presets_sources.as_deref() {
+                let mut cleaned: Vec<String> = Vec::with_capacity(list.len());
+                for raw in list {
+                    let v = raw.trim();
+                    if v.is_empty() {
+                        continue;
+                    }
+                    if !(v.starts_with("http://") || v.starts_with("https://")) {
+                        return Err(format!(
+                            "URL источника каталога «{v}» должен начинаться с http:// или https://"
+                        ));
+                    }
+                    if !cleaned.iter().any(|x| x == v) {
+                        cleaned.push(v.to_string());
+                    }
                 }
-                c.presets_sync_url = if v.is_empty() { None } else { Some(v.to_string()) };
+                c.presets_sources = cleaned;
             }
             Ok(())
         })
@@ -297,7 +306,7 @@ async fn put_config(State(state): State<AppState>, Json(patch): Json<ConfigPatch
         auto_start: config.auto_start,
         vercel_relay_url: config.vercel_relay_url.clone(),
         vercel_relay_token_set: config.vercel_relay_token.as_deref().map(|t| !t.trim().is_empty()).unwrap_or(false),
-        presets_sync_url: config.presets_sync_url.clone().unwrap_or_else(|| presets::DEFAULT_SYNC_URL.to_string()),
+        presets_sources: config.effective_presets_sources(),
         providers: config.providers.iter().map(|p| provider_dto(&state, p)).collect(),
         problems: config.validate(),
         data_dir: state.data_dir().to_string_lossy().to_string(),
@@ -697,22 +706,35 @@ struct PresetsDto {
     source: &'static str,
     updated_at: String,
     sync_url: String,
+    sync_urls: Vec<String>,
     providers: Vec<presets::ProviderPreset>,
 }
 
 async fn get_presets(State(state): State<AppState>) -> Response {
     let (catalog, source) = presets::load(state.data_dir());
     let config = state.config();
+    let urls = config.effective_presets_sources();
     Json(PresetsDto {
         source: source.as_str(),
         updated_at: catalog.updated_at.clone(),
-        sync_url: config
-            .presets_sync_url
-            .clone()
-            .unwrap_or_else(|| presets::DEFAULT_SYNC_URL.to_string()),
+        sync_url: urls.first().cloned().unwrap_or_default(),
+        sync_urls: urls,
         providers: catalog.providers.clone(),
     })
     .into_response()
+}
+
+/// Одна попытка источника при sync: что пробовали и чем кончилось.
+///
+/// Поле существует ради диагностики: раньше неуспех любого источника давал
+/// одинаковое «Не удалось загрузить каталог пресетов», и понять, кто виноват —
+/// сеть, 404, чужой формат — было не по чему (см. историю с «builder error»).
+#[derive(Debug, Serialize)]
+struct SourceAttempt {
+    url: String,
+    ok: bool,
+    /// Что дал источник: число провайдеров, число подсказок или текст ошибки.
+    detail: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -723,23 +745,250 @@ struct PresetsSyncDto {
     added: usize,
     removed: usize,
     from_url: String,
+    attempts: Vec<SourceAttempt>,
 }
 
 /// Сетевой sync каталога провайдеров.
 ///
-/// Через релей — если он настроен: `raw.githubusercontent.com` в некоторых
-/// сетях недоступен, и обычная проверка обновления каталога превратилась бы в
+/// Обход ВСЕГО списка: провайдеров берёт первый пригодный источник (раньше был
+/// один URL, и его 404 означал мёртвый каталог навсегда), а модели остальных
+/// источников идут в подсказки (`default_models_hint`). Подсказки litellm —
+/// best-effort: его недоступность sync не роняет.
+///
+/// Через релей — если он настроен: часть источников в некоторых сетях
+/// недоступна напрямую, и обычная проверка обновления превратилась бы в
 /// вечное «ошибка сети», хотя рядом стоит работающий релей.
 async fn sync_presets(State(state): State<AppState>) -> ApiResult<Json<PresetsSyncDto>> {
-    let config = state.config();
-    let url = config
-        .presets_sync_url
-        .clone()
-        .unwrap_or_else(|| presets::DEFAULT_SYNC_URL.to_string());
+    use presets::adapters::litellm::parse_litellm_hints;
+    use presets::adapters::models_dev::ExternalProvider;
+    use presets::adapters::models_json::parse_models_json_hints;
+    use presets::adapters::{classify_source_body, parse_models_dev_body, SourceBodyKind};
 
-    // Каталог тянем через релей, если он настроен: `raw.githubusercontent.com`
-    // в некоторых сетях недоступен, и обычная проверка обновления превратилась бы
-    // в вечное «ошибка сети», хотя рядом стоит работающий релей.
+    let config = state.config();
+    let urls = config.effective_presets_sources();
+    if urls.is_empty() {
+        return Err(bad_request(
+            "Список источников каталога пуст. Добавьте хотя бы один URL или сбросьте список к значениям по умолчанию.",
+        ));
+    }
+
+    let mut attempts: Vec<SourceAttempt> = Vec::with_capacity(urls.len());
+    let mut external: Option<(String, Vec<ExternalProvider>)> = None;
+    let mut extra_hints: Vec<(String, Vec<String>)> = Vec::new();
+
+    for url in &urls {
+        match fetch_source_text(&state, &config, url).await {
+            Err(e) => attempts.push(SourceAttempt {
+                url: url.clone(),
+                ok: false,
+                detail: e,
+            }),
+            Ok(text) => {
+                // Формат тела определяет классификатор, а не перебор парсеров:
+                // перебор «успешно» разбирал чужие тела как мусор (поймано E2E:
+                // litellm и models.json давали тысячи «провайдеров» с пустыми
+                // моделями, и подсказки терялись).
+                match classify_source_body(&text) {
+                    SourceBodyKind::ModelsDev => match parse_models_dev_body(&text) {
+                        Ok(list) => {
+                            if external.is_none() {
+                                attempts.push(SourceAttempt {
+                                    url: url.clone(),
+                                    ok: true,
+                                    detail: format!("провайдеров: {}", list.len()),
+                                });
+                                external = Some((url.clone(), list));
+                            } else {
+                                let hint_count: usize =
+                                    list.iter().map(|p| p.models.len()).sum();
+                                attempts.push(SourceAttempt {
+                                    url: url.clone(),
+                                    ok: true,
+                                    detail: format!("модели в подсказки: {hint_count}"),
+                                });
+                                accumulate_models_as_hints(&mut extra_hints, &list);
+                            }
+                        }
+                        Err(e) => attempts.push(SourceAttempt {
+                            url: url.clone(),
+                            ok: false,
+                            detail: format!("models.dev-тело не разобралось: {e}"),
+                        }),
+                    },
+                    SourceBodyKind::Litellm => match parse_litellm_hints(&text) {
+                        Ok(hints) => {
+                            let count: usize = hints.iter().map(|(_, m)| m.len()).sum();
+                            attempts.push(SourceAttempt {
+                                url: url.clone(),
+                                ok: true,
+                                detail: format!("подсказок моделей: {count}"),
+                            });
+                            merge_hints(&mut extra_hints, hints);
+                        }
+                        Err(e) => attempts.push(SourceAttempt {
+                            url: url.clone(),
+                            ok: false,
+                            detail: format!("litellm-тело не разобралось: {e}"),
+                        }),
+                    },
+                    SourceBodyKind::ModelsJson => match parse_models_json_hints(&text) {
+                        Ok(hints) => {
+                            let count: usize = hints.iter().map(|(_, m)| m.len()).sum();
+                            attempts.push(SourceAttempt {
+                                url: url.clone(),
+                                ok: true,
+                                detail: format!("подсказок моделей: {count}"),
+                            });
+                            merge_hints(&mut extra_hints, hints);
+                        }
+                        Err(e) => attempts.push(SourceAttempt {
+                            url: url.clone(),
+                            ok: false,
+                            detail: format!("models.json-тело не разобралось: {e}"),
+                        }),
+                    },
+                    SourceBodyKind::Unknown => attempts.push(SourceAttempt {
+                        url: url.clone(),
+                        ok: false,
+                        detail: "неизвестный формат тела".to_string(),
+                    }),
+                }
+            }
+        }
+    }
+
+    let Some((from_url, list)) = external else {
+        let summary = attempts
+            .iter()
+            .map(|a| format!("{}: {}", a.url, a.detail))
+            .collect::<Vec<_>>()
+            .join("; ");
+        log::error!("cloud-routers: sync каталога не удался: {summary}");
+        return Err(bad_request(format!(
+            "Ни один источник каталога не подошёл ({summary}). Каталог не изменён — шлюз продолжает работать с текущим."
+        )));
+    };
+
+    let catalog = presets::sources::merge_catalogs(list, &extra_hints, &today_ymd()).map_err(|e| {
+        bad_request(format!("Источники дали несобираемый каталог ({e}). Каталог не изменён."))
+    })?;
+
+    let (previous, _) = presets::load(state.data_dir());
+    let before: Vec<&str> = previous.providers.iter().map(|p| p.id.as_str()).collect();
+    let after: Vec<&str> = catalog.providers.iter().map(|p| p.id.as_str()).collect();
+    let added = after.iter().filter(|id| !before.contains(id)).count();
+    let removed = before.iter().filter(|id| !after.contains(id)).count();
+
+    presets::save_cache(state.data_dir(), &catalog).map_err(|e| internal(e))?;
+    state.events().info(format!(
+        "каталог провайдеров обновлён: {} пресетов (+{} / -{}), источник {}",
+        catalog.providers.len(),
+        added,
+        removed,
+        from_url
+    ));
+    Ok(Json(PresetsSyncDto {
+        source: presets::CatalogSource::Network.as_str(),
+        updated_at: catalog.updated_at,
+        count: catalog.providers.len(),
+        added,
+        removed,
+        from_url,
+        attempts,
+    }))
+}
+
+/// Модели проигравшего models.dev-источника — в подсказки.
+///
+/// Второй models.dev-файл даёт тех же провайдеров, и как каталог он не нужен.
+/// Но его список моделей идёт в `extra_hints`: лишним не бывает.
+fn accumulate_models_as_hints(
+    into: &mut Vec<(String, Vec<String>)>,
+    list: &[presets::adapters::models_dev::ExternalProvider],
+) {
+    let hints: Vec<(String, Vec<String>)> = list
+        .iter()
+        .map(|p| (p.id.clone(), p.models.clone()))
+        .filter(|(_, m)| !m.is_empty())
+        .collect();
+    merge_hints(into, hints);
+}
+
+/// Слить подсказки litellm в общий список: дедупликация по id модели.
+fn merge_hints(into: &mut Vec<(String, Vec<String>)>, hints: Vec<(String, Vec<String>)>) {
+    for (id, models) in hints {
+        match into.iter_mut().find(|(eid, _)| eid == &id) {
+            Some((_, existing)) => {
+                for m in models {
+                    if existing.len() >= presets::sources::MODELS_HINT_LIMIT {
+                        break;
+                    }
+                    if !existing.iter().any(|x| x == &m) {
+                        existing.push(m);
+                    }
+                }
+            }
+            None => into.push((id, models)),
+        }
+    }
+}
+
+/// Сегодняшняя дата `ГГГГ-ММ-ДД` для `updated_at` каталога.
+///
+/// Без `chrono`: в шлюзе календарных часов нет, а тащить зависимость ради
+/// одной строки запрещено минимализмом. Считаем дни от эпохи Unix.
+fn today_ymd() -> String {
+    let days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() / 86_400)
+        .unwrap_or(0);
+    // Алгоритм «civil_from_days» Говарда Хиннанта: дни → (год, месяц, день).
+    let z = days as i64 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    format!("{:04}-{:02}-{:02}", if m <= 2 { y + 1 } else { y }, m, d)
+}
+
+/// Короткий вид ошибки `reqwest`: что именно сломалось.
+///
+/// Раньше текст ошибки уходил пользователю как есть (`{e}`), и понять, сеть
+/// это, TLS, неверный URL или чужой формат, было не по чему — так родилась
+/// недиагностируемая «builder error».
+fn reqwest_kind(e: &reqwest::Error) -> &'static str {
+    if e.is_builder() {
+        "неверный URL запроса (builder)"
+    } else if e.is_connect() {
+        "нет соединения"
+    } else if e.is_timeout() {
+        "таймаут"
+    } else if e.is_request() {
+        "ошибка отправки запроса"
+    } else if e.is_body() || e.is_decode() {
+        "ошибка чтения тела ответа"
+    } else if e.is_status() {
+        "HTTP-статус ошибки"
+    } else {
+        "ошибка сети"
+    }
+}
+
+/// Скачать тело одного источника каталога.
+///
+/// Ошибки возвращаются текстом с видом отказа и URL: вызывающий пишет их в
+/// `attempts`, а не теряет. Успешный не-2xx — тоже ошибка с кодом статуса.
+async fn fetch_source_text(
+    state: &AppState,
+    config: &cloud_routers_core::config::GatewayConfig,
+    url: &str,
+) -> Result<String, String> {
+    // Каталог тянем через релей, если он настроен: часть источников в
+    // некоторых сетях недоступна напрямую.
     let relay_url = config
         .vercel_relay_url
         .as_deref()
@@ -757,51 +1006,26 @@ async fn sync_presets(State(state): State<AppState>) -> ApiResult<Json<PresetsSy
                 crate::upstream::RELAY_PATH_PREFIX,
                 url.trim_start_matches('/')
             ))
-            .header(crate::upstream::HDR_TARGET_URL, url.as_str())
+            .header(crate::upstream::HDR_TARGET_URL, url)
             .header(crate::upstream::HDR_RELAY_TOKEN, relay_token.expect("проверено выше"))
     } else {
-        state.http().get(&url)
+        state.http().get(url)
     }
-    .timeout(std::time::Duration::from_secs(20));
+    .timeout(std::time::Duration::from_secs(presets::sources::SOURCE_TIMEOUT_SECS));
 
-    let response = request
-        .send()
-        .await
-        .map_err(|e| bad_request(format!("Не удалось загрузить каталог пресетов: {}", e)))?;
+    let response = request.send().await.map_err(|e| {
+        let msg = format!("{}: {} ({})", url, reqwest_kind(&e), e);
+        log::error!("cloud-routers: sync каталога: {msg}");
+        msg
+    })?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        return Err(bad_request(format!(
-            "Источник каталога ответил HTTP {}. Каталог не изменён — шлюз продолжает работать с текущим.",
-            status.as_u16()
-        )));
+        let msg = format!("{url}: источник ответил HTTP {}", status.as_u16());
+        log::error!("cloud-routers: sync каталога: {msg}");
+        return Err(msg);
     }
-    let catalog = presets::parse(&text).map_err(|e| {
-        bad_request(format!("Источник вернул некорректный каталог ({}). Каталог не изменён.", e))
-    })?;
-
-    let (previous, _) = presets::load(state.data_dir());
-    let before: Vec<&str> = previous.providers.iter().map(|p| p.id.as_str()).collect();
-    let after: Vec<&str> = catalog.providers.iter().map(|p| p.id.as_str()).collect();
-    let added = after.iter().filter(|id| !before.contains(id)).count();
-    let removed = before.iter().filter(|id| !after.contains(id)).count();
-
-    presets::save_cache(state.data_dir(), &catalog).map_err(|e| internal(e))?;
-    state.events().info(format!(
-        "каталог провайдеров обновлён: {} пресетов (+{} / -{}), источник {}",
-        catalog.providers.len(),
-        added,
-        removed,
-        url
-    ));
-    Ok(Json(PresetsSyncDto {
-        source: presets::CatalogSource::Network.as_str(),
-        updated_at: catalog.updated_at,
-        count: catalog.providers.len(),
-        added,
-        removed,
-        from_url: url,
-    }))
+    Ok(text)
 }
 
 // ────────────────────────────── Релей ──────────────────────────────
@@ -1034,10 +1258,44 @@ mod tests {
         let state = AppState::new(&dir).expect("state");
         let r = put_config(
             State(state),
-            Json(ConfigPatch { presets_sync_url: Some("ftp://x".into()), ..Default::default() }),
+            Json(ConfigPatch {
+                presets_sources: Some(vec!["ftp://x".into()]),
+                ..Default::default()
+            }),
         )
         .await;
         assert!(r.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn put_config_accepts_sources_list_and_resets_on_empty() {
+        let dir = tmp("presetssrc");
+        let state = AppState::new(&dir).expect("state");
+
+        let patch = Json(ConfigPatch {
+            presets_sources: Some(vec![
+                "https://example.com/a.json ".into(),
+                "https://example.com/a.json".into(),
+            ]),
+            ..Default::default()
+        });
+        let _ = put_config(State(state.clone()), patch).await.expect("принять список");
+        assert_eq!(
+            cloud_routers_core::load_config(&dir).presets_sources,
+            vec!["https://example.com/a.json".to_string()],
+            "пробелы обрезаются, дубликаты схлопываются"
+        );
+
+        let patch =
+            Json(ConfigPatch { presets_sources: Some(vec![]), ..Default::default() });
+        let _ = put_config(State(state.clone()), patch).await.expect("сброс к дефолтам");
+        let cfg = cloud_routers_core::load_config(&dir);
+        assert!(cfg.presets_sources.is_empty());
+        assert_eq!(
+            cfg.effective_presets_sources()[0],
+            cloud_routers_core::presets::sources::MODELS_DEV_API
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1346,12 +1604,20 @@ mod tests {
         let dir = tmp("syncfail");
         std::fs::create_dir_all(&dir).expect("mkdir");
         let mut cfg = GatewayConfig::default();
-        cfg.presets_sync_url = Some("http://127.0.0.1:1/none.json".into());
+        cfg.presets_sources = vec!["http://127.0.0.1:1/none.json".into()];
         core_store::save(&dir, &cfg).expect("save");
         let state = AppState::new(&dir).expect("state");
 
         let r = sync_presets(State(state)).await;
-        assert!(r.is_err());
+        let err_resp = r.expect_err("sync обязан упасть").into_response();
+        let bytes =
+            axum::body::to_bytes(err_resp.into_body(), usize::MAX).await.expect("body");
+        let err_text = String::from_utf8_lossy(&bytes);
+        assert!(err_text.contains("127.0.0.1:1"), "ошибка обязана назвать виновный URL: {err_text}");
+        assert!(
+            err_text.contains("нет соединения") || err_text.contains("таймаут"),
+            "ошибка обязана назвать вид отказа, а не «builder error»: {err_text}"
+        );
         let (catalog, source) = presets::load(&dir);
         assert!(catalog.providers.len() >= 20);
         assert_eq!(source, presets::CatalogSource::Embedded);

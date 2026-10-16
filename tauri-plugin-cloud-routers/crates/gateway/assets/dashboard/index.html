@@ -130,9 +130,11 @@
     </div>
 
     <label>Провайдер из каталога
+      <input id="preset-search" type="search" placeholder="Поиск: gemini, groq, openai…" autocomplete="off">
       <select id="preset-select">
         <option value="">— выберите из списка —</option>
       </select>
+      <span class="hint" id="preset-count"></span>
     </label>
 
     <label>Идентификатор (латиница, цифры, «-» и «_»)

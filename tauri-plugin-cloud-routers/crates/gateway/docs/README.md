@@ -97,8 +97,9 @@ SSE-передаётся чанками через `Body::from_stream`, без �
 
 Три уровня, по убыванию приоритета:
 
-1. **Сетевой sync** — JSON по URL из `presets_sync_url`. Кнопка «Обновить
-   каталог провайдеров» в дашборде.
+1. **Сетевой sync** — обход списка `presets_sources` из `gateway.json`,
+   первый пригодный выигрывает. Кнопка «Обновить каталог провайдеров»
+   в дашборде.
 2. **Кэш** `<data_dir>/presets_cache.json` — переживает рестарт и офлайн.
 3. **Встроенный bundle** — `cloud-routers-core/assets/default_providers.json`
    через `include_str!`. Гарантирует рабочий список при первом запуске без сети.
@@ -106,6 +107,28 @@ SSE-передаётся чанками через `Body::from_stream`, без �
 Формат версионируется полем `version`; поддерживается диапазон `1..=1`. Версия
 растёт **только** при несовместимом изменении полей — новые провайдеры и новые
 `base_url` являются данными и апдейта софта не требуют.
+
+### Источники sync (по убыванию приоритета)
+
+| URL | Что даёт | Формат |
+|---|---|---|
+| `https://models.dev/api.json` | провайдеры, endpoints (`api`), модели | `{id: {id, name, doc, api?, models}}` |
+| `https://models.dev/catalog.json` | то же, другая обёртка | `{"providers": {...}}` |
+| `https://models.dev/models.json` | только характеристики моделей | плоская карта `"провайдер/модель"` |
+| `https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json` | только подсказки моделей и цены | плоская карта с `litellm_provider`, `mode` |
+
+Проверено 2026-10-16: **ни одна** из ~4100 записей litellm не содержит
+`api_base` — как каталог провайдеров (кому какой base_url) он не годится.
+В models.dev поля `api` нет у `google`, `groq`, `cerebras`, `openai`,
+`anthropic`, `mistral`, `cohere`, `xai`, `togetherai`, `azure` — им base_url
+даёт `cloud-routers-core/assets/base_url_overrides.json` (каждый URL со
+ссылкой-доказательством).
+
+Правила слияния (см. `presets::sources::merge_catalogs`): curated base_url
+побеждает внешний при конфликте (рабочая маршрутизация важнее «свежести»;
+расхождение пишется в `warn!`); без curated и пригодного внешнего провайдер
+отбрасывается, а не ломает весь каталог; curated-провайдеры вне внешнего
+источника (локальные `ollama`/`llamacpp`/`vllm`) сохраняются.
 
 Список моделей провайдера при этом **не** берётся из каталога: он означает
 «апстрим это отдал на реальный `GET /models`». Пока опрос не выполнен,

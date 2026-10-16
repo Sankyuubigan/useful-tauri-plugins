@@ -52,7 +52,10 @@ pub fn load(data_dir: &Path) -> GatewayConfig {
         return GatewayConfig::default();
     };
     match serde_json::from_str::<GatewayConfig>(&raw) {
-        Ok(cfg) => cfg,
+        Ok(mut cfg) => {
+            migrate_legacy_presets_sync_url(&mut cfg, &path);
+            cfg
+        }
         Err(e) => {
             log::warn!(
                 "cloud-routers: {} не разобран ({}), используется конфиг по умолчанию",
@@ -61,6 +64,49 @@ pub fn load(data_dir: &Path) -> GatewayConfig {
             );
             GatewayConfig::default()
         }
+    }
+}
+
+/// Миграция `presets_sync_url` (строка) → `presets_sources` (список).
+///
+/// Старое поле после замены попадает в `extra` (flatten) — здесь оно
+/// разбирается один раз при загрузке:
+///
+/// - пустое → молча удаляется (поле заменено, значения не было);
+/// - равно мёртвому [`crate::presets::LEGACY_SYNC_URL`] (404 с 2026-10) →
+///   удаляется, используются источники по умолчанию;
+/// - чужое (пользовательское) → становится первым элементом `presets_sources`,
+///   если список пуст; если список уже задан — старое игнорируется с `warn!`
+///   (два хозяина у одного смысла недопустимы).
+fn migrate_legacy_presets_sync_url(cfg: &mut GatewayConfig, path: &Path) {
+    let Some(legacy) = cfg.extra.remove("presets_sync_url") else { return };
+    let url = legacy.as_str().map(str::trim).unwrap_or_default().to_string();
+    if url.is_empty() {
+        log::info!(
+            "cloud-routers: {}: пустой presets_sync_url удалён (поле заменено presets_sources)",
+            path.display()
+        );
+        return;
+    }
+    if url == crate::presets::LEGACY_SYNC_URL {
+        log::info!(
+            "cloud-routers: {}: мёртвый presets_sync_url удалён, используются источники по умолчанию",
+            path.display()
+        );
+        return;
+    }
+    if cfg.presets_sources.is_empty() {
+        log::info!(
+            "cloud-routers: {}: presets_sync_url перенесён в presets_sources первым элементом",
+            path.display()
+        );
+        cfg.presets_sources.push(url);
+    } else {
+        log::warn!(
+            "cloud-routers: {}: presets_sync_url «{}» проигнорирован — задан presets_sources",
+            path.display(),
+            url
+        );
     }
 }
 
@@ -260,5 +306,62 @@ mod tests {
         clear_server_record(&d); // файла нет — не паника
         clear_server_record(&d);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    fn write_raw(d: &std::path::Path, raw: &str) {
+        std::fs::write(config_path(d), raw).expect("write");
+    }
+
+    #[test]
+    fn migration_moves_custom_legacy_url_first() {
+        let d = tmp_dir("mig1");
+        write_raw(&d, r#"{"port":20131,"providers":[],"presets_sync_url":"https://example.com/mine.json"}"#);
+        let cfg = load(&d);
+        assert_eq!(cfg.presets_sources, vec!["https://example.com/mine.json".to_string()]);
+        assert!(!cfg.extra.contains_key("presets_sync_url"), "legacy-поле обязано исчезнуть");
+        // Повторная загрузка идемпотентна: поле уже в списке, миграции нечего делать.
+        let cfg2 = load(&d);
+        assert_eq!(cfg2.presets_sources, cfg.presets_sources);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn migration_drops_dead_legacy_url() {
+        let d = tmp_dir("mig2");
+        write_raw(
+            &d,
+            &format!(
+                "{{\"port\":20131,\"providers\":[],\"presets_sync_url\":\"{}\"}}",
+                crate::presets::LEGACY_SYNC_URL
+            ),
+        );
+        let cfg = load(&d);
+        assert!(cfg.presets_sources.is_empty(), "мёртвый URL не должен попасть в список");
+        assert_eq!(
+            cfg.effective_presets_sources()[0],
+            crate::presets::sources::MODELS_DEV_API,
+            "пустой список = дефолтные источники"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn migration_prefers_explicit_sources_list() {
+        let d = tmp_dir("mig3");
+        write_raw(
+            &d,
+            r#"{"port":20131,"providers":[],"presets_sources":["https://example.com/a.json"],"presets_sync_url":"https://example.com/old.json"}"#,
+        );
+        let cfg = load(&d);
+        assert_eq!(cfg.presets_sources, vec!["https://example.com/a.json".to_string()]);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn effective_sources_default_when_empty() {
+        let cfg = GatewayConfig::default();
+        let eff = cfg.effective_presets_sources();
+        assert_eq!(eff.len(), crate::presets::sources::DEFAULT_SOURCES.len());
+        assert_eq!(eff[0], crate::presets::sources::MODELS_DEV_API);
     }
 }

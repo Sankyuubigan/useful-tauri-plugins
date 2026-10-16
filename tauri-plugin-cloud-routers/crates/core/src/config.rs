@@ -46,13 +46,14 @@ pub struct GatewayConfig {
     pub vercel_relay_token: Option<String>,
     /// Провайдеры (облачные LLM-сервисы).
     pub providers: Vec<ProviderConfig>,
-    /// URL сетевого каталога пресетов провайдеров.
+    /// Сетевые источники каталога пресетов провайдеров, по убыванию приоритета.
     ///
-    /// `None` → [`crate::presets::DEFAULT_SYNC_URL`]. Поле существует, чтобы
-    /// сломанный/перенесённый источник каталога можно было починить правкой
+    /// Пусто → [`crate::presets::sources::DEFAULT_SOURCES`]. Поле — список, а не
+    /// один URL: один URL — одна точка отказа (переезд файла = мёртвый каталог,
+    /// доказано 2026-10). Сломанный/перенесённый источник чинится правкой
     /// конфига, а не выпуском новой версии.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub presets_sync_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presets_sources: Vec<String>,
     /// Поля, которых эта версия крейта не знает.
     ///
     /// Сохраняются и переписываются при следующем сохранении. Это не
@@ -73,7 +74,7 @@ impl Default for GatewayConfig {
             vercel_relay_url: None,
             vercel_relay_token: None,
             providers: Vec::new(),
-            presets_sync_url: None,
+            presets_sources: Vec::new(),
             extra: BTreeMap::new(),
         }
     }
@@ -174,6 +175,20 @@ pub fn trim_base_url(url: &str) -> String {
 }
 
 impl GatewayConfig {
+    /// Источники каталога с учётом пользовательского списка.
+    ///
+    /// Пустой `presets_sources` → дефолты из [`crate::presets::sources::DEFAULT_SOURCES`].
+    /// Непустой → пользовательский список целиком (пользователь взял управление
+    /// на себя; дефолты НЕ подмешиваются — иначе «убрать источник» было бы
+    /// невозможно).
+    pub fn effective_presets_sources(&self) -> Vec<String> {
+        if self.presets_sources.is_empty() {
+            crate::presets::sources::DEFAULT_SOURCES.iter().map(|s| s.to_string()).collect()
+        } else {
+            self.presets_sources.clone()
+        }
+    }
+
     /// Найти провайдера по id.
     pub fn provider(&self, id: &str) -> Option<&ProviderConfig> {
         self.providers.iter().find(|p| p.id == id)

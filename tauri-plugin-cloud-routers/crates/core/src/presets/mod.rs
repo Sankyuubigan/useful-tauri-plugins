@@ -23,23 +23,28 @@
 //! Схема `ProviderPreset` принадлежит нам, а не заимствована из LobeChat или
 //! Cherry Studio. Причина: у тех проектов своя внутренняя структура, и привязка
 //! к ней означала бы, что чужой релиз-цикл (переименование поля, переезд файла)
-//! ломает наш парсер. Синхронизируем **наш** JSON из нашего репозитория; формат
-//! версионируется полем `version`, а не фактом существования файла.
+//! ломает наш парсер. Формат версионируется полем `version`, а не фактом
+//! существования файла. Внешние источники (`models.dev`, `litellm`) читаются
+//! через адаптеры из [`adapters`], а не напрямую.
+
+pub mod adapters;
+pub mod sources;
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::store::{presets_cache_path};
+use crate::store::presets_cache_path;
 
 /// Встроенный каталог: работает без сети при первом запуске.
-pub const EMBEDDED_CATALOG: &str = include_str!("../assets/default_providers.json");
+pub const EMBEDDED_CATALOG: &str = include_str!("../../assets/default_providers.json");
 
-/// URL сетевого sync по умолчанию (raw JSON в репозитории плагинов).
+/// Старый одиночный URL сетевого sync (404 с 2026-10).
 ///
-/// Переопределяется полем `presets_sync_url` в `gateway.json` — чтобы сломанный
-/// или перенесённый источник можно было починить, не выпуская новую версию.
-pub const DEFAULT_SYNC_URL: &str = "https://raw.githubusercontent.com/Sankyuubigan/useful-tauri-plugins/main/cloud-routers-gateway/assets/provider-presets.json";
+/// Нужен только для миграции старых `gateway.json`: значение, равное этому,
+/// в `presets_sources` НЕ переносится (оно мёртвое). Чужой (пользовательский)
+/// URL переносится первым элементом списка. См. `store::load`.
+pub const LEGACY_SYNC_URL: &str = "https://raw.githubusercontent.com/Sankyuubigan/useful-tauri-plugins/main/cloud-routers-gateway/assets/provider-presets.json";
 
 /// Поддерживаемая версия формата каталога.
 ///
@@ -167,6 +172,10 @@ pub fn slugify(raw: &str) -> String {
 }
 
 /// Разобрать и провалидировать каталог из произвольной строки.
+///
+/// Принимает **наш** формат (`ProviderPresetsCatalog`). Внешние форматы
+/// (`models.dev`, `litellm`) разбираются адаптерами из [`adapters`], а не здесь:
+/// иначе один `parse` отвечал бы за три несвязанных формата.
 pub fn parse(raw: &str) -> Result<ProviderPresetsCatalog, String> {
     let catalog: ProviderPresetsCatalog =
         serde_json::from_str(raw).map_err(|e| format!("Каталог провайдеров не является JSON: {}", e))?;

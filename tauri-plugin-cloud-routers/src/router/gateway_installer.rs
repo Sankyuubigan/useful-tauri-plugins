@@ -196,9 +196,11 @@ pub fn install(
 
     // Работающий процесс держит свой файл: перезапись на Windows кончилась бы
     // sharing violation. Останавливаем ДО копирования, а не после неудачи.
+    // Неудача — честная ошибка установки: дальше был бы sharing violation,
+    // который выглядел бы чужой ошибкой копирования.
     let cfg_now = config::load_config(app, router_id);
     let data_dir = config::router_data_dir(app, router_id);
-    crate::router::gateway_process::stop_server(&dir, cfg_now.port_or_default(router_id), &data_dir);
+    crate::router::gateway_process::stop_server(&dir, cfg_now.port_or_default(router_id), &data_dir)?;
 
     progress("binary", 0, 0, &format!("Ищем собранный бинарь {}...", exe_file));
     let source = find_source(exe_file)?;

@@ -556,12 +556,12 @@ fn install_version(
         // Node перезаписывается только когда сервер его не держит: старый
         // процесс мог пережить kill и продолжить держать файл.
         let cfg_now = crate::router::config::load_config(app, router_id);
-        stop_and_wait(
+        crate::router::process::stop_server(
             router_id,
+            dir,
             cfg_now.port_or_default(router_id),
             &crate::router::config::router_data_dir(app, router_id),
-            &node,
-        );
+        )?;
         extract_node_zip(&zip_bytes, &node)?;
     }
     if !node.exists() {
@@ -940,32 +940,14 @@ fn prune_tgz_cache(router_dir: &Path, keep: &Path, router_id: RouterId) {
     }
 }
 
-/// Остановить сервер и дождаться, пока процесс действительно умрёт.
-///
-/// Раньше папку удаляли сразу после kill, не дожидаясь: на Windows процесс
-/// держит открытые файлы ещё несколько миллисекунд после завершения, и
-/// операция падала с «занято» — причём уже на чужом шаге.
-fn stop_and_wait(
-    router_id: RouterId,
-    port: u16,
-    data_dir: &Path,
-    node: &Path,
-) {
-    crate::router::process::stop_server(port, data_dir);
-    crate::router::process::kill_node_processes(node);
-    if !crate::router::process::wait_port_closed(port, Duration::from_secs(5)) {
-        log::warn!(
-            "{}: порт {} не закрылся за 5 сек — процесс мог пережить kill",
-            router_id,
-            port
-        );
-    }
-    crate::router::process::wait_node_gone(node, Duration::from_secs(5));
-}
-
 /// Подменить `dist` на собранный staging: остановить сервер и выполнить
 /// переименования. Сама файловая часть — в [`swap_dirs`], чтобы её можно было
 /// проверить тестом без `AppHandle`.
+///
+/// Остановка — через единый `process::stop_server` (тот же контракт, что у
+/// кнопки «Остановить»: kill + sweep + верификация). Отдельного слабого пути
+/// здесь больше нет: раньше `stop_and_wait` дублировал остановку со своим
+/// таймаутом, и два пути расходились.
 fn swap_in(
     app: &AppHandle,
     router_id: RouterId,
@@ -973,12 +955,12 @@ fn swap_in(
     staging: &Path,
 ) -> Result<(), String> {
     let cfg = crate::router::config::load_config(app, router_id);
-    stop_and_wait(
+    crate::router::process::stop_server(
         router_id,
+        dir,
         cfg.port_or_default(router_id),
         &crate::router::config::router_data_dir(app, router_id),
-        &node_exe(dir),
-    );
+    )?;
     swap_dirs(dir, staging)
 }
 

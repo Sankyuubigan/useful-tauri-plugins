@@ -213,30 +213,35 @@ fn log_stdio(data_dir: &Path) -> std::process::Stdio {
     }
 }
 
-/// Остановить шлюз.
+/// Остановить шлюз с проверкой результата.
 ///
 /// Убивает **только** процесс, чей исполняемый файл совпадает с бинарём
 /// шлюза. Совпадение проверяется по-прежнему — см. предупреждение в заголовке
 /// модуля.
-pub fn stop_server(dir: &Path, port: u16, data_dir: &Path) {
+///
+/// Контракт — тот же, что у node-роутеров (`process::stop_server`): успех
+/// подтверждается закрытием порта, при неудаче запись НЕ стирается и
+/// возвращается `Err`. Всегда-`Ok` без проверки означал бы ложный «остановлен»
+/// при живом процессе — тот же класс лжи, что чинился у node-роутеров.
+pub fn stop_server(dir: &Path, port: u16, data_dir: &Path) -> Result<(), String> {
     let Some(rec) = config::read_server_record(data_dir) else {
-        log::warn!(
-            "⚠️ cloud-routers: у шлюза нет server.json — нечего останавливать (порт {})",
+        log::info!(
+            "cloud-routers: у шлюза нет server.json — нечего останавливать (порт {})",
             port
         );
-        return;
+        return Ok(());
     };
     if rec.pid == 0 {
         // Запись без pid — мусор (так пишется, когда процесс не успел стартовать).
         // Убираем её, иначе статус вечно показывал бы «установлен, но не
         // запущен», хотя на самом деле запускать нечего.
         config::clear_server_record(data_dir);
-        return;
+        return Ok(());
     }
     if !pid_alive(rec.pid) {
         log::info!("🧹 шлюз уже не жив (pid {}), убираем запись", rec.pid);
         config::clear_server_record(data_dir);
-        return;
+        return Ok(());
     }
     let exe = gateway_exe(dir);
     if !crate::router::process::process_exe_matches(rec.pid, &exe) {
@@ -259,11 +264,30 @@ pub fn stop_server(dir: &Path, port: u16, data_dir: &Path) {
             rec.pid,
             exe.display()
         );
-        return;
+        return Err(format!(
+            "Порт {} держит чужой процесс (pid {}), не шлюз. Остановите его или смените порт.",
+            port, rec.pid
+        ));
     }
     log::info!("🛑 Остановка шлюза (pid {})", rec.pid);
-    kill_pid_tree(rec.pid);
-    config::clear_server_record(data_dir);
+    let report = kill_pid_tree(rec.pid);
+    if !report.succeeded {
+        log::warn!("шлюз: kill pid {} не удался: {}", rec.pid, report.detail);
+    }
+    if crate::router::process::wait_port_closed(port, crate::router::process::STOP_WAIT) {
+        config::clear_server_record(data_dir);
+        log::info!("✅ шлюз остановлен (порт {} закрыт)", port);
+        Ok(())
+    } else {
+        log::warn!("⚠️ шлюз: порт {} не закрылся за {} сек (pid {} жив)", port, crate::router::process::STOP_WAIT.as_secs(), rec.pid);
+        Err(format!(
+            "Шлюз не остановился за {} сек: порт {} остался открыт (pid {} жив{}). Повторите остановку или убейте процесс вручную.",
+            crate::router::process::STOP_WAIT.as_secs(),
+            port,
+            rec.pid,
+            if report.succeeded { "" } else { "; kill тоже отказал" }
+        ))
+    }
 }
 
 /// Состояние шлюза для UI (без поднятия сервера).
@@ -375,7 +399,7 @@ mod tests {
         let data_dir = crate::router::test_scratch::scratch_dir(&format!("cr_gwproc_norecord_{}", seq));
         let install_dir = crate::router::test_scratch::scratch_dir(&format!("cr_gwproc_norecord_inst_{}", seq));
         let _ = std::fs::remove_dir_all(&data_dir);
-        stop_server(&install_dir, 59999, &data_dir); // не должно паниковать
+        stop_server(&install_dir, 59999, &data_dir).expect("без записи — Ok"); // не должно паниковать
         assert!(!config::server_record_path(&data_dir).exists());
     }
 
@@ -397,9 +421,12 @@ mod tests {
         let my_pid = std::process::id();
         config::write_server_record(&data_dir, my_pid, 59998, Some("test".into()));
 
-        // Вызов обязан завершиться, не убив тестовый процесс. Если бы проверки
-        // не было, `taskkill /F /T /PID <наш pid>` оборвал бы весь прогон.
-        stop_server(&install_dir, 59998, &data_dir);
+        // Вызов обязан завершиться отказом, не убив тестовый процесс. Если бы
+        // проверки не было, `taskkill /F /T /PID <наш pid>` оборвал бы весь прогон.
+        // Отказ (а не молчаливый Ok) — чтобы кнопка показала ошибку, а не
+        // «остановлено» при живом процессе.
+        let err = stop_server(&install_dir, 59998, &data_dir).expect_err("чужой pid убивать нельзя");
+        assert!(err.contains("чужой"), "ошибка обязана называть причину: {}", err);
 
         // Запись остаётся: pid жив, и снеся её, мы превратили бы живой процесс
         // в сироту — записи нет, останавливать нечем, статус врёт. Убирается она
@@ -426,7 +453,7 @@ mod tests {
         std::fs::create_dir_all(&data_dir).expect("mkdir");
         // pid 0 — заведомо несуществующий, `pid_alive` вернёт false.
         config::write_server_record(&data_dir, 0, 20131, None);
-        stop_server(&install_dir, 20131, &data_dir);
+        stop_server(&install_dir, 20131, &data_dir).expect("протухшая запись — Ok");
         assert!(
             !config::server_record_path(&data_dir).exists(),
             "запись о мёртвом процессе должна быть убрана, иначе статус будет врать"

@@ -2,7 +2,6 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::time::Duration;
 
 use serde::Serialize;
 use serde_json::json;
@@ -78,7 +77,7 @@ fn build_status(app: &AppHandle, router_id: RouterId) -> RouterStatus {
     // как файл чужой установки.
     let gw = match router_id.kind() {
         RouterKind::NativeGateway { .. } => gateway_process::gateway_state(port, &dir, &data_dir),
-        RouterKind::NodeBundle { .. } => process::gateway_state(port, &dir, &data_dir),
+        RouterKind::NodeBundle { .. } => process::gateway_state(router_id, port, &dir, &data_dir),
     };
 
     // Критерий «установлен» и текст статуса зависят от вида роутера: у node-роутера
@@ -274,6 +273,11 @@ fn start_server_for(
 }
 
 /// Остановить сервер роутера.
+///
+/// Ошибка остановки прокидывается наружу (а не глотается в всегда-`Ok`): иначе
+/// кнопка «Остановить» молчит при живом процессе, а фронт показывает тост только
+/// в `catch`, который никогда не срабатывает. Статус после неудачи перечитывается
+/// и показывает «активен», а не ложный «остановлен».
 #[tauri::command]
 pub fn stop(app: AppHandle, router: String) -> Result<RouterStatus, String> {
     let router_id = router.parse::<RouterId>()?;
@@ -281,12 +285,7 @@ pub fn stop(app: AppHandle, router: String) -> Result<RouterStatus, String> {
     let port = cfg.port_or_default(router_id);
     log::info!("🛑 {}: запрос остановки (порт {})", router_id, port);
     let data_dir = config::router_data_dir(&app, router_id);
-    stop_server_for(&app, router_id, port, &data_dir);
-    if process::wait_port_closed(port, Duration::from_secs(3)) {
-        log::info!("✅ {} остановлен (порт {} закрыт)", router_id, port);
-    } else {
-        log::warn!("⚠️ {}: порт {} не закрылся за 3 сек", router_id, port);
-    }
+    stop_server_for(&app, router_id, port, &data_dir)?;
     Ok(build_status(&app, router_id))
 }
 
@@ -317,10 +316,20 @@ fn normalize_router_dir(path: &str, router_id: RouterId) -> Result<PathBuf, Stri
     Ok(buf)
 }
 
-/// Остановить сервер роутера с учётом его вида.
-fn stop_server_for(app: &AppHandle, router_id: RouterId, port: u16, data_dir: &std::path::Path) {
+/// Остановить сервер роутера с учётом его вида. Единая точка остановки:
+/// кнопка «Остановить», смена папки и установка идут через этот контракт
+/// с верификацией, а не каждый своим путём.
+fn stop_server_for(
+    app: &AppHandle,
+    router_id: RouterId,
+    port: u16,
+    data_dir: &std::path::Path,
+) -> Result<(), String> {
     match router_id.kind() {
-        RouterKind::NodeBundle { .. } => process::stop_server(port, data_dir),
+        RouterKind::NodeBundle { .. } => {
+            let dir = router_dir(app, router_id);
+            process::stop_server(router_id, &dir, port, data_dir)
+        }
         RouterKind::NativeGateway { .. } => {
             let dir = router_dir(app, router_id);
             gateway_process::stop_server(&dir, port, data_dir)
@@ -335,7 +344,7 @@ pub fn set_router_dir(app: AppHandle, router: String, path: String) -> Result<Ro
     let normalized = normalize_router_dir(&path, router_id)?;
     let data_dir = config::router_data_dir(&app, router_id);
     let cfg_curr = config::load_config(&app, router_id);
-    stop_server_for(&app, router_id, cfg_curr.port_or_default(router_id), &data_dir);
+    stop_server_for(&app, router_id, cfg_curr.port_or_default(router_id), &data_dir)?;
     let mut cfg = cfg_curr;
     cfg.dir = Some(normalized.to_string_lossy().to_string());
     config::save_config(&app, router_id, &cfg)?;

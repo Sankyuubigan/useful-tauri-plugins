@@ -10,7 +10,7 @@
 use std::io::Write;
 use std::net::TcpStream;
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use tauri::AppHandle;
@@ -21,31 +21,120 @@ use crate::router::config::{
     write_server_record, RouterConfig,
 };
 
-static ACTIVE_SERVER_PIDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+/// Бюджет верификации остановки: тот же, что был у сильного пути (`stop_and_wait`
+/// в `installer.rs`). Единый для кнопки и установки — два разных таймаута на одно
+/// действие были нарушением SSOT.
+pub const STOP_WAIT: Duration = Duration::from_secs(5);
 
-pub fn register_server_pid(pid: u32) {
-    ACTIVE_SERVER_PIDS.lock().unwrap().push(pid);
+/// Итог попытки убить процесс.
+///
+/// Раньше вывод `taskkill` выбрасывался (`let _ = kill.output()`), и причина отказа
+/// вида «kill вызван, порт не закрылся» была неустановима в принципе. Теперь
+/// результат возвращается и логируется — молчаливый отказ невозможен конструктивно.
+#[derive(Debug, Clone)]
+pub struct KillReport {
+    pub pid: u32,
+    pub succeeded: bool,
+    pub detail: String,
 }
 
-pub fn unregister_server_pid(pid: u32) {
-    let mut g = ACTIVE_SERVER_PIDS.lock().unwrap();
+/// Живые пиды серверов — отдельно на каждый роутер.
+///
+/// Общий список с глобальным `clear()` приводил к тому, что `stop(9router)` стирал
+/// учёт extremerouter/omniroute. Индексация — по `RouterId::index()`, как мьютексы
+/// установки в `installer.rs`: размер берётся из таблицы роутеров, а не из литерала.
+static ACTIVE_SERVER_PIDS: OnceLock<Vec<Mutex<Vec<u32>>>> = OnceLock::new();
+
+fn active_pids() -> &'static Vec<Mutex<Vec<u32>>> {
+    ACTIVE_SERVER_PIDS.get_or_init(|| {
+        (0..RouterId::ALL.len())
+            .map(|_| Mutex::new(Vec::new()))
+            .collect()
+    })
+}
+
+pub fn register_server_pid(router_id: RouterId, pid: u32) {
+    active_pids()[router_id.index()].lock().unwrap().push(pid);
+}
+
+pub fn unregister_server_pid(router_id: RouterId, pid: u32) {
+    let mut g = active_pids()[router_id.index()].lock().unwrap();
     if let Some(pos) = g.iter().position(|&p| p == pid) {
         g.remove(pos);
     }
 }
 
+#[cfg(test)]
+pub fn test_active_snapshot(router_id: RouterId) -> Vec<u32> {
+    active_pids()[router_id.index()].lock().unwrap().clone()
+}
+
+fn truncate_detail(s: &str, max_chars: usize) -> String {
+    let t = s.trim();
+    if t.chars().count() <= max_chars {
+        return t.to_string();
+    }
+    let skip = t.chars().count() - max_chars;
+    format!("…{}", t.chars().skip(skip).collect::<String>())
+}
+
 #[cfg(windows)]
-pub fn kill_pid_tree(pid: u32) {
+pub fn kill_pid_tree(pid: u32) -> KillReport {
     let mut kill = std::process::Command::new("taskkill");
     kill.args(["/F", "/T", "/PID", &pid.to_string()]);
     { use std::os::windows::process::CommandExt; kill.creation_flags(0x08000000); }
-    let _ = kill.output();
+    match kill.output() {
+        Ok(out) => {
+            let rep = KillReport {
+                pid,
+                succeeded: out.status.success(),
+                detail: truncate_detail(
+                    &format!(
+                        "{} {}",
+                        String::from_utf8_lossy(&out.stdout),
+                        String::from_utf8_lossy(&out.stderr)
+                    ),
+                    500,
+                ),
+            };
+            if rep.succeeded {
+                log::info!("taskkill pid {}: успех {}", pid, rep.detail);
+            } else {
+                log::warn!("taskkill pid {}: отказ ({}): {}", pid, out.status, rep.detail);
+            }
+            rep
+        }
+        Err(e) => {
+            log::warn!("taskkill pid {}: не запустился: {}", pid, e);
+            KillReport { pid, succeeded: false, detail: e.to_string() }
+        }
+    }
 }
 
 #[cfg(not(windows))]
-pub fn kill_pid_tree(pid: u32) {
+pub fn kill_pid_tree(pid: u32) -> KillReport {
     let _ = std::process::Command::new("pkill").args(["-P", &pid.to_string()]).output();
-    let _ = std::process::Command::new("kill").args(["-9", &pid.to_string()]).output();
+    match std::process::Command::new("kill").args(["-9", &pid.to_string()]).output() {
+        Ok(out) => {
+            let rep = KillReport {
+                pid,
+                succeeded: out.status.success(),
+                detail: truncate_detail(
+                    &format!(
+                        "{} {}",
+                        String::from_utf8_lossy(&out.stdout),
+                        String::from_utf8_lossy(&out.stderr)
+                    ),
+                    500,
+                ),
+            };
+            if !rep.succeeded {
+                log::warn!("kill -9 pid {}: отказ: {}", pid, rep.detail);
+            }
+            rep
+        }
+        Err(e) => KillReport { pid, succeeded: false, detail: e.to_string() },
+    }
 }
 
 pub fn pid_alive(pid: u32) -> bool {
@@ -82,7 +171,7 @@ pub enum GatewayState {
     ForeignOccupant(u32),
 }
 
-pub fn gateway_state(port: u16, router_dir: &Path, data_dir: &Path) -> GatewayState {
+pub fn gateway_state(router_id: RouterId, port: u16, router_dir: &Path, data_dir: &Path) -> GatewayState {
     if !port_open(port, Duration::from_millis(400)) {
         return GatewayState::NotListening;
     }
@@ -95,7 +184,7 @@ pub fn gateway_state(port: u16, router_dir: &Path, data_dir: &Path) -> GatewaySt
 
     if let Some(pid) = listener_pid(port) {
         if pid != 0 {
-            if ACTIVE_SERVER_PIDS.lock().unwrap().contains(&pid) {
+            if active_pids()[router_id.index()].lock().unwrap().contains(&pid) {
                 return GatewayState::OursRunning;
             }
             if process_exe_matches(pid, &node_exe(router_dir)) {
@@ -111,7 +200,7 @@ pub fn gateway_state(port: u16, router_dir: &Path, data_dir: &Path) -> GatewaySt
         }
     }
 
-    if !ACTIVE_SERVER_PIDS.lock().unwrap().is_empty() {
+    if !active_pids()[router_id.index()].lock().unwrap().is_empty() {
         GatewayState::OursRunning
     } else {
         GatewayState::ForeignOccupant(0)
@@ -251,7 +340,7 @@ pub fn start_server(app: &AppHandle, router_id: RouterId, cfg: &RouterConfig) ->
     let dir = crate::router::config::router_dir(app, router_id);
     let data_dir = router_data_dir(app, router_id);
 
-    match gateway_state(port, &dir, &data_dir) {
+    match gateway_state(router_id, port, &dir, &data_dir) {
         GatewayState::OursRunning => {
             log::info!("🟢 {} уже запущен на порту {} (наш сервер)", router_id, port);
             if read_server_record(&data_dir).is_none() {
@@ -320,7 +409,7 @@ pub fn start_server(app: &AppHandle, router_id: RouterId, cfg: &RouterConfig) ->
     log::info!("🚀 Запуск {}: {} {} (DATA_DIR={})", router_id, node.display(), server.display(), data_dir.display());
     let child = cmd.spawn().map_err(|e| format!("Не удалось запустить {}: {}", router_id, e))?;
     let pid = child.id();
-    register_server_pid(pid);
+    register_server_pid(router_id, pid);
     write_server_record(&data_dir, pid, port, None);
 
     if !wait_port(port, Duration::from_secs(20)) {
@@ -338,7 +427,7 @@ pub fn start_server(app: &AppHandle, router_id: RouterId, cfg: &RouterConfig) ->
             tail
         );
         kill_pid_tree(pid);
-        unregister_server_pid(pid);
+        unregister_server_pid(router_id, pid);
         clear_server_record(&data_dir);
         return Err(match tail.is_empty() {
             false => format!(
@@ -376,37 +465,161 @@ fn bundled_node_modules(server_parent: &Path, data_dir: &Path) -> String {
     parts.join(sep)
 }
 
-pub fn stop_server(port: u16, data_dir: &Path) {
-    let mut pids: Vec<u32> = ACTIVE_SERVER_PIDS.lock().unwrap().clone();
+/// Остановить node-роутер с проверкой результата.
+///
+/// Контракт (единый для кнопки «Остановить» и установки):
+/// - убиваются ТОЛЬКО свои процессы (сверка exe с нашим `node.exe`, как у шлюза);
+///   чужой `node.exe` на порту не трогается — возвращается `Err`;
+/// - успех подтверждается закрытием порта и уходом процессов (`STOP_WAIT`);
+/// - при неудаче запись `server.json` НЕ стирается и возвращается `Err` с причиной:
+///   ложный успех («остановлен», хотя порт открыт) невозможен конструктивно;
+/// - учёт `ACTIVE` ведётся только своего роутера — соседние роутеры не затрагиваются.
+///
+/// Sweep `kill_node_processes` входит сюда же: раньше он был только у пути установки
+/// (`stop_and_wait`), и кнопка убивала слабее, чем установка, для того же действия.
+pub fn stop_server(
+    router_id: RouterId,
+    router_dir: &Path,
+    port: u16,
+    data_dir: &Path,
+) -> Result<(), String> {
+    let node = node_exe(router_dir);
+    let mut targets: Vec<u32> = Vec::new();
+    let mut foreign: Option<u32> = None;
+    let mut record_pid: Option<u32> = None;
+
+    // 1. Запись о процессе: живой свой pid — кандидат; живой чужой — отказ с
+    // сохранением записи (как у шлюза); мёртвый — мусор, убираем сразу.
     if let Some(rec) = read_server_record(data_dir) {
-        if !pids.contains(&rec.pid) {
-            pids.push(rec.pid);
+        if rec.pid == 0 || !pid_alive(rec.pid) {
+            clear_server_record(data_dir);
+        } else if process_exe_matches(rec.pid, &node) {
+            record_pid = Some(rec.pid);
+            targets.push(rec.pid);
+        } else {
+            log::warn!(
+                "🚫 {}: pid {} из записи — не наш node.exe ({}). Остановка пропущена, запись оставлена.",
+                router_id,
+                rec.pid,
+                node.display()
+            );
+            return Err(format!(
+                "Порт {} держит чужой процесс (pid {}), не {}. Остановите его или смените порт.",
+                port, rec.pid, router_id
+            ));
         }
     }
-    if let Some(pid) = listener_pid(port) {
-        if pid != 0 && !pids.contains(&pid) {
-            if let Some(exe) = port_owner_exe_path(pid) {
-                let lower = exe.to_lowercase();
-                if lower.ends_with("node.exe") || lower.ends_with("node") {
-                    pids.push(pid);
+
+    // 2. Учёт текущей сессии: мёртвые чистим, живых чужих (переиспользованный ОС
+    // pid) вычёркиваем без kill, своих — в кандидаты.
+    {
+        let mut active = active_pids()[router_id.index()].lock().unwrap();
+        active.retain(|pid| {
+            if record_pid == Some(*pid) || targets.contains(pid) {
+                return true;
+            }
+            if !pid_alive(*pid) {
+                return false;
+            }
+            if process_exe_matches(*pid, &node) {
+                targets.push(*pid);
+                true
+            } else {
+                if foreign.is_none() {
+                    foreign = Some(*pid);
                 }
+                false
+            }
+        });
+    }
+
+    // 3. Владелец порта: свой node.exe — кандидат; чужой процесс — не убивать.
+    if let Some(pid) = listener_pid(port) {
+        if pid != 0 && !targets.contains(&pid) {
+            if process_exe_matches(pid, &node) {
+                targets.push(pid);
+            } else if foreign.is_none() {
+                foreign = Some(pid);
             }
         }
     }
 
-    if pids.is_empty() {
-        log::warn!(
-            "⚠️ cloud-routers: stop_server не нашёл процессов для остановки (порт {})",
-            port
-        );
+    if targets.is_empty() {
+        // Протухший учёт (чужой живой pid в ACTIVE) к этому месту уже вычищен.
+        // Вердикт — по порту, а не по учёту: порт закрыт — останавливать нечего
+        // (это Ok, а не «чужой держит порт»); порт открыт — он чужой, не убиваем.
+        if port_open(port, Duration::from_millis(400)) {
+            if let Some(pid) = foreign {
+                if pid != 0 {
+                    return Err(format!(
+                        "Порт {} держит чужой процесс (pid {}), не {}. Остановите его или смените порт.",
+                        port, pid, router_id
+                    ));
+                }
+            }
+            return Err(format!(
+                "Порт {} открыт, но {} на нём не отвечает. Возможно, порт занят другим сервисом — смените порт в настройках.",
+                port, router_id
+            ));
+        }
+        log::info!("{}: нечего останавливать (порт {} закрыт)", router_id, port);
+        return Ok(());
     }
 
-    for pid in pids {
-        log::info!("🛑 Остановка роутера (pid {})", pid);
-        kill_pid_tree(pid);
+    // 4. Kill своих + sweep остатков того же node.exe, затем верификация.
+    let mut reports: Vec<KillReport> = Vec::new();
+    for pid in &targets {
+        log::info!("🛑 {}: остановка роутера (pid {})", router_id, pid);
+        reports.push(kill_pid_tree(*pid));
     }
-    ACTIVE_SERVER_PIDS.lock().unwrap().clear();
-    clear_server_record(data_dir);
+    kill_node_processes(&node);
+
+    let port_closed = wait_port_closed(port, STOP_WAIT);
+    let node_gone = wait_node_gone(&node, STOP_WAIT);
+
+    // 5. Учёт: мёртвых вычёркиваем, живых оставляем на повтор.
+    {
+        let mut active = active_pids()[router_id.index()].lock().unwrap();
+        active.retain(|pid| pid_alive(*pid));
+    }
+
+    if port_closed && node_gone {
+        // Запись снимаем только если её pid мёртв: чужую живую запись мы выше
+        // уже отвергли отказом и сюда не доходим.
+        if let Some(rec) = read_server_record(data_dir) {
+            if !pid_alive(rec.pid) {
+                clear_server_record(&data_dir);
+            }
+        }
+        log::info!("✅ {} остановлен (порт {} закрыт)", router_id, port);
+        Ok(())
+    } else {
+        let alive: Vec<u32> = targets.iter().copied().filter(|p| pid_alive(*p)).collect();
+        let rep = reports
+            .iter()
+            .map(|r| format!("pid {}: {} ({})", r.pid, if r.succeeded { "ok" } else { "отказ" }, r.detail))
+            .collect::<Vec<_>>()
+            .join("; ");
+        log::warn!(
+            "⚠️ {}: порт {} не закрылся за {} сек (порт закрыт: {}, node ушёл: {}). Живы: {:?}. taskkill: {}",
+            router_id,
+            port,
+            STOP_WAIT.as_secs(),
+            port_closed,
+            node_gone,
+            alive,
+            rep
+        );
+        Err(format!(
+            "{} не остановился за {} сек: порт {} {}. Живые pid: {:?}. Причина kill: {}. Повторите остановку или убейте процесс вручную.",
+            router_id,
+            STOP_WAIT.as_secs(),
+            port,
+            if port_closed { "закрыт, но процессы node.exe живы" } else { "остался открыт" },
+            alive,
+            if rep.is_empty() { "—".to_string() } else { rep }
+        ))
+    }
 }
 
 pub fn reconcile_server_state(app: &AppHandle, router_id: RouterId) {
@@ -424,12 +637,13 @@ pub fn reconcile_server_state(app: &AppHandle, router_id: RouterId) {
         }
     }
 
-    match gateway_state(port, &dir, &data_dir) {
+    match gateway_state(router_id, port, &dir, &data_dir) {
         GatewayState::ForeignOccupant(pid) if pid != 0 => {
             if process_exe_matches(pid, &node_exe(&dir)) {
                 log::warn!("cloud-routers: обнаружен старый бесхозный инстанс node.exe на порту {} (pid {}), останавливаем...", port, pid);
-                stop_server(port, &data_dir);
-                let _ = wait_port_closed(port, Duration::from_secs(5));
+                if let Err(e) = stop_server(router_id, &dir, port, &data_dir) {
+                    log::warn!("cloud-routers: бесхозный инстанс не остановился: {}", e);
+                }
             }
         }
         _ => {}
@@ -450,7 +664,16 @@ pub fn kill_node_processes(target: &Path) {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x08000000);
         }
-        let _ = cmd.output();
+        match cmd.output() {
+            Ok(out) if !out.status.success() => log::warn!(
+                "sweep node.exe ({}): powershell вернул {}: {}",
+                target.display(),
+                out.status,
+                truncate_detail(&String::from_utf8_lossy(&out.stderr), 300)
+            ),
+            Err(e) => log::warn!("sweep node.exe ({}): не запустился powershell: {}", target.display(), e),
+            _ => {}
+        }
     }
     #[cfg(not(windows))]
     {
@@ -591,11 +814,108 @@ mod port_owner {
 
 #[cfg(test)]
 mod tests {
-    use super::decode_local_port;
+    use super::*;
+    use crate::commands::RouterId;
 
     #[test]
     fn windows_local_port_decodes_network_byte_order() {
         assert_eq!(decode_local_port(20_128), 0xA04E);
         assert_ne!(decode_local_port(20_128), 20_128);
+    }
+
+    /// Свободный порт для тестов: занимаем эфемерный, отпускаем, проверяем что закрыт.
+    fn free_test_port() -> u16 {
+        for _ in 0..20 {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            let port = listener.local_addr().expect("addr").port();
+            drop(listener);
+            if !port_open(port, Duration::from_millis(200)) {
+                return port;
+            }
+        }
+        panic!("не нашлось свободного порта для теста");
+    }
+
+    fn unique_scratch(tag: &str) -> std::path::PathBuf {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        crate::router::test_scratch::scratch_dir(&format!("cr_proc_{}_{}", tag, seq))
+    }
+
+    #[test]
+    fn kill_pid_tree_reports_failure_for_bogus_pid() {
+        // Заведомо мёртвый pid: убивать нечего, отчёт обязан честно сказать «отказ».
+        // Именно потеря этого отчёта (`let _ =`) делала причину инцидента 16.10.26
+        // неустановимой. Текст не проверяем — он зависит от локали ОС.
+        let rep = kill_pid_tree(u32::MAX - 7);
+        assert_eq!(rep.pid, u32::MAX - 7);
+        assert!(!rep.succeeded, "kill несуществующего pid обязан вернуть отказ");
+        assert!(!rep.detail.is_empty(), "у отказа обязана быть причина");
+    }
+
+    #[test]
+    fn stop_without_record_is_ok_on_closed_port() {
+        let data_dir = unique_scratch("norecord_data");
+        let router_dir = unique_scratch("norecord_inst");
+        let port = free_test_port();
+        stop_server(RouterId::NineRouter, &router_dir, port, &data_dir)
+            .expect("нечего останавливать — Ok");
+        assert!(
+            !crate::router::config::server_record_path(&data_dir).exists(),
+            "записи не было — появляться ей неоткуда"
+        );
+    }
+
+    #[test]
+    fn stop_clears_stale_record() {
+        let data_dir = unique_scratch("stale_data");
+        let router_dir = unique_scratch("stale_inst");
+        std::fs::create_dir_all(&data_dir).expect("mkdir");
+        crate::router::config::write_server_record(&data_dir, 0, 59997, None);
+        let port = free_test_port();
+        stop_server(RouterId::NineRouter, &router_dir, port, &data_dir)
+            .expect("протухшая запись — Ok");
+        assert!(
+            !crate::router::config::server_record_path(&data_dir).exists(),
+            "запись о мёртвом процессе обязана быть убрана"
+        );
+    }
+
+    #[test]
+    fn stop_refuses_foreign_exe_and_keeps_record() {
+        // Ключевая гарантия безопасности (симметрично шлюзу): pid из записи,
+        // чей exe — не наш node.exe, убивать нельзя. Здесь pid — сам тестовый
+        // процесс, то есть заведомо чужой: остановка обязана отказать Err,
+        // запись — пережить отказ, а процесс — остаться живым (иначе прогон бы оборвался).
+        let data_dir = unique_scratch("foreign_data");
+        let router_dir = unique_scratch("foreign_inst");
+        std::fs::create_dir_all(&data_dir).expect("mkdir");
+        let my_pid = std::process::id();
+        crate::router::config::write_server_record(&data_dir, my_pid, 59996, None);
+        let port = free_test_port();
+        let err = stop_server(RouterId::NineRouter, &router_dir, port, &data_dir)
+            .expect_err("чужой pid убивать нельзя");
+        assert!(err.contains("чужой"), "ошибка обязана называть причину: {}", err);
+        let rec = crate::router::config::read_server_record(&data_dir).expect("запись цела");
+        assert_eq!(rec.pid, my_pid, "запись о живом процессе обязана пережить отказ");
+        assert!(pid_alive(my_pid), "тестовый процесс обязан быть жив — его не убили");
+    }
+
+    #[test]
+    fn stop_one_router_keeps_other_router_pids() {
+        // Глобальный clear() стирал учёт соседних роутеров. Теперь учёт
+        // per-router: stop(NineRouter) не трогает ACTIVE[OmniRoute].
+        let bogus = u32::MAX - 13;
+        register_server_pid(RouterId::OmniRoute, bogus);
+        let data_dir = unique_scratch("isol_data");
+        let router_dir = unique_scratch("isol_inst");
+        let port = free_test_port();
+        stop_server(RouterId::NineRouter, &router_dir, port, &data_dir)
+            .expect("нечего останавливать — Ok");
+        assert!(
+            test_active_snapshot(RouterId::OmniRoute).contains(&bogus),
+            "учёт соседнего роутера обязан пережить чужую остановку"
+        );
+        unregister_server_pid(RouterId::OmniRoute, bogus);
     }
 }

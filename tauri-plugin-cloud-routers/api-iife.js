@@ -547,6 +547,24 @@
       this.offProgress = null;
       this.visibilityObserver = null;
       this.refreshTimer = null;
+      /**
+       * Роутеры, для которых установка/переустановка ВЫПОЛНЯЕТСЯ прямо сейчас.
+       * Почему нельзя полагаться на backend-статус: во время установки статусы
+       * честно сообщают «неполная установка» (node.exe уже есть, tgz ещё качается),
+       * и каждые 15 секунд refresh рисовал бы предупреждение о поломке, хотя
+       * установка в разгаре.
+       */
+      this.installing = /* @__PURE__ */ new Set();
+      /**
+       * Последний прогресс установки по роутерам. Хранится в state, потому что
+       * periodic render() пересоздаёт DOM, а `onProgress` мутирует DOM императивно —
+       * без этого долгие стадии без событий (распаковка, npm, postinstall)
+       * «сбрасывали» бы полосу прогресса между событиями. `total < 0` — ошибка.
+       */
+      this.progressByRouter = /* @__PURE__ */ new Map();
+      /** Роутер, у которого «Переустановить» ожидает второй клик-подтверждения. */
+      this.reinstallArm = null;
+      this.reinstallArmTimer = null;
       this.root = this.attachShadow({ mode: "open" });
     }
     stateOf(router) {
@@ -570,7 +588,7 @@
       this.unsubUpdate = onUpdateState(() => this.renderUpdateState(getUpdateState(this.router)));
       void this.refresh();
       onProgress((p) => {
-        if (p.router === this.router) this.onProgress(p.text, p.done, p.total);
+        if (p.router === this.router) this.onProgress(p.router, p.text, p.done, p.total);
       }).then((off) => {
         this.offProgress = off;
       });
@@ -614,20 +632,37 @@
       }
       this.render();
     }
-    onProgress(text, done, total) {
+    onProgress(router, text, done, total) {
+      this.progressByRouter.set(router, { text, done, total });
+      this.applyProgress(router);
+    }
+    /**
+     * Восстановить прогресс-бар из сохранённого state (после render()).
+     * Императивные DOM-правки имеет право делать ТОЛЬКО этот метод и
+     * `applyProgress`: оба синхронизированы с `progressByRouter`, поэтому
+     * перерисовка не может потерять текущий ход установки.
+     */
+    applyProgress(router) {
+      const entry = this.progressByRouter.get(router);
+      if (!entry || router !== this.router) return;
       const bar = this.root.querySelector(".progress-bar");
       const label = this.root.querySelector(".progress-status");
       const box = this.root.querySelector(".progress-container");
-      if (box) box.classList.add("on");
-      const indeterminate = total <= 0;
-      if (bar) {
-        bar.classList.toggle("indeterminate", indeterminate);
-        if (!indeterminate) {
-          bar.style.width = `${Math.min(100, done / total * 100).toFixed(1)}%`;
-        }
+      if (!box || !bar || !label) return;
+      box.classList.add("on");
+      if (entry.total < 0) {
+        bar.classList.remove("indeterminate");
+        bar.style.width = "0%";
+        label.textContent = entry.text;
+        return;
       }
-      const pct = indeterminate ? "\u2026" : `${Math.min(100, done / total * 100).toFixed(0)}%`;
-      if (label) label.innerHTML = `<span>${esc(text)}</span><span>${pct}</span>`;
+      const indeterminate = entry.total <= 0;
+      bar.classList.toggle("indeterminate", indeterminate);
+      if (!indeterminate) {
+        bar.style.width = `${Math.min(100, entry.done / entry.total * 100).toFixed(1)}%`;
+      }
+      const pct = indeterminate ? "\u2026" : `${Math.min(100, entry.done / entry.total * 100).toFixed(0)}%`;
+      label.innerHTML = `<span>${esc(entry.text)}</span><span>${pct}</span>`;
     }
     setBtnBusy(selector, v) {
       const btn = this.root.querySelector(selector);
@@ -650,14 +685,9 @@
       try {
         this.setStatus(router, await installOrUpdate(router, force));
         this.setCombos(router, await getCombos(router).catch(() => []));
+        this.progressByRouter.delete(router);
       } catch (e) {
-        const msg = `\u041E\u0448\u0438\u0431\u043A\u0430 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0438: ${String(e)}`;
-        logPlugin(`[cloud-routers] ${msg}`);
-        toast(msg, "error");
-        const label = this.root.querySelector(".progress-status");
-        const box = this.root.querySelector(".progress-container");
-        if (box) box.classList.add("on");
-        if (label) label.textContent = `\u041E\u0448\u0438\u0431\u043A\u0430: ${String(e)}`;
+        this.reportInstallError(router, "\u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0438", String(e));
         const fresh = await getStatus(router).catch(() => null);
         if (fresh) this.setStatus(router, fresh);
         this.render();
@@ -668,6 +698,21 @@
       }
       this.notifyCombosChanged(router);
       this.render();
+    }
+    /**
+     * Ошибка установки/переустановки: тост + лог + строка прогресса превращается
+     * в ошибку. Ошибка сохраняется в `progressByRouter`, а не только в DOM:
+     * последующие перерисовки (refresh каждые 15с) не должны её терять.
+     */
+    reportInstallError(router, actionLabel, errorText) {
+      const msg = `\u041E\u0448\u0438\u0431\u043A\u0430 ${actionLabel}: ${errorText}`;
+      logPlugin(`[cloud-routers] ${msg}`);
+      toast(msg, "error");
+      this.progressByRouter.set(router, { text: `\u041E\u0448\u0438\u0431\u043A\u0430: ${errorText}`, done: 0, total: -1 });
+      const label = this.root.querySelector(".progress-status");
+      const box = this.root.querySelector(".progress-container");
+      if (box) box.classList.add("on");
+      if (label) label.textContent = `\u041E\u0448\u0438\u0431\u043A\u0430: ${errorText}`;
     }
     async onOpen() {
       const router = this.router;
@@ -790,8 +835,62 @@
       }
       setUpdateState(router, { hasUpdate: false });
     }
+    /**
+     * Снять «armed»-состояние кнопки «Переустановить» (таймер отката).
+     * Вызывается при втором клике, смене вкладки и истечении окна подтверждения.
+     */
+    disarmReinstallArm() {
+      if (this.reinstallArmTimer !== null) {
+        window.clearTimeout(this.reinstallArmTimer);
+        this.reinstallArmTimer = null;
+      }
+      this.reinstallArm = null;
+    }
+    /**
+     * Кнопка «Переустановить»: остановить сервер, снести установку и данные
+     * (настройки дашборда, включая пароль; комбо) и поставить последнюю версию
+     * заново. Двойное подтверждение вместо `confirm()`: первый клик поднимает
+     * предупреждение с 6-секундным окном, второй клик в этом окне — запуск.
+     */
+    async onReinstall() {
+      const router = this.router;
+      if (this.installing.has(router)) return;
+      if (this.reinstallArm !== router) {
+        this.reinstallArm = router;
+        const label = this.root.querySelector(".progress-status");
+        const box = this.root.querySelector(".progress-container");
+        if (box) box.classList.add("on");
+        if (label) {
+          label.innerHTML = `<span>\u041F\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0430 \u0443\u0434\u0430\u043B\u0438\u0442 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0443 \u0438 \u0434\u0430\u043D\u043D\u044B\u0435 \u0440\u043E\u0443\u0442\u0435\u0440\u0430 (\u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0438 \u043F\u0430\u0440\u043E\u043B\u044C \u0434\u0430\u0448\u0431\u043E\u0440\u0434\u0430, \u043A\u043E\u043C\u0431\u043E). \u041D\u0430\u0436\u043C\u0438\u0442\u0435 <b>\xAB\u041F\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C\xBB</b> \u0435\u0449\u0451 \u0440\u0430\u0437 \u0432 \u0442\u0435\u0447\u0435\u043D\u0438\u0435 6 \u0441\u0435\u043A\u0443\u043D\u0434.</span><span></span>`;
+        }
+        if (this.reinstallArmTimer !== null) window.clearTimeout(this.reinstallArmTimer);
+        this.reinstallArmTimer = window.setTimeout(() => {
+          this.disarmReinstallArm();
+          this.render();
+        }, 6e3);
+        return;
+      }
+      this.disarmReinstallArm();
+      this.installing.add(router);
+      this.setBtnBusy(".reinstall", true);
+      try {
+        this.setStatus(router, await reinstall(router));
+        this.setCombos(router, await getCombos(router).catch(() => []));
+        this.progressByRouter.delete(router);
+      } catch (e) {
+        this.reportInstallError(router, "\u043F\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0438", String(e));
+        const fresh = await getStatus(router).catch(() => null);
+        if (fresh) this.setStatus(router, fresh);
+      } finally {
+        this.installing.delete(router);
+        this.setBtnBusy(".reinstall", false);
+      }
+      this.notifyCombosChanged(router);
+      this.render();
+    }
     switchRouter(router) {
       if (router === this.router) return;
+      this.disarmReinstallArm();
       this.router = router;
       this.render();
       void this.refresh(router);
@@ -865,6 +964,13 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           \u041F\u0443\u0442\u044C
         </button>
+
+        ${!native && installed ? `
+          <button class="reinstall" ${this.installing.has(this.router) ? "disabled" : ""} title="\u0421\u043D\u0435\u0441\u0442\u0438 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0443 \u0438 \u0434\u0430\u043D\u043D\u044B\u0435 \u0440\u043E\u0443\u0442\u0435\u0440\u0430 (\u043D\u0430\u0441\u0442\u0440\u043E\u0439\u043A\u0438 \u0438 \u043F\u0430\u0440\u043E\u043B\u044C \u0434\u0430\u0448\u0431\u043E\u0440\u0434\u0430, \u043A\u043E\u043C\u0431\u043E) \u0438 \u043F\u043E\u0441\u0442\u0430\u0432\u0438\u0442\u044C \u0437\u0430\u043D\u043E\u0432\u043E">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            \u041F\u0435\u0440\u0435\u0443\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C
+          </button>
+        ` : ""}
       ` : `<span style="color:var(--text-dim)"><span class="spinner"></span> \u0417\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u0439...</span>`;
       this.root.innerHTML = `
       <style>${STYLE}</style>
@@ -930,7 +1036,10 @@
         </div>
       ` : ""}
 
-      ${!installed && !native && (s?.node_present || s?.server_present) ? `
+      ${!installed && !native && (s?.node_present || s?.server_present) && !this.installing.has(this.router) ? `
+        <!-- \u041F\u043B\u0430\u0448\u043A\u0430 \u043F\u043E\u043A\u0430\u0437\u044B\u0432\u0430\u0435\u0442\u0441\u044F \u0422\u041E\u041B\u042C\u041A\u041E \u043A\u043E\u0433\u0434\u0430 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0430 \u043D\u0435 \u0438\u0434\u0451\u0442: \u0432\u043E \u0432\u0440\u0435\u043C\u044F
+             \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0438 \u0441\u0442\u0430\u0442\u0443\u0441 \u0447\u0435\u0441\u0442\u043D\u043E \xAB\u043D\u0435 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\xBB (node \u0435\u0441\u0442\u044C, tgz \u0435\u0449\u0451
+             \u043A\u0430\u0447\u0430\u0435\u0442\u0441\u044F), \u0438 \u043F\u0440\u0435\u0434\u0443\u043F\u0440\u0435\u0436\u0434\u0435\u043D\u0438\u0435 \u043E \u043F\u043E\u043B\u043E\u043C\u043A\u0435 \u0437\u0434\u0435\u0441\u044C \u043B\u043E\u0436\u044C. -->
         <div class="banner banner-warn">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:2px;"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
           <div>\u041D\u0435\u043F\u043E\u043B\u043D\u0430\u044F \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0430: \u043E\u0442\u0441\u0443\u0442\u0441\u0442\u0432\u0443\u044E\u0442 \u043A\u043E\u043C\u043F\u043E\u043D\u0435\u043D\u0442\u044B \u043F\u0430\u043A\u0435\u0442\u0430. \u041D\u0430\u0436\u043C\u0438\u0442\u0435 <b>\xAB\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C\xBB</b>, \u0447\u0442\u043E\u0431\u044B \u0432\u043E\u0441\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C \u0446\u0435\u043B\u043E\u0441\u0442\u043D\u043E\u0441\u0442\u044C.</div>
@@ -976,7 +1085,9 @@
       this.root.querySelector(".refresh")?.addEventListener("click", () => void this.onShowCombos());
       this.root.querySelector(".open")?.addEventListener("click", () => void this.onOpen());
       this.root.querySelector(".setdir")?.addEventListener("click", () => void this.onSetDir());
+      this.root.querySelector(".reinstall")?.addEventListener("click", () => void this.onReinstall());
       this.renderUpdateState(getUpdateState(this.router));
+      this.applyProgress(this.router);
     }
     renderUpdateState(s) {
       const badge = this.root.querySelector("#updateBadge");
@@ -1000,6 +1111,9 @@
   }
   function installOrUpdate(router, force = false) {
     return invoke("plugin:cloud-routers|install_or_update", { router, force });
+  }
+  function reinstall(router) {
+    return invoke("plugin:cloud-routers|reinstall", { router });
   }
   function ensureStarted(router) {
     return invoke("plugin:cloud-routers|ensure_started", { router });

@@ -120,6 +120,16 @@ export declare function getStatus(router: RouterId): Promise<RouterStatus>;
  * @param force переустановить даже при совпадающей версии
  */
 export declare function installOrUpdate(router: RouterId, force?: boolean): Promise<RouterStatus>;
+/**
+ * Переустановить роутер «с нуля»: остановить сервер, снести установку и
+ * каталог данных (настройки дашборда, включая пароль; сохранённые комбо),
+ * поставить последнюю версию заново. Первый старт после переустановки
+ * выключает экран логина.
+ *
+ * Операция НЕОБРАТИМО удаляет данные роутера — UI обязан предупредить
+ * пользователя до вызова (панель делает это двойным подтверждением).
+ */
+export declare function reinstall(router: RouterId): Promise<RouterStatus>;
 /** Ленивый автозапуск по требованию (no-op, если сервер уже жив). */
 export declare function ensureStarted(router: RouterId): Promise<RouterStatus>;
 /** Остановить сервер. */

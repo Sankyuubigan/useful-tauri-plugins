@@ -219,18 +219,48 @@ pub async fn install_or_update(app: AppHandle, router: String, force: Option<boo
         // Держим блокировку установки весь прогон: сервер не должен
         // стартовать поверх полураспакованного dist.
         let _guard = installer::install_guard(router_id);
-        let progress: installer::ProgressFn = Box::new(move |stage: &str, done: u64, total: u64, text: &str| {
-            let _ = app_evt.emit(
-                "cloud-routers-progress",
-                json!({ "router": router_id_for_closure.as_str(), "stage": stage, "done": done, "total": total, "text": text }),
-            );
-        });
+        let progress: installer::ProgressFn = progress_emitter(app_evt, router_id_for_closure);
         installer::install_or_update(&app_work, router_id, force, progress)
     })
     .await
     .map_err(|e| format!("install task join error: {}", e))??;
 
     log::info!("{} установлен: {}", router_id, info.version);
+    Ok(build_status(&app, router_id))
+}
+
+/// Прогресс установки/переустановки → событие `cloud-routers-progress`.
+fn progress_emitter(app_evt: AppHandle, router_id: RouterId) -> installer::ProgressFn {
+    Box::new(move |stage: &str, done: u64, total: u64, text: &str| {
+        let _ = app_evt.emit(
+            "cloud-routers-progress",
+            json!({ "router": router_id.as_str(), "stage": stage, "done": done, "total": total, "text": text }),
+        );
+    })
+}
+
+/// Переустановить роутер «с нуля»: остановить сервер, снести папку установки и
+/// каталог данных (настройки дашборда, включая пароль; комбо), поставить
+/// последнюю версию заново. Возвращает статус после установки.
+///
+/// ВАЖНО: операция уничтожает данные роутера — фронт обязан предупредить
+/// пользователя до вызова (панель делает это двойным подтверждением).
+#[tauri::command]
+pub async fn reinstall(app: AppHandle, router: String) -> Result<RouterStatus, String> {
+    let router_id = router.parse::<RouterId>()?;
+    let app_evt = app.clone();
+    let app_work = app.clone();
+    let router_id_for_closure = router_id;
+    tauri::async_runtime::spawn_blocking(move || {
+        // Единая блокировка: параллельная установка, запуск сервера или второй
+        // проход переустановки не должны сойтись на полуснесённых папках.
+        let _guard = installer::install_guard(router_id);
+        let progress = progress_emitter(app_evt, router_id_for_closure);
+        crate::router::reinstall::reinstall(&app_work, router_id, progress)
+    })
+    .await
+    .map_err(|e| format!("reinstall task join error: {}", e))??;
+
     Ok(build_status(&app, router_id))
 }
 
@@ -317,9 +347,9 @@ fn normalize_router_dir(path: &str, router_id: RouterId) -> Result<PathBuf, Stri
 }
 
 /// Остановить сервер роутера с учётом его вида. Единая точка остановки:
-/// кнопка «Остановить», смена папки и установка идут через этот контракт
-/// с верификацией, а не каждый своим путём.
-fn stop_server_for(
+/// кнопка «Остановить», смена папки, переустановка и установка идут через
+/// этот контракт с верификацией, а не каждый своим путём.
+pub(crate) fn stop_server_for(
     app: &AppHandle,
     router_id: RouterId,
     port: u16,

@@ -6,9 +6,11 @@ pub mod config;
 pub mod gateway_installer;
 pub mod gateway_process;
 pub mod installer;
+pub mod no_login;
 pub mod postinstall_contract;
 
 pub mod process;
+pub mod reinstall;
 #[cfg(test)]
 pub mod test_scratch;
 

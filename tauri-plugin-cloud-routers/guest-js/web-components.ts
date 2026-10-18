@@ -5,6 +5,7 @@ import {
   installOrUpdate,
   onProgress,
   openDashboard,
+  reinstall,
   ROUTER_IDS,
   setApiKey,
   setRouterDir,
@@ -515,6 +516,24 @@ export class CloudRoutersPanel extends HTMLElement {
   private refreshTimer: number | null = null
   private root: ShadowRoot
   private unsubUpdate?: () => void
+  /**
+   * Роутеры, для которых установка/переустановка ВЫПОЛНЯЕТСЯ прямо сейчас.
+   * Почему нельзя полагаться на backend-статус: во время установки статусы
+   * честно сообщают «неполная установка» (node.exe уже есть, tgz ещё качается),
+   * и каждые 15 секунд refresh рисовал бы предупреждение о поломке, хотя
+   * установка в разгаре.
+   */
+  private installing = new Set<RouterId>()
+  /**
+   * Последний прогресс установки по роутерам. Хранится в state, потому что
+   * periodic render() пересоздаёт DOM, а `onProgress` мутирует DOM императивно —
+   * без этого долгие стадии без событий (распаковка, npm, postinstall)
+   * «сбрасывали» бы полосу прогресса между событиями. `total < 0` — ошибка.
+   */
+  private progressByRouter = new Map<RouterId, { text: string; done: number; total: number }>()
+  /** Роутер, у которого «Переустановить» ожидает второй клик-подтверждения. */
+  private reinstallArm: RouterId | null = null
+  private reinstallArmTimer: number | null = null
 
   constructor() {
     super()
@@ -547,7 +566,7 @@ export class CloudRoutersPanel extends HTMLElement {
     this.unsubUpdate = onUpdateState(() => this.renderUpdateState(getUpdateState(this.router)))
     void this.refresh()
     onProgress((p) => {
-      if (p.router === this.router) this.onProgress(p.text, p.done, p.total)
+      if (p.router === this.router) this.onProgress(p.router, p.text, p.done, p.total)
     }).then((off) => {
       this.offProgress = off
     })
@@ -595,27 +614,50 @@ export class CloudRoutersPanel extends HTMLElement {
     this.render()
   }
 
-  private onProgress(text: string, done: number, total: number) {
+  private onProgress(router: RouterId, text: string, done: number, total: number) {
+    // Прогресс сохраняется в state ДО DOM-правок: render() (каждые 15 секунд,
+    // а также любые setStatus) пересоздаёт DOM, и без этого слепка полоса
+    // прогресса слетала бы посреди установки — на долгих стадиях без событий
+    // это выглядело как «крутилка закончилась, хотя файлы ещё качаются».
+    this.progressByRouter.set(router, { text, done, total })
+    this.applyProgress(router)
+  }
+
+  /**
+   * Восстановить прогресс-бар из сохранённого state (после render()).
+   * Императивные DOM-правки имеет право делать ТОЛЬКО этот метод и
+   * `applyProgress`: оба синхронизированы с `progressByRouter`, поэтому
+   * перерисовка не может потерять текущий ход установки.
+   */
+  private applyProgress(router: RouterId) {
+    const entry = this.progressByRouter.get(router)
+    if (!entry || router !== this.router) return
     const bar = this.root.querySelector<HTMLElement>('.progress-bar')
     const label = this.root.querySelector<HTMLElement>('.progress-status')
     const box = this.root.querySelector<HTMLElement>('.progress-container')
-    if (box) box.classList.add('on')
-
+    if (!box || !bar || !label) return
+    box.classList.add('on')
+    if (entry.total < 0) {
+      // Ошибка установки: текст без процентной части; total < 0 означает
+      // «это не прогресс», полоса не анимируется.
+      bar.classList.remove('indeterminate')
+      bar.style.width = '0%'
+      label.textContent = entry.text
+      return
+    }
     // `total === 0` означает «процент НЕИЗВЕСТЕН», а не «всё готово».
     // Раньше здесь ставилась ширина 100%, и каждый этап без измеримого
     // прогресса (скачивание Node, распаковка, npm install, postinstall)
     // выглядел как завершённый: полоса прыгала в конец, а установка
     // продолжалась ещё минуту. Неизвестный процент показывается бегущей
     // полосой — она и означает «идёт, жди».
-    const indeterminate = total <= 0
-    if (bar) {
-      bar.classList.toggle('indeterminate', indeterminate)
-      if (!indeterminate) {
-        bar.style.width = `${Math.min(100, (done / total) * 100).toFixed(1)}%`
-      }
+    const indeterminate = entry.total <= 0
+    bar.classList.toggle('indeterminate', indeterminate)
+    if (!indeterminate) {
+      bar.style.width = `${Math.min(100, (entry.done / entry.total) * 100).toFixed(1)}%`
     }
-    const pct = indeterminate ? '…' : `${Math.min(100, (done / total) * 100).toFixed(0)}%`
-    if (label) label.innerHTML = `<span>${esc(text)}</span><span>${pct}</span>`
+    const pct = indeterminate ? '…' : `${Math.min(100, (entry.done / entry.total) * 100).toFixed(0)}%`
+    label.innerHTML = `<span>${esc(entry.text)}</span><span>${pct}</span>`
     // Завершённость НЕ выводится из арифметики прогресса. Прогресс — это
     // сообщение о ходе работы, а вердикт «установлено» приходит из возврата
     // команды, который разбирает `onInstall`. Раньше условие
@@ -646,14 +688,9 @@ export class CloudRoutersPanel extends HTMLElement {
     try {
       this.setStatus(router, await installOrUpdate(router, force))
       this.setCombos(router, await getCombos(router).catch(() => []))
+      this.progressByRouter.delete(router)
     } catch (e) {
-      const msg = `Ошибка установки: ${String(e)}`
-      logPlugin(`[cloud-routers] ${msg}`)
-      toast(msg, 'error')
-      const label = this.root.querySelector<HTMLElement>('.progress-status')
-      const box = this.root.querySelector<HTMLElement>('.progress-container')
-      if (box) box.classList.add('on')
-      if (label) label.textContent = `Ошибка: ${String(e)}`
+      this.reportInstallError(router, 'установки', String(e))
       // Статус перечитываем ДАЖЕ при ошибке: он несёт failed_update — плашку
       // «обновление не удалось, работает прежняя версия». Без этого панель
       // осталась бы в состоянии, неотличимом от «обновлений не было».
@@ -673,6 +710,22 @@ export class CloudRoutersPanel extends HTMLElement {
     }
     this.notifyCombosChanged(router)
     this.render()
+  }
+
+  /**
+   * Ошибка установки/переустановки: тост + лог + строка прогресса превращается
+   * в ошибку. Ошибка сохраняется в `progressByRouter`, а не только в DOM:
+   * последующие перерисовки (refresh каждые 15с) не должны её терять.
+   */
+  private reportInstallError(router: RouterId, actionLabel: string, errorText: string) {
+    const msg = `Ошибка ${actionLabel}: ${errorText}`
+    logPlugin(`[cloud-routers] ${msg}`)
+    toast(msg, 'error')
+    this.progressByRouter.set(router, { text: `Ошибка: ${errorText}`, done: 0, total: -1 })
+    const label = this.root.querySelector<HTMLElement>('.progress-status')
+    const box = this.root.querySelector<HTMLElement>('.progress-container')
+    if (box) box.classList.add('on')
+    if (label) label.textContent = `Ошибка: ${errorText}`
   }
 
   private async onOpen() {
@@ -811,8 +864,71 @@ export class CloudRoutersPanel extends HTMLElement {
     setUpdateState(router, { hasUpdate: false })
   }
 
+  /**
+   * Снять «armed»-состояние кнопки «Переустановить» (таймер отката).
+   * Вызывается при втором клике, смене вкладки и истечении окна подтверждения.
+   */
+  private disarmReinstallArm() {
+    if (this.reinstallArmTimer !== null) {
+      window.clearTimeout(this.reinstallArmTimer)
+      this.reinstallArmTimer = null
+    }
+    this.reinstallArm = null
+  }
+
+  /**
+   * Кнопка «Переустановить»: остановить сервер, снести установку и данные
+   * (настройки дашборда, включая пароль; комбо) и поставить последнюю версию
+   * заново. Двойное подтверждение вместо `confirm()`: первый клик поднимает
+   * предупреждение с 6-секундным окном, второй клик в этом окне — запуск.
+   */
+  private async onReinstall() {
+    const router = this.router
+    if (this.installing.has(router)) return
+
+    // Первый клик: предупреждение вместо немедленного уничтожения данных.
+    // Нажать «Переустановить» второй раз сокрее случайно нельзя — окно всего
+    // 6 секунд, и первый клик обязан увидеть предупреждение.
+    if (this.reinstallArm !== router) {
+      this.reinstallArm = router
+      const label = this.root.querySelector<HTMLElement>('.progress-status')
+      const box = this.root.querySelector<HTMLElement>('.progress-container')
+      if (box) box.classList.add('on')
+      if (label) {
+        label.innerHTML = `<span>Переустановка удалит установку и данные роутера (настройки и пароль дашборда, комбо). Нажмите <b>«Переустановить»</b> ещё раз в течение 6 секунд.</span><span></span>`
+      }
+      if (this.reinstallArmTimer !== null) window.clearTimeout(this.reinstallArmTimer)
+      this.reinstallArmTimer = window.setTimeout(() => {
+        this.disarmReinstallArm()
+        this.render()
+      }, 6000)
+      return
+    }
+    this.disarmReinstallArm()
+
+    this.installing.add(router)
+    this.setBtnBusy('.reinstall', true)
+    try {
+      this.setStatus(router, await reinstall(router))
+      this.setCombos(router, await getCombos(router).catch(() => []))
+      this.progressByRouter.delete(router)
+    } catch (e) {
+      this.reportInstallError(router, 'переустановки', String(e))
+      // Статус перечитываем и при ошибке: он честно показывает, чем всё
+      // кончилось (например, «не установлен» после сноса папок).
+      const fresh = await getStatus(router).catch(() => null)
+      if (fresh) this.setStatus(router, fresh)
+    } finally {
+      this.installing.delete(router)
+      this.setBtnBusy('.reinstall', false)
+    }
+    this.notifyCombosChanged(router)
+    this.render()
+  }
+
   private switchRouter(router: RouterId) {
     if (router === this.router) return
+    this.disarmReinstallArm()
     this.router = router
     this.render()
     void this.refresh(router)
@@ -906,6 +1022,13 @@ export class CloudRoutersPanel extends HTMLElement {
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           Путь
         </button>
+
+        ${!native && installed ? `
+          <button class="reinstall" ${this.installing.has(this.router) ? 'disabled' : ''} title="Снести установку и данные роутера (настройки и пароль дашборда, комбо) и поставить заново">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            Переустановить
+          </button>
+        ` : ''}
       `
       : `<span style="color:var(--text-dim)"><span class="spinner"></span> Загрузка действий...</span>`
 
@@ -973,7 +1096,10 @@ export class CloudRoutersPanel extends HTMLElement {
         </div>
       ` : ''}
 
-      ${!installed && !native && (s?.node_present || s?.server_present) ? `
+      ${!installed && !native && (s?.node_present || s?.server_present) && !this.installing.has(this.router) ? `
+        <!-- Плашка показывается ТОЛЬКО когда установка не идёт: во время
+             установки статус честно «не установлен» (node есть, tgz ещё
+             качается), и предупреждение о поломке здесь ложь. -->
         <div class="banner banner-warn">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:2px;"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
           <div>Неполная установка: отсутствуют компоненты пакета. Нажмите <b>«Установить»</b>, чтобы восстановить целостность.</div>
@@ -1023,8 +1149,14 @@ export class CloudRoutersPanel extends HTMLElement {
     this.root.querySelector('.refresh')?.addEventListener('click', () => void this.onShowCombos())
     this.root.querySelector('.open')?.addEventListener('click', () => void this.onOpen())
     this.root.querySelector('.setdir')?.addEventListener('click', () => void this.onSetDir())
+    this.root.querySelector('.reinstall')?.addEventListener('click', () => void this.onReinstall())
 
     this.renderUpdateState(getUpdateState(this.router))
+    // Прогресс установки восстанавливаем ПОСЛЕ пересоздания DOM: иначе каждые
+    // 15 секунд (refresh → render) полоса прогресса сбрасывалась бы, и на
+    // долгих стадиях без событий (распаковка, npm, postinstall) установка
+    // выглядела бы завершённой или умершей.
+    this.applyProgress(this.router)
   }
 
   private renderUpdateState(s: { hasUpdate: boolean; tag?: string }) {

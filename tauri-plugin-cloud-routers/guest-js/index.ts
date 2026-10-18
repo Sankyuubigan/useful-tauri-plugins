@@ -145,6 +145,19 @@ export function installOrUpdate(router: RouterId, force = false): Promise<Router
   return invoke<RouterStatus>('plugin:cloud-routers|install_or_update', { router, force })
 }
 
+/**
+ * Переустановить роутер «с нуля»: остановить сервер, снести установку и
+ * каталог данных (настройки дашборда, включая пароль; сохранённые комбо),
+ * поставить последнюю версию заново. Первый старт после переустановки
+ * выключает экран логина.
+ *
+ * Операция НЕОБРАТИМО удаляет данные роутера — UI обязан предупредить
+ * пользователя до вызова (панель делает это двойным подтверждением).
+ */
+export function reinstall(router: RouterId): Promise<RouterStatus> {
+  return invoke<RouterStatus>('plugin:cloud-routers|reinstall', { router })
+}
+
 /** Ленивый автозапуск по требованию (no-op, если сервер уже жив). */
 export function ensureStarted(router: RouterId): Promise<RouterStatus> {
   return invoke<RouterStatus>('plugin:cloud-routers|ensure_started', { router })

@@ -345,9 +345,13 @@ pub fn start_server(app: &AppHandle, router_id: RouterId, cfg: &RouterConfig) ->
             log::info!("🟢 {} уже запущен на порту {} (наш сервер)", router_id, port);
             if read_server_record(&data_dir).is_none() {
                 if let Some(pid) = listener_pid(port) {
-    write_server_record(&data_dir, pid, port, None);
+                    write_server_record(&data_dir, pid, port, None);
                 }
             }
+            // Флаг свежей установки погашается и на живом сервере: ensure_started
+            // при работающем сервере больше ничего не делает, и попытка
+            // оказалась бы замороженной до следующего рестарта вручную.
+            crate::router::no_login::consume_pending(app, router_id, port);
             return Ok(0);
         }
         GatewayState::ForeignOccupant(pid) => {
@@ -441,6 +445,12 @@ pub fn start_server(app: &AppHandle, router_id: RouterId, cfg: &RouterConfig) ->
             ),
         });
     }
+
+    // Свежая установка 9router: однократно выключаем экран логина (no_login.rs).
+    // Пытаемся ТОЛЬКО когда порт реально слушает сервер — иначе логин/PATCH ушли бы
+    // в отказ по недоступности и повторялись на каждом запуске впустую. Отказ шага
+    // сервером не считается ошибкой запуска: только warn в лог.
+    crate::router::no_login::consume_pending(app, router_id, port);
 
     Ok(pid)
 }

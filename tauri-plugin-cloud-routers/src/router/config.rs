@@ -80,6 +80,16 @@ pub struct RouterConfig {
     /// API-ключ роутера (для `/v1/chat/completions`). Опционально.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
+    /// Разовый флаг: установка только что разместила роутер, и при первом
+    /// старте сервера нужно выключить экран логина (requireLogin=false).
+    ///
+    /// Ставится ТОЛЬКО при свежей установке node-роутера (`installer.rs`), когда
+    /// предыдущей установленной версии не было; потребляется один раз
+    /// (`no_login::consume_pending`) и гасится навсегда. Обновления и повторные
+    /// запуски флаг не ставят: собственный пароль пользователя (если он
+    /// поставил его в дашборде 9router) плагин уважает и не трогает.
+    #[serde(default)]
+    pub pending_no_login: bool,
 }
 
 fn default_true() -> bool { true }

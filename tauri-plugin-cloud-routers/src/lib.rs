@@ -111,6 +111,7 @@ pub fn init() -> TauriPlugin<Wry, Config> {
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::install_or_update,
+            commands::reinstall,
             commands::ensure_started,
             commands::stop,
             commands::set_router_dir,

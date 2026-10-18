@@ -6,6 +6,10 @@
 //!   битый/частичный файл, а обрыв записи не уничтожает значение.
 //! - [`update_json`] — read-modify-write с эксклюзивной блокировкой на sidecar
 //!   `<file>.lock` (fs2). Сам JSON файл **не** лочится — читатели не блокируются.
+//!   Лок-файл — артефакт операции: после успешной записи он удаляется
+//!   (SQLite-паттерн служебных файлов), хвосты от обрыва процесса убирает
+//!   [`sweep_stale_locks`]. Занятость определяется захватом fs2-блокировки,
+//!   НЕ наличием файла.
 //! - [`roots::choose`] — выбор каталога записи настоящей пробой, один раз на метку.
 //!
 //! Доступность (не «атомарность при успехе», а гарантия самой попытки):
@@ -18,7 +22,9 @@
 //!   исключённой реентрантностью, межпроцессная — `try_lock` с ограниченным
 //!   повтором и fail-open с предупреждением. Раньше здесь стоял блокирующий
 //!   `LockFileEx` без таймаута: удержание лока третьим процессом замораживало
-//!   приложение навсегда.
+//!   приложение навсегда. Файл лока после успеха удаляется: пользователь не
+//!   видит служебного мусора рядом с данными; отказ удаления (чужой открытый
+//!   handle) безвреден и подбирается [`sweep_stale_locks`].
 //!
 //! Правило проекта: записи в `app_data_dir`/`sessions` — **только** через этот
 //! крейт, и читаются тоже только через него ([`read_text`], [`read_json`]) —
@@ -125,31 +131,77 @@ fn acquire_in_process() -> ProcessLock<'static> {
     ProcessLock::Held(guard)
 }
 
+/// Владелец межпроцессного sidecar-лока: handle + путь файла лока, чтобы Drop
+/// мог и отпереть блокировку, и убрать артефакт с диска.
+struct CrossLockGuard {
+    file: File,
+    path: PathBuf,
+}
+
 /// Межпроцессный sidecar-лок: держим, если успели за бюджет; иначе пишем без него.
+///
+/// Инвариант занятости: она определяется успехом захвата fs2-блокировки,
+/// а НЕ наличием `<имя>.lock` на диске. Поэтому `Held` при освобождении
+/// удаляет и сам файл (SQLite-паттерн служебных файлов операций: успех не
+/// оставляет следов), а режим `Skipped` файл не трогает вовсе — блокировку
+/// мог уже забрать другой процесс, и его право на файл теперь главное.
 enum CrossLock {
-    Held(File),
+    /// `Option` обязателен: `Drop` не разрешает разобрать тип с Drop по
+    /// значениям (E0509), а `take()` изнутри — стандартный способ забрать
+    /// владение в `drop(&mut self)`.
+    Held(Option<CrossLockGuard>),
     Skipped,
 }
 
 impl Drop for CrossLock {
     fn drop(&mut self) {
-        if let CrossLock::Held(file) = self {
-            let _ = file.unlock();
+        // Порядок «unlock → закрыть handle → удалить файл» обязателен:
+        // remove_file по собственному открытому handle на Windows даёт
+        // sharing violation.
+        let guard = match self {
+            CrossLock::Held(slot) => slot.take(),
+            CrossLock::Skipped => None,
+        };
+        let Some(guard) = guard else { return };
+        let _ = guard.file.unlock();
+        drop(guard.file);
+        if let Err(e) = fs::remove_file(&guard.path) {
+            // Не ошибка данных: пока у чужого процесса открыт handle,
+            // удаление невозможно; хвост подберёт [`sweep_stale_locks`].
+            log::debug!(
+                "ko-json-store: лок-файл {} не удалён ({}) — подберёт санитария",
+                guard.path.display(),
+                e
+            );
         }
     }
 }
 
-fn acquire_cross_process(file: File, path: &Path) -> CrossLock {
+/// Единая точка вычисления пути sidecar-лока (SSOT): `<файл>.lock` рядом.
+fn lock_path_for(data_path: &Path) -> PathBuf {
+    let file_name = data_path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    data_path.with_file_name(format!("{}.lock", file_name))
+}
+
+fn acquire_cross_process(file: File, lock_path: &Path) -> CrossLock {
     let deadline = Instant::now() + LOCK_WAIT_BUDGET;
     loop {
         match file.try_lock_exclusive() {
-            Ok(()) => return CrossLock::Held(file),
+            Ok(()) => {
+                return CrossLock::Held(Some(CrossLockGuard {
+                    file,
+                    path: lock_path.to_path_buf(),
+                }));
+            }
             Err(_) if Instant::now() < deadline => std::thread::sleep(LOCK_POLL_INTERVAL),
             Err(e) => {
                 log::warn!(
                     "ko-json-store: межпроцессный лок {} занят дольше {} мс ({}). \
                      Записываем без него: возможна гонка с другим процессом, но не зависание.",
-                    path.display(),
+                    lock_path.display(),
                     LOCK_WAIT_BUDGET.as_millis(),
                     e
                 );
@@ -157,6 +209,67 @@ fn acquire_cross_process(file: File, path: &Path) -> CrossLock {
             }
         }
     }
+}
+
+// ─────────────────────────── санитария хвостов лока ───────────────────────────
+
+/// SQLite-паттерн hot-journal: служебный файл операции не переживает саму
+/// операцию ([`CrossLock::drop`] удаляет его после успеха), но хвост после
+/// обрыва процесса возможен — и он подбирается при следующем старте.
+///
+/// Для каждого `<dir>/*.lock` пробуем захватить fs2-блокировку БЕЗ ожидания:
+/// захват удался → владельца нет → файл-хвост удаляем; не удался → лок живой
+/// (его держит другой процесс) — не трогаем. Признак «хвоста» — отсутствие
+/// владельца, а НЕ «файл есть».
+pub fn sweep_stale_locks(dir: &Path) -> Result<usize, String> {
+    let entries = fs::read_dir(dir)
+        .map_err(|e| format!("ko-json-store: свип {}: {}", dir.display(), e))?;
+
+    let mut removed = 0usize;
+    let mut busy = 0usize;
+
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|e| e.to_str()) != Some("lock") {
+            continue;
+        }
+
+        let file = match OpenOptions::new().write(true).open(&path) {
+            Ok(f) => f,
+            Err(_) => {
+                // Открыть не удалось: чей-то handle держит файл — это не хвост.
+                busy += 1;
+                continue;
+            }
+        };
+
+        match file.try_lock_exclusive() {
+            Ok(()) => {
+                drop(file); // handle закрыть ДО удаления — иначе sharing violation
+                match fs::remove_file(&path) {
+                    Ok(()) => removed += 1,
+                    // Пока кто-то держит handle, удаление невозможно.
+                    Err(_) => busy += 1,
+                }
+            }
+            Err(_) => {
+                busy += 1;
+                drop(file);
+            }
+        }
+    }
+
+    log::info!(
+        "[BOOT] ko-json-store: санитария хвостов {}: удалено {}, занятых пропущено {}",
+        dir.display(),
+        removed,
+        busy
+    );
+    Ok(removed)
 }
 
 // ───────────────────────────────── доступность ─────────────────────────────────
@@ -325,11 +438,7 @@ pub fn update_json<T>(path: &Path, update_fn: impl FnOnce(&mut T)) -> Result<(),
 where
     T: serde::Serialize + serde::de::DeserializeOwned + Default,
 {
-    let file_name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| format!("ko-json-store: некорректный путь: {}", path.display()))?;
-    let lock_path = path.with_file_name(format!("{}.lock", file_name));
+    let lock_path = lock_path_for(path);
 
     let _process = acquire_in_process();
 
@@ -338,7 +447,7 @@ where
         .write(true)
         .open(&lock_path)
     {
-        Ok(file) => acquire_cross_process(file, path),
+        Ok(file) => acquire_cross_process(file, &lock_path),
         Err(e) => {
             record_failure(
                 path,
@@ -614,6 +723,85 @@ mod tests {
             true,
             "вложенная запись должна состояться"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn update_json_removes_sidecar_lock_after_success() {
+        let dir = tmp_dir("lock_cleanup");
+        let path = dir.join("data.json");
+
+        update_json(&path, |val: &mut serde_json::Value| {
+            val["a"] = serde_json::json!(1);
+        })
+        .unwrap();
+        assert!(
+            !dir.join("data.json.lock").exists(),
+            "лок-файл обязан удаляться после успешной update_json"
+        );
+
+        // Второй прогон по тому же файлу — тоже без хвостов (лок создаётся
+        // и удаляется заново на каждом вызове).
+        update_json(&path, |val: &mut serde_json::Value| {
+            val["b"] = serde_json::json!(2);
+        })
+        .unwrap();
+        assert!(
+            !dir.join("data.json.lock").exists(),
+            "повторная update_json не должна оставлять лок"
+        );
+
+        let val: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(val["a"], serde_json::json!(1));
+        assert_eq!(val["b"], serde_json::json!(2));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sweep_stale_locks_removes_ownerless_and_skips_busy() {
+        let dir = tmp_dir("sweep");
+
+        // Живой лок: владелец держит fs2-блокировку — свип обязан пропустить.
+        let lock_busy = dir.join("busy.json.lock");
+        let holder = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(&lock_busy)
+            .unwrap();
+        holder.try_lock_exclusive().unwrap();
+
+        // Хвост: файл на диске есть, владельца нет (open без захвата лока).
+        let lock_stale = dir.join("stale.json.lock");
+        drop(
+            OpenOptions::new()
+                .create(true)
+                .write(true)
+                .open(&lock_stale)
+                .unwrap(),
+        );
+
+        let removed = sweep_stale_locks(&dir).unwrap();
+
+        assert_eq!(removed, 1, "удалён только безвладелецный хвост");
+        assert!(lock_busy.exists(), "живой лок обязан пережить свип");
+        assert!(!lock_stale.exists(), "хвост обязан удаляться свипом");
+
+        drop(holder);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn sweep_stale_locks_counts_zero_on_empty_dir() {
+        let dir = tmp_dir("sweep_empty");
+        let removed = sweep_stale_locks(&dir).unwrap();
+        assert_eq!(removed, 0);
+        // Файл без суффикса .lock не должен трогаться вовсе.
+        let stranger = dir.join("keep_me.json");
+        fs::write(&stranger, b"{}").unwrap();
+        let removed = sweep_stale_locks(&dir).unwrap();
+        assert_eq!(removed, 0);
+        assert!(stranger.exists());
         let _ = fs::remove_dir_all(&dir);
     }
 }

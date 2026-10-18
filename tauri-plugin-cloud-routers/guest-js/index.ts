@@ -23,6 +23,12 @@ export interface OpenDashboardPayload {
   base_url: string
 }
 
+// LOGIN_STATE_EVENT / LoginStatePayload / onLoginState живут в ./login_events
+// (SSOT-модуль без цикла: док-контракт там же). Реэкспорт сохраняет внешнее
+// API пакета. Причина переезда — TDZ-кейс 18.10.2026 (см. login_events.ts).
+export { LOGIN_STATE_EVENT, onLoginState } from './login_events'
+export type { LoginStatePayload } from './login_events'
+
 /** Идентификаторы роутеров — единственный источник истины (тип выводится из списка). */
 export const ROUTER_IDS = ['9router', 'extremerouter', 'omniroute', 'gateway'] as const
 
@@ -240,6 +246,7 @@ export function onOpenDashboard(cb: (p: OpenDashboardPayload) => void): Promise<
   return listen<OpenDashboardPayload>(OPEN_DASHBOARD_EVENT, (e) => cb(e.payload))
 }
 
+// onLoginState переехал в ./login_events (реэкспорт стоит выше по файлу).
 // Side-effect: импорт пакета регистрирует Web Component <cloud-routers-panel>.
 import './web-components'
 

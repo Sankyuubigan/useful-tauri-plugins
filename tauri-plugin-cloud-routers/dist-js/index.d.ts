@@ -17,6 +17,8 @@ export interface OpenDashboardPayload {
     router: RouterId;
     base_url: string;
 }
+export { LOGIN_STATE_EVENT, onLoginState } from './login_events';
+export type { LoginStatePayload } from './login_events';
 /** Идентификаторы роутеров — единственный источник истины (тип выводится из списка). */
 export declare const ROUTER_IDS: readonly ["9router", "extremerouter", "omniroute", "gateway"];
 /** Идентификатор роутера. */

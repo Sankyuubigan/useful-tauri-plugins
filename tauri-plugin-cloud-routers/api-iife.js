@@ -22,6 +22,12 @@
     return event.listen(name, (e) => cb(e));
   }
 
+  // guest-js/login_events.ts
+  var LOGIN_STATE_EVENT = "cloud-routers-login-state";
+  function onLoginState(cb) {
+    return listen(LOGIN_STATE_EVENT, (e) => cb(e.payload));
+  }
+
   // guest-js/updates.ts
   var states = /* @__PURE__ */ new Map();
   var subs = /* @__PURE__ */ new Set();
@@ -1100,6 +1106,11 @@
   if (!customElements.get("cloud-routers-panel")) {
     customElements.define("cloud-routers-panel", CloudRoutersPanel);
   }
+  void onLoginState((p) => {
+    logPlugin(`no_login: ${p.router} \u2014 ${p.detail}`);
+    toast(p.detail, "error");
+  }).catch(() => {
+  });
 
   // guest-js/index.ts
   var PROGRESS_EVENT = "cloud-routers-progress";

@@ -1,5 +1,6 @@
 import { ensureStarted, getCombos, getStatus, installOrUpdate, onProgress, openDashboard, reinstall, ROUTER_IDS, setRouterDir, stop, } from './index';
 import { checkUpdate, getUpdateState, onUpdateState, setUpdateState } from './updates';
+import { onLoginState } from './login_events';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core';
 const STYLE = `
@@ -1144,3 +1145,10 @@ export class CloudRoutersPanel extends HTMLElement {
 if (!customElements.get('cloud-routers-panel')) {
     customElements.define('cloud-routers-panel', CloudRoutersPanel);
 }
+// Состояние экрана логина: слушатель уровня модуля пакета (не компонента) —
+// тост честный и когда панель настроек закрыта. Успех молчит: выключенный
+// экран логина остаётся выключенным, тосты на каждый старт — шум.
+void onLoginState((p) => {
+    logPlugin(`no_login: ${p.router} — ${p.detail}`);
+    toast(p.detail, 'error');
+}).catch(() => { });

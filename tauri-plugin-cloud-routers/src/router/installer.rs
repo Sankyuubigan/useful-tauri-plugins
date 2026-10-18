@@ -476,12 +476,6 @@ fn install_version(
 ) -> Result<InstalledInfo, String> {
     let mut cfg = crate::router::config::load_config(app, router_id);
     let npm_ver = npm_ver.to_string();
-    // Свежая установка = до неё установленной версии не было (первая установка
-    // или «Переустановить», сбросивший конфиг). Только свежей установке
-    // разрешено планировать отключение экрана логина: поверх обновления
-    // настройки дашборда 9router (включая пароль пользователя) сохраняются,
-    // и трогать их не имеем права.
-    let was_fresh = cfg.installed_version.is_none();
 
     let complete = install_is_complete(
         cfg.installed_version.as_deref(),
@@ -650,13 +644,6 @@ fn install_version(
 
     cfg.installed_version = Some(npm_ver.clone());
     cfg.node_version = Some(node_ver.clone());
-    // Свежая установка 9router → на первом старте сервера однократно выключить
-    // экран логина (requireLogin=false через официальный API, см. no_login.rs).
-    // Поверх обновления флаг не ставится: настройки дашборда пользователя
-    // сохраняются между версиями.
-    if was_fresh && crate::router::no_login::supports_login_disable(router_id) {
-        cfg.pending_no_login = true;
-    }
     crate::router::config::save_config(app, router_id, &cfg)?;
 
     progress("done", 0, 0, &format!("✅ {} v{} установлен (Node {})", router_id, npm_ver, node_ver));

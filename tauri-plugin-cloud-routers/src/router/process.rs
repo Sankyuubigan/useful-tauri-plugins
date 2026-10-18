@@ -348,10 +348,12 @@ pub fn start_server(app: &AppHandle, router_id: RouterId, cfg: &RouterConfig) ->
                     write_server_record(&data_dir, pid, port, None);
                 }
             }
-            // Флаг свежей установки погашается и на живом сервере: ensure_started
-            // при работающем сервере больше ничего не делает, и попытка
-            // оказалась бы замороженной до следующего рестарта вручную.
-            crate::router::no_login::consume_pending(app, router_id, port);
+            // Проверка экрана логина идёт по состоянию живого сервера, а не по
+            // конфиг-флагу: ensure_started при работающем сервере больше ничего
+            // не делает, и без этой точки проверка замёрзла бы до следующего
+            // рестарта вручную. Дедуп по pid сервера — внутри no_login.rs.
+            let record_pid = read_server_record(&data_dir).map(|r| r.pid).unwrap_or(0);
+            crate::router::no_login::enforce_login_state(app, router_id, port, record_pid);
             return Ok(0);
         }
         GatewayState::ForeignOccupant(pid) => {
@@ -446,11 +448,11 @@ pub fn start_server(app: &AppHandle, router_id: RouterId, cfg: &RouterConfig) ->
         });
     }
 
-    // Свежая установка 9router: однократно выключаем экран логина (no_login.rs).
-    // Пытаемся ТОЛЬКО когда порт реально слушает сервер — иначе логин/PATCH ушли бы
-    // в отказ по недоступности и повторялись на каждом запуске впустую. Отказ шага
-    // сервером не считается ошибкой запуска: только warn в лог.
-    crate::router::no_login::consume_pending(app, router_id, port);
+    // Проверка экрана логина — state-check (no_login.rs): публичный статус и
+    // однократная попытка на процесс сервера. Порт уже реально слушает, поэтому
+    // запросы не уходят в недоступность. Отказ шага ошибкой запуска не
+    // считается: только warn в лог.
+    crate::router::no_login::enforce_login_state(app, router_id, port, pid);
 
     Ok(pid)
 }

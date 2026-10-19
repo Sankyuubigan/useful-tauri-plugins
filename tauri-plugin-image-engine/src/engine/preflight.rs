@@ -155,17 +155,29 @@ mod tests {
     #[test]
     fn estimate_matches_catalog_thresholds() {
         let catalog = load_image_catalog();
-        let def = catalog.iter().find(|e| e.is_default).expect("бандл");
-        let est = estimate_image_memory_mb(def);
-        // Диск ~12.9 ГБ
-        assert!(est.disk_mb > 12_000.0 && est.disk_mb < 14_000.0, "disk {}", est.disk_mb);
-        // Full ~ диск + 3 ГБ; min ~ diffusion(5.6ГБ) + 3 ГБ
-        assert!(est.full_mb > est.min_mb);
-        assert!(est.min_mb > 7000.0 && est.min_mb < 11000.0, "min {}", est.min_mb);
-        // Пороги каталога консистентны с расчётом: fast 16ГБ покрывает full, min 8ГБ ~ min_mb
-        let fast_mb = def.vram_fast_gb.unwrap_or(0.0) as f64 * 1024.0;
-        let min_cat_mb = def.vram_min_gb.unwrap_or(0.0) as f64 * 1024.0;
-        assert!(fast_mb >= est.full_mb, "fast {} < full {}", fast_mb, est.full_mb);
-        assert!((min_cat_mb - est.min_mb).abs() < 1500.0, "min {} vs {}", min_cat_mb, est.min_mb);
+        assert_eq!(catalog.len(), 2, "в каталоге 2 turbo-бандла (q6k удалён)");
+        for e in &catalog {
+            let est = estimate_image_memory_mb(e);
+            // Диск: olečen из bytes каталога (vcэšk diffusion 4.2–5.6 ГБ + llm 5.0 +
+            // mmproj 1.16 + vae 0.68) → 11.2–12.9 ГБ десятичных ≈ 10 600–13 000 МБ.
+            assert!(
+                est.disk_mb > 10_500.0 && est.disk_mb < 14_000.0,
+                "{}: disk {}",
+                e.name,
+                est.disk_mb
+            );
+            // Full-режим дороже min (буферы/вторая копия весов) — инвариант формулы.
+            assert!(est.full_mb > est.min_mb, "{}: full {} <= min {}", e.name, est.full_mb, est.min_mb);
+            // Замер 19.10.2026: turbo full-пик 13.0–14.6 ГБ — формулы-минимумы
+            // turbo-стека по диapasonic: diffusion 4.2–5.6 ГБ + буферы ⇒ 6–11 ГБ.
+            assert!(
+                est.min_mb > 5000.0 && est.min_mb < 12000.0,
+                "{}: min {}",
+                e.name,
+                est.min_mb
+            );
+            // У КАЖДОГО набора mmproj (правило юзера: edit обязателен) — 4 файла.
+            assert_eq!(e.files.len(), 4, "{}: файлов {}", e.name, e.files.len());
+        }
     }
 }

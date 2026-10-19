@@ -68,6 +68,10 @@ export interface ImagePreset {
     height: number;
     steps: number;
     seed: number;
+    /** Инвариант Turbo: len(custom_sigmas) === steps, последняя сигма 0.0. */
+    custom_sigmas?: number[] | null;
+    scheduler?: string | null;
+    native_sigma_preset?: string | null;
 }
 export interface BundleFile {
     role: string;
@@ -98,19 +102,21 @@ export declare function installImageEngineUpdate(): Promise<ImageEngineStatus>;
 export declare function removeImageEngine(): Promise<ImageEngineStatus>;
 export declare function setImageEngineDir(path: string): Promise<ImageEngineStatus>;
 export declare function getImageModelsCatalog(): Promise<ImageBundleEntry[]>;
-export declare function getImageBundleInfo(): Promise<ImageBundleInfo>;
-export declare function downloadImageBundle(saveDir: string): Promise<ImageBundleInfo>;
+export declare function getImageBundleInfo(bundleName?: string | null): Promise<ImageBundleInfo>;
+/** Выбрать активный бандл каталога (пустая строка => сброс на дефолт). */
+export declare function setSelectedImageBundle(bundleName: string): Promise<ImageBundleInfo>;
+export declare function downloadImageBundle(saveDir: string, bundleName?: string | null): Promise<ImageBundleInfo>;
 export interface ImageBundleValidate {
     valid: boolean;
     dir: string;
     present: string[];
     missing: string[];
 }
-export declare function validateImageBundleDir(path: string): Promise<ImageBundleValidate>;
+export declare function validateImageBundleDir(path: string, bundleName?: string | null): Promise<ImageBundleValidate>;
 export declare function setImageBundleDir(path: string): Promise<ImageBundleInfo>;
-export declare function removeImageBundle(): Promise<ImageBundleInfo>;
+export declare function removeImageBundle(bundleName?: string | null): Promise<ImageBundleInfo>;
 export declare function removeImageBundleFromList(): Promise<ImageBundleInfo>;
-export declare function estimateImageMemory(): Promise<ImageMemoryInfo>;
+export declare function estimateImageMemory(bundleName?: string | null): Promise<ImageMemoryInfo>;
 export interface GenerateOptions {
     prompt: string;
     width?: number | null;
@@ -119,6 +125,7 @@ export interface GenerateOptions {
     cfgScale?: number | null;
     seed?: number | null;
     outPath?: string | null;
+    bundleName?: string | null;
 }
 export declare function generateImage(opts: GenerateOptions): Promise<ImageGenResult>;
 export interface EditOptions extends GenerateOptions {

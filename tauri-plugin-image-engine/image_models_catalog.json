@@ -1,15 +1,15 @@
 [
   {
-    "name": "qwen-image-2.1",
-    "label": "Qwen Image 2.1 (генерация + редактирование)",
-    "note": "Единый бандл: diffusion Q6_K + текст-энкодер Qwen3-VL Q4_K_M + mmproj + VAE. Русские промпты понимает (энкодер — мультиязычный LLM), но максимум качества — развёрнутый английский промпт (его пишет media-агент). Размеры картинки — кратно 32. mmproj обязателен: без него Qwen-Image-2.1 не умеет редактирование (--llm_vision). При 2+ референсах адресуй их в промпте тегами <image1>, <image2>: первый референс — холст, остальные — источники.",
+    "name": "qwen-image-2.1-turbo-unsloth-q5_ks",
+    "label": "Qwen Image 2.1 Turbo (unsloth Q5_K_S) — 8 шагов, для карт ~8 ГБ",
+    "note": "Официальный Turbo-чекпоинт (fine-tune базы: 8 шагов, CFG 1.0, euler). LPIPS unsloth 0.103/083 (mean/held-out) — лучшая точность на байт. Полный функционал: генерация И редактирование (ммproj в наборе; референсы адресуются <image1>, <image2>). Размеры VRAM/RAM — ОЦЕНКИ; в общей папке TE/VAE/mmproj уже скачаны — новый файл только diffusion (~4.2 ГБ).",
     "is_default": true,
     "files": [
       {
         "role": "diffusion",
-        "filename": "qwen_image_2.1-Q6_K.gguf",
-        "download_url": "https://huggingface.co/leejet/Qwen-Image-2.1-GGUF/resolve/main/qwen_image_2.1-Q6_K.gguf?download=true",
-        "size_bytes": 5996851232
+        "filename": "qwen-image-2.1-turbo-Q5_K_S.gguf",
+        "download_url": "https://huggingface.co/unsloth/Qwen-Image-2.1-Turbo-GGUF/resolve/main/qwen-image-2.1-turbo-Q5_K_S.gguf?download=true",
+        "size_bytes": 4501948224
       },
       {
         "role": "llm",
@@ -31,16 +31,60 @@
       }
     ],
     "preset": {
-      "cfg_scale": 6.0,
+      "cfg_scale": 1.0,
       "sampler": "euler",
       "width": 1024,
       "height": 1024,
-      "steps": 28,
-      "seed": -1
+      "steps": 8,
+      "seed": -1,
+      "custom_sigmas": [1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0.0]
     },
-    "size_gb": "12.9",
-    "vram_fast_gb": 16.0,
-    "vram_min_gb": 8.0,
-    "ram_min_gb": 16.0
+    "size_gb": "11.4",
+    "vram_fast_gb": 12.0,
+    "ram_min_gb": 12.0
+  },
+  {
+    "name": "qwen-image-2.1-turbo-viggle-q4km",
+    "label": "Qwen Image 2.1 Viggle turbo v0.3 (Q4_K_M, LoRA вшита) — 6 шагов",
+    "note": "Few-step дистилляция НА БАЗУ: LoRA уже вмержена в diffusion (6 шагов, CFG 1.0, по сигмам Viggle v0.3). Публичных LPIPS нет; слабое место по README Viggle — мелкий текст и сложные правки. Полный функционал: генерация И редактирование (mmproj в наборе; референсы адресуются <image1>, <image2>). Общие файлы не перекачиваются (~4.0 ГБ новых).",
+    "is_default": false,
+    "files": [
+      {
+        "role": "diffusion",
+        "filename": "Qwen-Image-2.1-viggle-turbo-v0.3-6step-Q4_K_M.gguf",
+        "download_url": "https://huggingface.co/Viggle/Qwen-Image-2.1-viggle-turbo/resolve/main/Qwen-Image-2.1-viggle-turbo-v0.3-6step-Q4_K_M.gguf?download=true",
+        "size_bytes": 4335931552
+      },
+      {
+        "role": "llm",
+        "filename": "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+        "download_url": "https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main/Qwen3VL-8B-Instruct-Q4_K_M.gguf?download=true",
+        "size_bytes": 5027784800
+      },
+      {
+        "role": "mmproj",
+        "filename": "mmproj-Qwen3VL-8B-Instruct-F16.gguf",
+        "download_url": "https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-8B-Instruct-F16.gguf?download=true",
+        "size_bytes": 1159029824
+      },
+      {
+        "role": "vae",
+        "filename": "qwen_image_2.1_vae_bf16.safetensors",
+        "download_url": "https://huggingface.co/Comfy-Org/Qwen-Image-2.1/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors?download=true",
+        "size_bytes": 675509688
+      }
+    ],
+    "preset": {
+      "cfg_scale": 1.0,
+      "sampler": "euler",
+      "width": 1024,
+      "height": 1024,
+      "steps": 6,
+      "seed": -1,
+      "custom_sigmas": [1.0, 0.9375, 0.875, 0.75, 0.5, 0.25, 0.0]
+    },
+    "size_gb": "11.2",
+    "vram_fast_gb": 12.5,
+    "ram_min_gb": 13.0
   }
 ]

@@ -50,6 +50,11 @@ description = "Allow reading download proposal for the default image bundle."
 commands.allow = ["get_image_bundle_info"]
 
 [[permission]]
+identifier = "allow-set-selected-image-bundle"
+description = "Allow selecting the active image bundle (catalog entry)."
+commands.allow = ["set_selected_image_bundle"]
+
+[[permission]]
 identifier = "allow-download-image-bundle"
 description = "Allow downloading all files of the default image bundle."
 commands.allow = ["download_image_bundle"]
@@ -98,6 +103,7 @@ permissions = [
   "allow-set-image-engine-dir",
   "allow-get-image-models-catalog",
   "allow-get-image-bundle-info",
+  "allow-set-selected-image-bundle",
   "allow-download-image-bundle",
   "allow-validate-image-bundle-dir",
   "allow-set-image-bundle-dir",

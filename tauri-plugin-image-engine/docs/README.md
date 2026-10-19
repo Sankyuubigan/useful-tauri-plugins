@@ -16,10 +16,12 @@ King Orch (Rust/Tauri exe)          HTTP (localhost)              sd-server.exe
 
 ## Бандл (image_models_catalog.json)
 
-Один entry по умолчанию: diffusion Q6_K + TE Q4_K_M + mmproj F16 + VAE bf16
-(~12.9 ГБ). Пресеты генерации (`cfg_scale 6.0`, `euler`, `1024x1024`, `steps 28`,
-`seed -1`) — только в каталоге. Пороги: `vram_fast_gb 16` / `vram_min_gb 8` /
-`ram_min_gb 16`.
+Два turbo-бандла: unsloth Q5_K_S (дефолт) и Viggle Q4_K_M; состав
+diffusion turbo + TE Q4_K_M + mmproj F16 + VAE bf16 (~11.2 ГБ). Viggle
+Q6_K удалён вердиктом юзера 20.10.2026 (нестабилен, edit 0/17). Пресеты
+генерации (`cfg_scale 1.0`, `euler`, `1024x1024`, `steps 6`,
+`custom_sigmas`, `seed -1`) — только в каталоге. Пороги: `vram_fast_gb` /
+`vram_min_gb` / `ram_min_gb` — в каждом entry.
 
 ## Флаги запуска `sd-server` (критично для скорости)
 

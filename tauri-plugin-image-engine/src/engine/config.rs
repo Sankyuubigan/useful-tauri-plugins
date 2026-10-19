@@ -4,12 +4,13 @@
 //!
 //! Ключи: `sdcpp_dir` (переопределение папки движка),
 //! `image_engine_variant` ("auto"/cuda12/cpu/vulkan/rocm),
-//! `image_bundle_dir` (папка скачанного бандла весов).
+//! `image_bundle_dir` (папка скачанного бандла весов),
+//! `selected_bundle` (активный бандл каталога — выбор юзера в UI).
 
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
 
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct ImageEngineConfig {
@@ -19,6 +20,8 @@ pub struct ImageEngineConfig {
     pub image_engine_variant: Option<String>,
     #[serde(default)]
     pub image_bundle_dir: Option<String>,
+    #[serde(default)]
+    pub selected_bundle: Option<String>,
 }
 
 /// Путь к `app_config.json` хоста (runtime, через AppHandle).
@@ -72,7 +75,7 @@ pub fn bundle_dir_early() -> PathBuf {
     }
     let name = crate::engine::models_catalog::default_bundle_entry()
         .map(|e| e.name.clone())
-        .unwrap_or_else(|| "qwen-image-2.1".to_string());
+        .unwrap_or_else(|| "qwen-image-2.1-turbo-unsloth-q5_ks".to_string());
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))

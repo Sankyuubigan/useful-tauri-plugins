@@ -60,7 +60,7 @@ fn bundle_dir(app: &AppHandle) -> PathBuf {
     }
     let name = engine::default_bundle_entry()
         .map(|e| e.name.clone())
-        .unwrap_or_else(|| "qwen-image-2.1".to_string());
+        .unwrap_or_else(|| "qwen-image-2.1-turbo-unsloth-q5_ks".to_string());
     exe_dir(app).join("image_models").join(name)
 }
 
@@ -227,10 +227,33 @@ fn free_space_gb_for(path: &Path) -> u64 {
     avail / (1024 * 1024 * 1024)
 }
 
+/// Entry бандла для операции: явное имя → из каталога; без имени →
+/// активный (cfg.selected_bundle) → дефолт. Ошибка — честная, что где не так.
+pub fn bundle_entry(
+    app: &AppHandle,
+    name: Option<&str>,
+) -> Result<engine::ImageBundleEntry, String> {
+    if let Some(n) = name.filter(|n| !n.is_empty()) {
+        return engine::bundle_by_name(n)
+            .ok_or_else(|| format!("Бандл «{}» отсутствует в каталоге плагина.", n));
+    }
+    if let Some(ref sel) = engine::load_image_config(app).selected_bundle {
+        if !sel.is_empty() {
+            return engine::bundle_by_name(sel).ok_or_else(|| {
+                format!(
+                    "Активный бандл «{}» отсутствует в каталоге — выберите другой в настройках image-engine.",
+                    sel
+                )
+            });
+        }
+    }
+    engine::default_bundle_entry()
+        .ok_or_else(|| "В каталоге нет бандла по умолчанию".to_string())
+}
+
 #[tauri::command]
-pub fn get_image_bundle_info(app: AppHandle) -> Result<ImageBundleInfo, String> {
-    let entry = engine::default_bundle_entry()
-        .ok_or_else(|| "В каталоге нет бандла по умолчанию".to_string())?;
+pub fn get_image_bundle_info(app: AppHandle, bundle_name: Option<String>) -> Result<ImageBundleInfo, String> {
+    let entry = bundle_entry(&app, bundle_name.as_deref())?;
     let save_dir = bundle_dir(&app);
     let mut files = Vec::with_capacity(entry.files.len());
     let mut fully = true;
@@ -292,10 +315,76 @@ fn validate_bundle_dir(entry: &engine::ImageBundleEntry, dir: &Path) -> ImageBun
 }
 
 #[tauri::command]
-pub fn validate_image_bundle_dir(path: String) -> Result<ImageBundleValidate, String> {
-    let entry = engine::default_bundle_entry()
-        .ok_or_else(|| "В каталоге нет бандла по умолчанию".to_string())?;
+pub fn validate_image_bundle_dir(
+    path: String,
+    bundle_name: Option<String>,
+) -> Result<ImageBundleValidate, String> {
+    let entry_opt = match bundle_name.as_deref() {
+        Some(n) if !n.is_empty() => engine::bundle_by_name(n),
+        _ => engine::default_bundle_entry(),
+    };
+    let entry = entry_opt.ok_or_else(|| match bundle_name.as_deref() {
+        Some(n) => format!("Бандл «{}» отсутствует в каталоге плагина.", n),
+        None => "В каталоге нет бандла по умолчанию".to_string(),
+    })?;
     Ok(validate_bundle_dir(&entry, Path::new(&path)))
+}
+
+#[tauri::command]
+pub fn set_selected_image_bundle(
+    app: AppHandle,
+    bundle_name: String,
+) -> Result<ImageBundleInfo, String> {
+    if bundle_name.trim().is_empty() {
+        let mut cfg = engine::load_image_config(&app);
+        cfg.selected_bundle = None;
+        engine::save_image_config(&app, &cfg)?;
+        return get_image_bundle_info(app, None);
+    }
+    let entry = engine::bundle_by_name(&bundle_name).ok_or_else(|| {
+        format!("Бандл «{}» отсутствует в каталоге плагина.", bundle_name)
+    })?;
+    let mut cfg = engine::load_image_config(&app);
+    cfg.selected_bundle = Some(bundle_name.clone());
+    engine::save_image_config(&app, &cfg)?;
+    log::info!("[IMG] Активный бандл: {}", entry.name);
+    image_bundle_info_for(&app, &entry)
+}
+
+/// Сборка ImageBundleInfo для конкретного entry (общая для info/set_selected).
+fn image_bundle_info_for(app: &AppHandle, entry: &engine::ImageBundleEntry) -> Result<ImageBundleInfo, String> {
+    let save_dir = bundle_dir(app);
+    let mut files = Vec::with_capacity(entry.files.len());
+    let mut fully = true;
+    for f in &entry.files {
+        let save_path = save_dir.join(&f.filename);
+        let exists = save_path.exists();
+        if !exists {
+            fully = false;
+        }
+        files.push(BundleFileInfo {
+            role: f.role.clone(),
+            filename: f.filename.clone(),
+            size_bytes: f.size_bytes,
+            save_path: save_path.to_string_lossy().to_string(),
+            exists,
+        });
+    }
+    let total_bytes: u64 = entry.files.iter().map(|f| f.size_bytes.unwrap_or(0)).sum();
+    Ok(ImageBundleInfo {
+        bundle_name: entry.name.clone(),
+        label: entry.label.clone(),
+        note: entry.note.clone(),
+        files,
+        total_bytes,
+        size_gb: entry.size_gb.clone(),
+        vram_fast_gb: entry.vram_fast_gb,
+        vram_min_gb: entry.vram_min_gb,
+        ram_min_gb: entry.ram_min_gb,
+        save_dir: save_dir.to_string_lossy().to_string(),
+        free_space_gb: free_space_gb_for(&save_dir),
+        fully_downloaded: fully,
+    })
 }
 
 #[tauri::command]
@@ -308,13 +397,16 @@ pub fn set_image_bundle_dir(app: AppHandle, path: String) -> Result<ImageBundleI
     let mut cfg = engine::load_image_config(&app);
     cfg.image_bundle_dir = Some(path);
     engine::save_image_config(&app, &cfg)?;
-    get_image_bundle_info(app)
+    get_image_bundle_info(app, None)
 }
 
 #[tauri::command]
-pub async fn download_image_bundle(app: AppHandle, save_dir: String) -> Result<ImageBundleInfo, String> {
-    let entry = engine::default_bundle_entry()
-        .ok_or_else(|| "В каталоге нет бандла по умолчанию".to_string())?;
+pub async fn download_image_bundle(
+    app: AppHandle,
+    save_dir: String,
+    bundle_name: Option<String>,
+) -> Result<ImageBundleInfo, String> {
+    let entry = bundle_entry(&app, bundle_name.as_deref())?;
     let dir = PathBuf::from(&save_dir);
     std::fs::create_dir_all(&dir)
         .map_err(|e| format!("Не удалось создать папку {}: {}", dir.display(), e))?;
@@ -352,13 +444,12 @@ pub async fn download_image_bundle(app: AppHandle, save_dir: String) -> Result<I
     cfg.image_bundle_dir = Some(save_dir);
     engine::save_image_config(&app, &cfg)?;
     on_log("Бандл скачан целиком.".to_string());
-    get_image_bundle_info(app)
+    get_image_bundle_info(app, bundle_name)
 }
 
 #[tauri::command]
-pub fn remove_image_bundle(app: AppHandle) -> Result<ImageBundleInfo, String> {
-    let entry = engine::default_bundle_entry()
-        .ok_or_else(|| "В каталоге нет бандла по умолчанию".to_string())?;
+pub fn remove_image_bundle(app: AppHandle, bundle_name: Option<String>) -> Result<ImageBundleInfo, String> {
+    let entry = bundle_entry(&app, bundle_name.as_deref())?;
     let dir = bundle_dir(&app);
     for f in &entry.files {
         let p = dir.join(&f.filename);
@@ -367,10 +458,14 @@ pub fn remove_image_bundle(app: AppHandle) -> Result<ImageBundleInfo, String> {
                 .map_err(|e| format!("Не удалось удалить {}: {}", p.display(), e))?;
         }
     }
-    let mut cfg = engine::load_image_config(&app);
-    cfg.image_bundle_dir = None;
-    engine::save_image_config(&app, &cfg)?;
-    Ok(get_image_bundle_info(app)?)
+    // Если удаляли активный бандл — снимаем выбор (иначе все операции будут
+    // падать с «активный бандл отсутствует»).
+    if engine::load_image_config(&app).selected_bundle.as_deref() == Some(entry.name.as_str()) {
+        let mut cfg = engine::load_image_config(&app);
+        cfg.selected_bundle = None;
+        engine::save_image_config(&app, &cfg)?;
+    }
+    Ok(get_image_bundle_info(app, None)?)
 }
 
 #[tauri::command]
@@ -378,7 +473,7 @@ pub fn remove_image_bundle_from_list(app: AppHandle) -> Result<ImageBundleInfo, 
     let mut cfg = engine::load_image_config(&app);
     cfg.image_bundle_dir = None;
     engine::save_image_config(&app, &cfg)?;
-    Ok(get_image_bundle_info(app)?)
+    Ok(get_image_bundle_info(app, None)?)
 }
 
 #[derive(Serialize, Clone)]
@@ -389,9 +484,17 @@ pub struct ImageMemoryInfo {
 }
 
 #[tauri::command]
-pub fn estimate_image_memory() -> Result<ImageMemoryInfo, String> {
-    let entry = engine::default_bundle_entry()
-        .ok_or_else(|| "В каталоге нет бандла по умолчанию".to_string())?;
+pub fn estimate_image_memory(bundle_name: Option<String>) -> Result<ImageMemoryInfo, String> {
+    let entry_opt = match bundle_name.as_deref() {
+        Some(n) if !n.is_empty() => engine::bundle_by_name(n),
+        _ => engine::default_bundle_entry(),
+    };
+    let entry = entry_opt.ok_or_else(|| {
+        match bundle_name.as_deref() {
+            Some(n) => format!("Бандл «{}» отсутствует в каталоге плагина.", n),
+            None => "В каталоге нет бандла по умолчанию".to_string(),
+        }
+    })?;
     let (verdict, estimate, message) = engine::preflight_check(&entry);
     Ok(ImageMemoryInfo { estimate, verdict, message })
 }
@@ -433,9 +536,9 @@ pub async fn generate_image(
     cfg_scale: Option<f32>,
     seed: Option<i64>,
     out_path: Option<String>,
+    bundle_name: Option<String>,
 ) -> Result<engine::ImageGenResult, String> {
-    let entry = engine::default_bundle_entry()
-        .ok_or_else(|| "В каталоге нет бандла по умолчанию".to_string())?;
+    let entry = bundle_entry(&app, bundle_name.as_deref())?;
     let (w, h, st, cfg, sd) = resolve_gen_params(&entry, width, height, steps, cfg_scale, seed);
     let edir = engine_dir(&app);
     let bdir = bundle_dir(&app);
@@ -460,12 +563,18 @@ pub async fn edit_image(
     cfg_scale: Option<f32>,
     seed: Option<i64>,
     out_path: Option<String>,
+    bundle_name: Option<String>,
 ) -> Result<engine::ImageGenResult, String> {
     if ref_paths.is_empty() {
         return Err("Для редактирования нужен хотя бы один референс (ref_paths пуст).".to_string());
     }
-    let entry = engine::default_bundle_entry()
-        .ok_or_else(|| "В каталоге нет бандла по умолчанию".to_string())?;
+    let entry = bundle_entry(&app, bundle_name.as_deref())?;
+    if !entry.files.iter().any(|f| f.role == "mmproj") {
+        return Err(format!(
+            "Edit требует mmproj (vision-энкодер). Бандл «{}» его не содержит — выберите полный набор в настройках image-engine.",
+            entry.name
+        ));
+    }
     let (w, h, st, cfg, sd) = resolve_gen_params(&entry, width, height, steps, cfg_scale, seed);
     let edir = engine_dir(&app);
     let bdir = bundle_dir(&app);

@@ -51,6 +51,18 @@ pub struct ImageGenResult {
     pub time_sec: f64,
 }
 
+/// Параметры img2img (native API `/sdcpp/v1/img_gen`, api.md 855-898:
+/// top-level `init_image` = base64/data-URL строка, `strength` = число,
+/// canvas по width/height запроса). Несовместимо с `ref_images` —
+/// взаимоисключающие режимы (заполнено то или другое, а не оба).
+#[derive(Clone, Debug)]
+pub struct Img2Img {
+    /// Исходное изображение base64 (без заголовка data-URL).
+    pub init_b64: String,
+    /// Denoise-strength (0.0..1.0): 0 = копия входа, 1 = полная регенерация.
+    pub strength: f32,
+}
+
 #[derive(Deserialize, Debug)]
 struct JobSubmit {
     id: String,
@@ -215,6 +227,14 @@ impl ImageEngine {
             // не посчитает TE/VAE резидентными и оставит запас под prefix-кэш.
             "--max-vram",
             "-1",
+            // VAE тайлами: без этого флага encode 2048² (hires-fix, Ланцош-второй
+            // проход) требует ~15.7 ГБ и валит job («encode_first_stage failed
+            // after hires Lanczos upscale»), а encode 1024²-референса на edit
+            // (~4.4 ГБ) не влезает у Q6_K-бандла после резидентных весов —
+            // замер 19.10.2026, bench_run.log. Тайлинг VAE делает оба режима
+            // структурно проходимыми (sd-server --help: «--vae-tiling: process
+            // vae in tiles to reduce memory usage»).
+            "--vae-tiling",
             // Prefix KV-кэш (текст + vision-токены референсов) в 8 бит: вдвое меньше
             // VRAM, чем f16 (1.06 ГБ против 2 ГБ на префикс ~4096 токенов), при
             // сохранении ускорения «посчитать кондиционирование один раз».
@@ -279,7 +299,12 @@ impl ImageEngine {
     }
 
     /// Генерация: submit → poll → PNG на диск. `ref_images_b64` — base64/data-URL
-    /// в порядке conditioning (пусто = t2i).
+    /// в порядке conditioning (пусто = t2i). `custom_sigmas`/`scheduler` —
+    /// необязательный сигма-профиль пресета (Turbo-семейство: custom_sigmas
+    /// обязателен; контракт sd.cpp SamplePlan::resolve: steps = len(sigmas)-1,
+    /// массив обязан кончаться терминальным 0.0). `hires` — объект hires-fix
+    /// нативного API (`hires.enabled/upscaler/scale/steps/denoising_strength`),
+    /// None = обычная однофазная генерация.
     pub fn generate<L>(
         &self,
         prompt: &str,
@@ -292,6 +317,10 @@ impl ImageEngine {
         out_path: &Path,
         cancel_flag: Option<Arc<AtomicBool>>,
         log_cb: L,
+        custom_sigmas: Option<&[f32]>,
+        scheduler: Option<&str>,
+        hires: Option<&serde_json::Value>,
+        img2img: Option<&Img2Img>,
     ) -> Result<ImageGenResult, String>
     where
         L: Fn(String),
@@ -301,23 +330,69 @@ impl ImageEngine {
         if w != width || h != height {
             log_cb(format!("ℹ️ Размер скорректирован до кратного 32: {}x{} → {}x{}.", width, height, w, h));
         }
-        let body = serde_json::json!({
+        // Сигма-профиль: контракт sd.cpp SamplePlan::resolve —
+        // total_steps = custom_sigmas_count - 1, массив кончается 0.0.
+        let effective_steps = match custom_sigmas {
+            Some(s) if !s.is_empty() => s.len() as u32 - 1,
+            _ => steps,
+        };
+        if custom_sigmas.is_some_and(|s| !s.is_empty()) && effective_steps != steps {
+            log_cb(format!(
+                "ℹ️ steps скорректирован сигма-профилем: {} → {} (len(custom_sigmas) − 1, sd.cpp).",
+                steps, effective_steps
+            ));
+        }
+        let mut sample_params = serde_json::json!({
+            "sample_method": "euler",
+            "sample_steps": effective_steps,
+            "guidance": { "txt_cfg": cfg_scale },
+        });
+        // scheduler — ОТДЕЛЬНОЕ поле API (не sample_method): имя шедулера
+        // из /sdcpp/v1/capabilities (напр. "discrete"). Актуальные пресеты
+        // каталога его не задают: при наличии custom_sigmas шедулер
+        // игнорируется (см. SamplePlan::resolve), иначе работает дефолт sd.cpp.
+        if let Some(sched) = scheduler {
+            if !sched.is_empty() {
+                sample_params["scheduler"] = serde_json::json!(sched);
+            }
+        }
+        if let Some(s) = custom_sigmas {
+            if !s.is_empty() {
+                sample_params["custom_sigmas"] = serde_json::json!(s);
+            }
+        }
+        let mut body = serde_json::json!({
             "prompt": prompt,
             "width": w,
             "height": h,
             "seed": seed,
             "batch_count": 1,
             "ref_images": ref_images_b64,
-            "sample_params": {
-                "sample_method": "euler",
-                "sample_steps": steps,
-                "guidance": { "txt_cfg": cfg_scale },
-            },
+            "sample_params": sample_params,
             "output_format": "png",
         });
+        if let Some(h) = hires {
+            if !h.is_null() {
+                body["hires"] = h.clone();
+            }
+        }
+        if let Some(i2i) = img2img {
+            if !ref_images_b64.is_empty() {
+                return Err(
+                    "img2img и ref_images взаимоисключающие режимы — одновременно задавать нельзя.".to_string(),
+                );
+            }
+            body["init_image"] = serde_json::json!(i2i.init_b64);
+            body["strength"] = serde_json::json!(i2i.strength.clamp(0.0, 1.0));
+        }
         log_cb(format!(
-            "🎨 Генерация: {}x{}, steps={}, cfg={}, refs={}…",
-            w, h, steps, cfg_scale, ref_images_b64.len()
+            "🎨 Генерация: {}x{}, steps={}, cfg={}, refs={}{}…",
+            w,
+            h,
+            effective_steps,
+            cfg_scale,
+            ref_images_b64.len(),
+            img2img.map(|i| format!(", init_image в {}x{}, strength {:.2}", w, h, i.strength)).unwrap_or_default()
         ));
         let t0 = Instant::now();
 
@@ -405,6 +480,21 @@ impl ImageEngine {
     }
 }
 
+/// Дефолтный denoise-strength апскейла продукта. Выбран юзером 19.10.2026
+/// по A/B-сетке U*_S42 (`report.upscale_ab.json`, плитки d025/d035/d045):
+/// d045 — максимум новодобавленной детализации; приёмка «рискует композиции»
+/// не сработала: источник 1024² → 2048², композиция держится фактическим
+/// латентом с strength-обрезкой сигм.
+pub const UPSCALE_STRENGTH_DEFAULT: f32 = 0.45;
+
+/// Целевые размеры апскейла ×2: каждая сторона удваивается, но не превышает
+/// 2048 (потолок VRAM — hires-fix bench тоже останавливается на 2048²;
+/// encode/decodebrask 4096² тайлам и вовсе не проверен). round32 сохраняется.
+pub fn upscale_target_dims(width: u32, height: u32) -> (u32, u32) {
+    const MAX_SIDE: u32 = 2048;
+    (round32(((width * 2).min(MAX_SIDE)).max(32)), round32(((height * 2).min(MAX_SIDE)).max(32)))
+}
+
 impl Drop for ImageEngine {
     fn drop(&mut self) {
         let pid = self.child.id();
@@ -478,7 +568,22 @@ where
     L: Fn(String) + Clone,
 {
     let engine = ImageEngine::new(engine_dir, bundle_dir, entry, variant_pref, log_cb.clone())?;
-    engine.generate(prompt, width, height, steps, cfg_scale, seed, &[], out_path, cancel_flag, log_cb)
+    engine.generate(
+        prompt,
+        width,
+        height,
+        steps,
+        cfg_scale,
+        seed,
+        &[],
+        out_path,
+        cancel_flag,
+        log_cb,
+        entry.preset.custom_sigmas.as_deref(),
+        entry.preset.scheduler.as_deref(),
+        None,
+        None,
+    )
 }
 
 /// One-shot edit: референсы читаются с диска В ПОРЯДКЕ массива → ref_images[].
@@ -540,6 +645,64 @@ where
         out_path,
         cancel_flag,
         log_cb,
+        entry.preset.custom_sigmas.as_deref(),
+        entry.preset.scheduler.as_deref(),
+        None,
+        None,
+    )
+}
+
+/// One-shot upscale: исходник с диска → img2img ×2 (init_image + strength).
+/// Canvas = `upscale_target_dims` (стороны ×2, потолок 2048). Референсы не
+/// задаются (img2img несовместим с ref_images). Сигма-профиль пресета —
+/// как у обычной генерации: шаги обрезаются по `strength`.
+pub fn upscale_image_files<L>(
+    engine_dir: &Path,
+    bundle_dir: &Path,
+    entry: &ImageBundleEntry,
+    variant_pref: Option<&str>,
+    prompt: &str,
+    strength: f32,
+    source_path: &str,
+    seed: i64,
+    out_path: &Path,
+    cancel_flag: Option<Arc<AtomicBool>>,
+    log_cb: L,
+) -> Result<ImageGenResult, String>
+where
+    L: Fn(String) + Clone,
+{
+    let mut f = std::fs::File::open(source_path)
+        .map_err(|e| format!("Не найден исходник апскейла {}: {}", source_path, e))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).map_err(|e| format!("Ошибка чтения {}: {}", source_path, e))?;
+    use base64::Engine;
+    let init_b64 = base64::engine::general_purpose::STANDARD.encode(&buf);
+    let dims = ref_size::dimensions_from_path(Path::new(source_path))
+        .ok_or_else(|| format!("Не определить размеры исходника {}", source_path))?;
+    let (w, h) = upscale_target_dims(dims.0, dims.1);
+    if (w, h) != (dims.0 * 2, dims.1 * 2) && (dims.0 * 2 > 2048 || dims.1 * 2 > 2048) {
+        log_cb(format!(
+            "ℹ️ Цель апскейла урезана потолком 2048 по стороне: {}x{} → {}x{}.",
+            dims.0, dims.1, w, h
+        ));
+    }
+    let engine = ImageEngine::new(engine_dir, bundle_dir, entry, variant_pref, log_cb.clone())?;
+    engine.generate(
+        prompt,
+        w,
+        h,
+        entry.preset.steps,
+        entry.preset.cfg_scale,
+        seed,
+        &[],
+        out_path,
+        cancel_flag,
+        log_cb,
+        entry.preset.custom_sigmas.as_deref(),
+        entry.preset.scheduler.as_deref(),
+        None,
+        Some(&Img2Img { init_b64, strength }),
     )
 }
 
@@ -552,6 +715,15 @@ mod tests {
         assert_eq!(round32(1024), 1024);
         assert_eq!(round32(1000), 1024);
         assert_eq!(round32(1), 32);
+    }
+
+    #[test]
+    fn upscale_target_doubles_and_caps_at_2048() {
+        assert_eq!(upscale_target_dims(1024, 1024), (2048, 2048));
+        assert_eq!(upscale_target_dims(512, 512), (1024, 1024));
+        assert_eq!(upscale_target_dims(1600, 1024), (2048, 2048));
+        assert_eq!(upscale_target_dims(300, 200), (608, 416));
+        assert_eq!(upscale_target_dims(2048, 2048), (2048, 2048));
     }
 
     #[test]

@@ -381,6 +381,7 @@
     constructor() {
       super(...arguments);
       this.busy = false;
+      this.appliedBundle = "";
     }
     connectedCallback() {
       if (this.root) return;
@@ -388,6 +389,11 @@
       this.root.innerHTML = `
       <style>${STYLE}</style>
       <div>
+        <div class="row">
+          <label>\u0411\u0430\u043D\u0434\u043B:</label>
+          <select id="bundle" style="flex:1; min-width:220px;"><option value="">\u2026</option></select>
+          <button id="activate" class="primary" style="display:none;">\u0410\u043A\u0442\u0438\u0432\u0438\u0440\u043E\u0432\u0430\u0442\u044C</button>
+        </div>
         <div class="row"><label>\u041D\u0430\u0431\u043E\u0440:</label><span id="label" class="hint">\u2026</span></div>
         <div id="note" class="hint"></div>
         <ul class="files" id="files"></ul>
@@ -403,6 +409,8 @@
           <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
         </div>
       </div>`;
+      this.root.getElementById("bundle").addEventListener("change", () => this.onBundleChange());
+      this.root.getElementById("activate").addEventListener("click", () => this.onActivate());
       this.root.getElementById("download").addEventListener("click", () => this.onDownload());
       this.root.getElementById("remove").addEventListener("click", () => this.onRemove());
       void this.refresh();
@@ -442,7 +450,46 @@
         this.root.getElementById("label").textContent = `\u041E\u0448\u0438\u0431\u043A\u0430: ${e}`;
         return;
       }
-      this.root.getElementById("label").textContent = info.label;
+      this.appliedBundle = info.bundle_name;
+      const sel = this.root.getElementById("bundle");
+      let catalog = [];
+      try {
+        catalog = await getImageModelsCatalog();
+      } catch {
+      }
+      sel.innerHTML = "";
+      const statusMap = /* @__PURE__ */ new Map();
+      statusMap.set(info.bundle_name, info);
+      for (const entry of catalog) {
+        if (statusMap.has(entry.name)) continue;
+        try {
+          statusMap.set(entry.name, await getImageBundleInfo(entry.name));
+        } catch {
+        }
+      }
+      if (catalog.length === 0) {
+        const o = document.createElement("option");
+        o.value = info.bundle_name;
+        o.textContent = info.label;
+        sel.appendChild(o);
+      } else {
+        for (const entry of catalog) {
+          const st = statusMap.get(entry.name);
+          const o = document.createElement("option");
+          o.value = entry.name;
+          if (!st) {
+            o.textContent = `${entry.label} (\u043D\u0435 \u0441\u043A\u0430\u0447\u0430\u043D)`;
+          } else if (st.fully_downloaded) {
+            o.textContent = `${st.label} \u2014 \u0441\u043A\u0430\u0447\u0430\u043D${entry.is_default ? " (\u043F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E)" : ""}`;
+          } else {
+            o.textContent = `${st.label} \u2014 \u0447\u0430\u0441\u0442\u0438\u0447\u043D\u043E (${st.files.filter((f) => f.exists).length}/${st.files.length})`;
+          }
+          sel.appendChild(o);
+        }
+      }
+      sel.value = info.bundle_name;
+      this.root.getElementById("activate").style.display = "none";
+      this.root.getElementById("label").textContent = `${info.label}${info.fully_downloaded ? "" : " (\u043D\u0435 \u0432\u0441\u0435 \u0444\u0430\u0439\u043B\u044B \u0441\u043A\u0430\u0447\u0430\u043D\u044B)"}`;
       this.root.getElementById("note").textContent = info.note || "";
       const ul = this.root.getElementById("files");
       ul.innerHTML = "";
@@ -464,10 +511,29 @@
       dlBtn.textContent = anyExists ? "\u0414\u043E\u043A\u0430\u0447\u0430\u0442\u044C \u0444\u0430\u0439\u043B\u044B" : "\u0421\u043A\u0430\u0447\u0430\u0442\u044C \u043D\u0430\u0431\u043E\u0440";
       this.root.getElementById("remove").style.display = info.fully_downloaded ? "inline-block" : "none";
       try {
-        const mem = await estimateImageMemory();
+        const mem = await estimateImageMemory(info.bundle_name);
         const gb = (mb) => `${(mb / 1024).toFixed(1)} \u0413\u0411`;
         this.root.getElementById("mem").textContent = `GPU: ${info.vram_fast_gb ?? "?"} \u0413\u0411 (\u0431\u044B\u0441\u0442\u0440\u043E) / ${info.vram_min_gb ?? "?"} \u0413\u0411 (\u043C\u0438\u043D.) \xB7 \u0441\u0435\u0439\u0447\u0430\u0441 \u0441\u0432\u043E\u0431\u043E\u0434\u043D\u043E ${gb(mem.estimate.vram_free_mb)} VRAM / ${gb(mem.estimate.ram_free_mb)} RAM \u2014 ${mem.message}`;
       } catch {
+      }
+    }
+    onBundleChange() {
+      const sel = this.root.getElementById("bundle");
+      this.root.getElementById("activate").style.display = sel.value !== this.appliedBundle ? "inline-block" : "none";
+    }
+    async onActivate() {
+      const sel = this.root.getElementById("bundle");
+      if (this.busy || !sel.value) return;
+      this.busy = true;
+      try {
+        await setSelectedImageBundle(sel.value);
+        notifyBundleChanged();
+        toast(`\u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0439 \u0431\u0430\u043D\u0434\u043B: ${sel.value}`);
+      } catch (e) {
+        toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u0430\u043A\u0442\u0438\u0432\u0430\u0446\u0438\u0438 \u0431\u0430\u043D\u0434\u043B\u0430: ${e}`, "error");
+      } finally {
+        this.busy = false;
+        await this.refresh();
       }
     }
     async onDownload() {
@@ -490,7 +556,7 @@
           const tail = base.split(/[\\/]/).pop() ?? "";
           target = tail === cur.bundle_name ? base : base.endsWith(sep) ? `${base}${cur.bundle_name}` : `${base}${sep}${cur.bundle_name}`;
         }
-        await downloadImageBundle(target);
+        await downloadImageBundle(target, cur.bundle_name);
         notifyBundleChanged();
         toast("\u041D\u0430\u0431\u043E\u0440 \u0438\u0437\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u0439 \u0441\u043A\u0430\u0447\u0430\u043D!");
       } catch (e) {
@@ -506,7 +572,8 @@
       if (this.busy) return;
       this.busy = true;
       try {
-        await removeImageBundle();
+        const cur = await getImageBundleInfo();
+        await removeImageBundle(cur.bundle_name);
         notifyBundleChanged();
         toast("\u0424\u0430\u0439\u043B\u044B \u043D\u0430\u0431\u043E\u0440\u0430 \u0443\u0434\u0430\u043B\u0435\u043D\u044B.");
       } catch (e) {
@@ -679,7 +746,7 @@
       this.setProgress(0, 0);
       try {
         const cur = await getImageBundleInfo();
-        await downloadImageBundle(cur.save_dir);
+        await downloadImageBundle(cur.save_dir, cur.bundle_name);
         notifyBundleChanged();
         toast("\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u044E\u0449\u0438\u0435 \u0444\u0430\u0439\u043B\u044B \u043D\u0430\u0431\u043E\u0440\u0430 \u0441\u043A\u0430\u0447\u0430\u043D\u044B!");
       } catch (e) {
@@ -763,26 +830,29 @@
   function getImageModelsCatalog() {
     return invoke("plugin:image-engine|get_image_models_catalog");
   }
-  function getImageBundleInfo() {
-    return invoke("plugin:image-engine|get_image_bundle_info");
+  function getImageBundleInfo(bundleName) {
+    return invoke("plugin:image-engine|get_image_bundle_info", { bundleName: bundleName ?? null });
   }
-  function downloadImageBundle(saveDir) {
-    return invoke("plugin:image-engine|download_image_bundle", { saveDir });
+  function setSelectedImageBundle(bundleName) {
+    return invoke("plugin:image-engine|set_selected_image_bundle", { bundleName });
   }
-  function validateImageBundleDir(path) {
-    return invoke("plugin:image-engine|validate_image_bundle_dir", { path });
+  function downloadImageBundle(saveDir, bundleName) {
+    return invoke("plugin:image-engine|download_image_bundle", { saveDir, bundleName: bundleName ?? null });
+  }
+  function validateImageBundleDir(path, bundleName) {
+    return invoke("plugin:image-engine|validate_image_bundle_dir", { path, bundleName: bundleName ?? null });
   }
   function setImageBundleDir(path) {
     return invoke("plugin:image-engine|set_image_bundle_dir", { path });
   }
-  function removeImageBundle() {
-    return invoke("plugin:image-engine|remove_image_bundle");
+  function removeImageBundle(bundleName) {
+    return invoke("plugin:image-engine|remove_image_bundle", { bundleName: bundleName ?? null });
   }
   function removeImageBundleFromList() {
     return invoke("plugin:image-engine|remove_image_bundle_from_list");
   }
-  function estimateImageMemory() {
-    return invoke("plugin:image-engine|estimate_image_memory");
+  function estimateImageMemory(bundleName) {
+    return invoke("plugin:image-engine|estimate_image_memory", { bundleName: bundleName ?? null });
   }
   function generateImage(opts) {
     return invoke("plugin:image-engine|generate_image", {
@@ -792,7 +862,8 @@
       steps: opts.steps ?? null,
       cfgScale: opts.cfgScale ?? null,
       seed: opts.seed ?? null,
-      outPath: opts.outPath ?? null
+      outPath: opts.outPath ?? null,
+      bundleName: opts.bundleName ?? null
     });
   }
   function editImage(opts) {
@@ -804,7 +875,8 @@
       steps: opts.steps ?? null,
       cfgScale: opts.cfgScale ?? null,
       seed: opts.seed ?? null,
-      outPath: opts.outPath ?? null
+      outPath: opts.outPath ?? null,
+      bundleName: opts.bundleName ?? null
     });
   }
 

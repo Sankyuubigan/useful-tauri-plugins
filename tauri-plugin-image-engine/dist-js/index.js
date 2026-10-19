@@ -33,26 +33,30 @@ export function setImageEngineDir(path) {
 export function getImageModelsCatalog() {
     return invoke('plugin:image-engine|get_image_models_catalog');
 }
-export function getImageBundleInfo() {
-    return invoke('plugin:image-engine|get_image_bundle_info');
+export function getImageBundleInfo(bundleName) {
+    return invoke('plugin:image-engine|get_image_bundle_info', { bundleName: bundleName ?? null });
 }
-export function downloadImageBundle(saveDir) {
-    return invoke('plugin:image-engine|download_image_bundle', { saveDir });
+/** Выбрать активный бандл каталога (пустая строка => сброс на дефолт). */
+export function setSelectedImageBundle(bundleName) {
+    return invoke('plugin:image-engine|set_selected_image_bundle', { bundleName });
 }
-export function validateImageBundleDir(path) {
-    return invoke('plugin:image-engine|validate_image_bundle_dir', { path });
+export function downloadImageBundle(saveDir, bundleName) {
+    return invoke('plugin:image-engine|download_image_bundle', { saveDir, bundleName: bundleName ?? null });
+}
+export function validateImageBundleDir(path, bundleName) {
+    return invoke('plugin:image-engine|validate_image_bundle_dir', { path, bundleName: bundleName ?? null });
 }
 export function setImageBundleDir(path) {
     return invoke('plugin:image-engine|set_image_bundle_dir', { path });
 }
-export function removeImageBundle() {
-    return invoke('plugin:image-engine|remove_image_bundle');
+export function removeImageBundle(bundleName) {
+    return invoke('plugin:image-engine|remove_image_bundle', { bundleName: bundleName ?? null });
 }
 export function removeImageBundleFromList() {
     return invoke('plugin:image-engine|remove_image_bundle_from_list');
 }
-export function estimateImageMemory() {
-    return invoke('plugin:image-engine|estimate_image_memory');
+export function estimateImageMemory(bundleName) {
+    return invoke('plugin:image-engine|estimate_image_memory', { bundleName: bundleName ?? null });
 }
 export function generateImage(opts) {
     return invoke('plugin:image-engine|generate_image', {
@@ -63,6 +67,7 @@ export function generateImage(opts) {
         cfgScale: opts.cfgScale ?? null,
         seed: opts.seed ?? null,
         outPath: opts.outPath ?? null,
+        bundleName: opts.bundleName ?? null,
     });
 }
 export function editImage(opts) {
@@ -75,6 +80,7 @@ export function editImage(opts) {
         cfgScale: opts.cfgScale ?? null,
         seed: opts.seed ?? null,
         outPath: opts.outPath ?? null,
+        bundleName: opts.bundleName ?? null,
     });
 }
 // Регистрируем Web Components при импорте пакета.

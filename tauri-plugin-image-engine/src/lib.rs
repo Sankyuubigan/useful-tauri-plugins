@@ -55,6 +55,7 @@ pub fn init() -> TauriPlugin<Wry> {
             commands::set_image_engine_dir,
             commands::get_image_models_catalog,
             commands::get_image_bundle_info,
+            commands::set_selected_image_bundle,
             commands::validate_image_bundle_dir,
             commands::set_image_bundle_dir,
             commands::download_image_bundle,

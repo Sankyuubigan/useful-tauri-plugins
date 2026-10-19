@@ -81,6 +81,10 @@ export interface ImagePreset {
   height: number
   steps: number
   seed: number
+  /** Инвариант Turbo: len(custom_sigmas) === steps, последняя сигма 0.0. */
+  custom_sigmas?: number[] | null
+  scheduler?: string | null
+  native_sigma_preset?: string | null
 }
 
 export interface BundleFile {
@@ -145,12 +149,17 @@ export function getImageModelsCatalog(): Promise<ImageBundleEntry[]> {
   return invoke<ImageBundleEntry[]>('plugin:image-engine|get_image_models_catalog')
 }
 
-export function getImageBundleInfo(): Promise<ImageBundleInfo> {
-  return invoke<ImageBundleInfo>('plugin:image-engine|get_image_bundle_info')
+export function getImageBundleInfo(bundleName?: string | null): Promise<ImageBundleInfo> {
+  return invoke<ImageBundleInfo>('plugin:image-engine|get_image_bundle_info', { bundleName: bundleName ?? null })
 }
 
-export function downloadImageBundle(saveDir: string): Promise<ImageBundleInfo> {
-  return invoke<ImageBundleInfo>('plugin:image-engine|download_image_bundle', { saveDir })
+/** Выбрать активный бандл каталога (пустая строка => сброс на дефолт). */
+export function setSelectedImageBundle(bundleName: string): Promise<ImageBundleInfo> {
+  return invoke<ImageBundleInfo>('plugin:image-engine|set_selected_image_bundle', { bundleName })
+}
+
+export function downloadImageBundle(saveDir: string, bundleName?: string | null): Promise<ImageBundleInfo> {
+  return invoke<ImageBundleInfo>('plugin:image-engine|download_image_bundle', { saveDir, bundleName: bundleName ?? null })
 }
 
 export interface ImageBundleValidate {
@@ -160,24 +169,24 @@ export interface ImageBundleValidate {
   missing: string[]
 }
 
-export function validateImageBundleDir(path: string): Promise<ImageBundleValidate> {
-  return invoke<ImageBundleValidate>('plugin:image-engine|validate_image_bundle_dir', { path })
+export function validateImageBundleDir(path: string, bundleName?: string | null): Promise<ImageBundleValidate> {
+  return invoke<ImageBundleValidate>('plugin:image-engine|validate_image_bundle_dir', { path, bundleName: bundleName ?? null })
 }
 
 export function setImageBundleDir(path: string): Promise<ImageBundleInfo> {
   return invoke<ImageBundleInfo>('plugin:image-engine|set_image_bundle_dir', { path })
 }
 
-export function removeImageBundle(): Promise<ImageBundleInfo> {
-  return invoke<ImageBundleInfo>('plugin:image-engine|remove_image_bundle')
+export function removeImageBundle(bundleName?: string | null): Promise<ImageBundleInfo> {
+  return invoke<ImageBundleInfo>('plugin:image-engine|remove_image_bundle', { bundleName: bundleName ?? null })
 }
 
 export function removeImageBundleFromList(): Promise<ImageBundleInfo> {
   return invoke<ImageBundleInfo>('plugin:image-engine|remove_image_bundle_from_list')
 }
 
-export function estimateImageMemory(): Promise<ImageMemoryInfo> {
-  return invoke<ImageMemoryInfo>('plugin:image-engine|estimate_image_memory')
+export function estimateImageMemory(bundleName?: string | null): Promise<ImageMemoryInfo> {
+  return invoke<ImageMemoryInfo>('plugin:image-engine|estimate_image_memory', { bundleName: bundleName ?? null })
 }
 
 // ─────────────────────────── Генерация ───────────────────────────
@@ -190,6 +199,7 @@ export interface GenerateOptions {
   cfgScale?: number | null
   seed?: number | null
   outPath?: string | null
+  bundleName?: string | null
 }
 
 export function generateImage(opts: GenerateOptions): Promise<ImageGenResult> {
@@ -201,6 +211,7 @@ export function generateImage(opts: GenerateOptions): Promise<ImageGenResult> {
     cfgScale: opts.cfgScale ?? null,
     seed: opts.seed ?? null,
     outPath: opts.outPath ?? null,
+    bundleName: opts.bundleName ?? null,
   })
 }
 
@@ -218,6 +229,7 @@ export function editImage(opts: EditOptions): Promise<ImageGenResult> {
     cfgScale: opts.cfgScale ?? null,
     seed: opts.seed ?? null,
     outPath: opts.outPath ?? null,
+    bundleName: opts.bundleName ?? null,
   })
 }
 

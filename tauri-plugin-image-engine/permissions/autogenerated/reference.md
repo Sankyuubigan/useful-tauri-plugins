@@ -13,6 +13,7 @@ Default permissions for the image-engine plugin.
 - `allow-set-image-engine-dir`
 - `allow-get-image-models-catalog`
 - `allow-get-image-bundle-info`
+- `allow-set-selected-image-bundle`
 - `allow-download-image-bundle`
 - `allow-validate-image-bundle-dir`
 - `allow-set-image-bundle-dir`
@@ -586,6 +587,19 @@ Allow reading the embedded image model bundles catalog.
 <td>
 
 Allow reading download proposal for the default image bundle.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-set-selected-image-bundle`
+
+</td>
+<td>
+
+Allow selecting the active image bundle (catalog entry).
 
 </td>
 </tr>

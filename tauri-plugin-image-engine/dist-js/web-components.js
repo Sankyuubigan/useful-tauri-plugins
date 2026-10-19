@@ -1,4 +1,4 @@
-import { downloadImageBundle, estimateImageMemory, getImageBundleInfo, getImageEngineStatus, installImageEngine, installImageEngineUpdate, notifyBundleChanged, removeImageBundle, removeImageBundleFromList, removeImageEngine, setImageBundleDir, setImageEngineDir, setImageEngineVariant, validateImageBundleDir, } from './index';
+import { downloadImageBundle, estimateImageMemory, getImageBundleInfo, getImageEngineStatus, getImageModelsCatalog, installImageEngine, installImageEngineUpdate, notifyBundleChanged, removeImageBundle, removeImageBundleFromList, removeImageEngine, setImageBundleDir, setImageEngineDir, setImageEngineVariant, setSelectedImageBundle, validateImageBundleDir, } from './index';
 import { checkUpdate, getUpdateState, onUpdateState, setUpdateState } from './updates';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { listen } from '@tauri-apps/api/event';
@@ -362,6 +362,7 @@ class ImageBundlePanel extends HTMLElement {
     constructor() {
         super(...arguments);
         this.busy = false;
+        this.appliedBundle = '';
     }
     connectedCallback() {
         if (this.root)
@@ -370,6 +371,11 @@ class ImageBundlePanel extends HTMLElement {
         this.root.innerHTML = `
       <style>${STYLE}</style>
       <div>
+        <div class="row">
+          <label>Бандл:</label>
+          <select id="bundle" style="flex:1; min-width:220px;"><option value="">…</option></select>
+          <button id="activate" class="primary" style="display:none;">Активировать</button>
+        </div>
         <div class="row"><label>Набор:</label><span id="label" class="hint">…</span></div>
         <div id="note" class="hint"></div>
         <ul class="files" id="files"></ul>
@@ -385,6 +391,8 @@ class ImageBundlePanel extends HTMLElement {
           <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
         </div>
       </div>`;
+        this.root.getElementById('bundle').addEventListener('change', () => this.onBundleChange());
+        this.root.getElementById('activate').addEventListener('click', () => this.onActivate());
         this.root.getElementById('download').addEventListener('click', () => this.onDownload());
         this.root.getElementById('remove').addEventListener('click', () => this.onRemove());
         void this.refresh();
@@ -420,7 +428,52 @@ class ImageBundlePanel extends HTMLElement {
             this.root.getElementById('label').textContent = `Ошибка: ${e}`;
             return;
         }
-        this.root.getElementById('label').textContent = info.label;
+        // Селектор бандлов: активный — текущий; остальные — с меткой скачанности.
+        this.appliedBundle = info.bundle_name;
+        const sel = this.root.getElementById('bundle');
+        let catalog = [];
+        try {
+            catalog = await getImageModelsCatalog();
+        }
+        catch { /* каталог встроен — просто без списка */ }
+        sel.innerHTML = '';
+        const statusMap = new Map();
+        statusMap.set(info.bundle_name, info);
+        for (const entry of catalog) {
+            if (statusMap.has(entry.name))
+                continue;
+            try {
+                statusMap.set(entry.name, await getImageBundleInfo(entry.name));
+            }
+            catch { /* не найден — рисуем '○' ниже */ }
+        }
+        if (catalog.length === 0) {
+            const o = document.createElement('option');
+            o.value = info.bundle_name;
+            o.textContent = info.label;
+            sel.appendChild(o);
+        }
+        else {
+            for (const entry of catalog) {
+                const st = statusMap.get(entry.name);
+                const o = document.createElement('option');
+                o.value = entry.name;
+                if (!st) {
+                    o.textContent = `${entry.label} (не скачан)`;
+                }
+                else if (st.fully_downloaded) {
+                    o.textContent = `${st.label} — скачан${entry.is_default ? ' (по умолчанию)' : ''}`;
+                }
+                else {
+                    o.textContent = `${st.label} — частично (${st.files.filter((f) => f.exists).length}/${st.files.length})`;
+                }
+                sel.appendChild(o);
+            }
+        }
+        sel.value = info.bundle_name;
+        this.root.getElementById('activate').style.display = 'none';
+        this.root.getElementById('label').textContent =
+            `${info.label}${info.fully_downloaded ? '' : ' (не все файлы скачаны)'}`;
         this.root.getElementById('note').textContent = info.note || '';
         const ul = this.root.getElementById('files');
         ul.innerHTML = '';
@@ -445,13 +498,36 @@ class ImageBundlePanel extends HTMLElement {
         dlBtn.textContent = anyExists ? 'Докачать файлы' : 'Скачать набор';
         this.root.getElementById('remove').style.display = info.fully_downloaded ? 'inline-block' : 'none';
         try {
-            const mem = await estimateImageMemory();
+            const mem = await estimateImageMemory(info.bundle_name);
             const gb = (mb) => `${(mb / 1024).toFixed(1)} ГБ`;
             this.root.getElementById('mem').textContent =
                 `GPU: ${info.vram_fast_gb ?? '?'} ГБ (быстро) / ${info.vram_min_gb ?? '?'} ГБ (мин.) · ` +
                     `сейчас свободно ${gb(mem.estimate.vram_free_mb)} VRAM / ${gb(mem.estimate.ram_free_mb)} RAM — ${mem.message}`;
         }
         catch { /* NVML может отсутствовать — не критично */ }
+    }
+    onBundleChange() {
+        const sel = this.root.getElementById('bundle');
+        this.root.getElementById('activate').style.display =
+            sel.value !== this.appliedBundle ? 'inline-block' : 'none';
+    }
+    async onActivate() {
+        const sel = this.root.getElementById('bundle');
+        if (this.busy || !sel.value)
+            return;
+        this.busy = true;
+        try {
+            await setSelectedImageBundle(sel.value);
+            notifyBundleChanged();
+            toast(`Активный бандл: ${sel.value}`);
+        }
+        catch (e) {
+            toast(`Ошибка активации бандла: ${e}`, 'error');
+        }
+        finally {
+            this.busy = false;
+            await this.refresh();
+        }
     }
     async onDownload() {
         if (this.busy)
@@ -476,7 +552,7 @@ class ImageBundlePanel extends HTMLElement {
                 const tail = base.split(/[\\/]/).pop() ?? '';
                 target = tail === cur.bundle_name ? base : (base.endsWith(sep) ? `${base}${cur.bundle_name}` : `${base}${sep}${cur.bundle_name}`);
             }
-            await downloadImageBundle(target);
+            await downloadImageBundle(target, cur.bundle_name);
             notifyBundleChanged();
             toast('Набор изображений скачан!');
         }
@@ -495,7 +571,8 @@ class ImageBundlePanel extends HTMLElement {
             return;
         this.busy = true;
         try {
-            await removeImageBundle();
+            const cur = await getImageBundleInfo();
+            await removeImageBundle(cur.bundle_name);
             notifyBundleChanged();
             toast('Файлы набора удалены.');
         }
@@ -676,7 +753,7 @@ class ImageModelsPanel extends HTMLElement {
         this.setProgress(0, 0);
         try {
             const cur = await getImageBundleInfo();
-            await downloadImageBundle(cur.save_dir);
+            await downloadImageBundle(cur.save_dir, cur.bundle_name);
             notifyBundleChanged();
             toast('Недостающие файлы набора скачаны!');
         }

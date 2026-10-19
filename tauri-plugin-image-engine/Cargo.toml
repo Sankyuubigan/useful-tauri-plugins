@@ -23,6 +23,10 @@ nvml-wrapper = "0.10.0"
 sha2 = "0.10"
 futures-util = "0.3"
 base64 = "0.22"
+# Бенч (Шаг 6/7 PRP): pHash-индикация различий между наборами картинок.
+# Декод только PNG (default-features off) — не раздувать бинарь хоста.
+image_hasher = "3.1"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Единый движок скачивания (SSOT): multi-chunk reqwest + curl + process-фоллбэки,
 # stall/resume/прогресс `downloader:progress`.
@@ -30,6 +34,11 @@ tauri-plugin-downloader = { path = "../tauri-plugin-downloader" }
 
 # Атомарные записи JSON (app_config.json): tmp->rename + sidecar lock.
 ko-json-store = { path = "../ko-json-store" }
+
+[dev-dependencies]
+# Бенч: серверные строки sd-server (pipe_log → log::info!) должны попадать
+# в bench_run.log, иначе диагностика темпа невозможна.
+env_logger = "0.11"
 
 [build-dependencies]
 tauri-plugin = { version = "2", features = ["build"] }

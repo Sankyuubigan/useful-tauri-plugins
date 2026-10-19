@@ -2,6 +2,7 @@
 
 pub mod child_env;
 pub mod client;
+pub mod client_error;
 pub mod config;
 pub mod gateway_installer;
 pub mod gateway_process;
@@ -15,4 +16,5 @@ pub mod reinstall;
 pub mod test_scratch;
 
 pub use client::{ChatMessage, ChatRequest, ComboInfo};
+pub use client_error::{CloudStreamError, CLOUD_EMPTY_STREAM_MARKER};
 pub use config::{load_config, router_dir, save_config, RouterConfig};

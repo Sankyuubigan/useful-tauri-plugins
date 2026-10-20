@@ -13,6 +13,7 @@ members = [
     "tauri-plugin-ytdlp",
     "tauri-plugin-system1",
     "ko-json-store",
+    "ko-code-tools",
     "agent-tools",
 ]
 

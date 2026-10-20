@@ -1,0 +1,21 @@
+[package]
+name = "ko-code-tools"
+version = "0.1.0"
+edition = "2021"
+description = "Ядро кодо-тулов (SSOT): файлы, поиск, shell. Общее для CLI agent-tools и хостов (King Orch)"
+license = "MIT"
+
+# Лёгкое ядро: без AST-парсеров и без C-компиляции (правило репозитория my-tauri-plugins).
+# syn/oxc/rustpython живут ТОЛЬКО в CLI-крейте agent-tools (решение задачи 15.10.26).
+[dependencies]
+serde_json = { workspace = true }
+regex = "1"
+ignore = "0.4"
+globset = "0.4"
+# Логирование объёмов до/после трансформаций (write/edit/log-prune) — правило
+# «логирование до/после». Лёгкий крейт, без C-компиляции.
+log = { workspace = true }
+
+[lib]
+name = "ko_code_tools"
+path = "src/lib.rs"

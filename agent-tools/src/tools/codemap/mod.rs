@@ -23,6 +23,7 @@
 //! языков не расходятся дальше этой границы: правила ранжирования и рендера
 //! существуют в одном экземпляре.
 
+pub mod body;
 pub mod clock;
 pub mod cli;
 
@@ -32,6 +33,7 @@ pub mod flat_lang;
 pub mod graph;
 pub mod inventory;
 pub mod lang;
+pub mod lookup;
 pub mod mcp;
 pub mod model;
 pub mod parse;
@@ -40,6 +42,7 @@ pub mod rank;
 pub mod render;
 pub mod rust_lang;
 pub mod scan;
+pub mod skeleton;
 pub mod search;
 pub mod store;
 pub mod tags;

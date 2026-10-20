@@ -152,6 +152,33 @@ pub fn tool_definitions() -> Vec<Value> {
                 "required": ["symbol"],
             }),
         ),
+        tool(
+            "codemap_get_skeleton",
+            "Скелет ОДНОГО файла: импорты и сигнатуры символов с номерами строк, без тел. \
+             file — путь относительно корня проекта. Индекс не нужен и на диск ничего не \
+             пишется. Тело конкретного символа — отдельным вызовом codemap_get_body.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": { "type": "string", "description": "Путь к файлу относительно корня" }
+                },
+                "required": ["file"],
+            }),
+        ),
+        tool(
+            "codemap_get_body",
+            "Тело ОДНОГО символа файла: от строки объявления до начала следующего объявления \
+             (граница названа в ответе). file — путь относительно корня; symbol — имя символа. \
+             Если символ не найден, приходит честная ошибка со списком доступных имён.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "file": { "type": "string", "description": "Путь к файлу относительно корня" },
+                    "symbol": { "type": "string", "description": "Имя символа" }
+                },
+                "required": ["file", "symbol"],
+            }),
+        ),
     ]
 }
 
@@ -190,6 +217,15 @@ fn call_tool(params: &Value, cli: &Cli) -> Result<Value, String> {
         "codemap_callers" => {
             let symbol = string_arg(&arguments, "symbol").ok_or("не указан symbol")?;
             cli.callers(&symbol)
+        }
+        "codemap_get_skeleton" => {
+            let file = string_arg(&arguments, "file").ok_or("не указан file")?;
+            cli.skeleton(&file).map_err(|error| error.to_string())
+        }
+        "codemap_get_body" => {
+            let file = string_arg(&arguments, "file").ok_or("не указан file")?;
+            let symbol = string_arg(&arguments, "symbol").ok_or("не указан symbol")?;
+            cli.body(&file, &symbol).map_err(|error| error.to_string())
         }
         other => return Err(format!("Неизвестный инструмент: {other}")),
     };

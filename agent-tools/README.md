@@ -9,7 +9,8 @@ CLI-набор инструментов для ИИ-агентов кодеро�
 
 | Инструмент | Назначение |
 |------------|------------|
-| [`codemap`](#codemap--карта-репозитория) | карта проекта под бюджет токенов: AST → граф → сжатый текст |
+| [`codemap`](#codemap--карта-репозитория) | карта проекта под бюджет токенов: AST → граф → сжатый текст; плюс разведка по одному файлу (`skeleton`, `body`) |
+| [`code`](#code--ядро-кодо-тулов) | ядро кодо-тулов агента: чтение/запись/поиск/shell — тот же код, что у хостовых тулов King Orch (крейт `ko-code-tools`) |
 | [`consult`](#consult--эскалация-к-умной-модели) | отчёт рабочего агента → умная модель через шлюз 9Router, с жёстким лимитом вызовов |
 | [`websearch`](#websearch--мульти-движковый-поиск) | интернет-поиск через 11 keyless-движков: цепочка фолбэков, multi-query, кеш и статистика отказов |
 
@@ -186,6 +187,8 @@ agent-tools codemap map --path . --tokens 4096 \
 # 4. Точечно: кто зовёт символ / где он живёт.
 agent-tools codemap callers  --path . build_system_prompt
 agent-tools codemap search   --path . run_chat
+agent-tools codemap skeleton --path . src/файл.rs
+agent-tools codemap body     --path . src/файл.rs someSymbol
 
 # 5. Разбор концентрации ранга — в stderr, stdout остаётся чистой картой.
 agent-tools codemap map --path . --explain
@@ -209,6 +212,8 @@ agent-tools codemap map --path . --explain
 | «кто вызывает X» | `codemap callers --path . X` |
 | «что за проект, какие в нём модули» | `codemap map --path . --tokens 2048` |
 | «покажи модуль X изнутри» | `codemap map ... --file <путь к X>` |
+| «что внутри этого файла, но без тел» | `codemap skeleton --path . <файл>` |
+| «покажи тело одного символа» | `codemap body --path . <файл> <символ>` |
 
 Многократный `grep` по всему дереву там, где вопрос про символ, — это ровно то,
 ради чего команда существует: она отвечает на тот же вопрос за один вызов.
@@ -377,7 +382,10 @@ agent-tools codemap mcp --path . --tokens 2048     # JSON-RPC 2.0 построч
 ```
 
 Инструменты: `codemap_index`, `codemap_map` (принимает `tokens` и `files` —
-тот же фокус, что и `--file`), `codemap_search`, `codemap_callers`.
+тот же фокус, что и `--file`), `codemap_search`, `codemap_callers`,
+`codemap_get_skeleton` (скелет одного файла: импорты и сигнатуры с номерами
+строк) и `codemap_get_body` (тело одного символа: от строки объявления до
+начала следующего объявления; граница названа в ответе).
 
 **Весь stdout принадлежит протоколу.** Весь лог — только в stderr; единственное
 место, которое пишет в stdout, — функция `send` в `mcp.rs`.
@@ -404,6 +412,56 @@ set AGENT_TOOLS_LOG=info    # весь лог в stderr (warn по умолча�
   притворяется точной.
 - **Инвентарь показывает не все каталоги.** На 2048 токенах влезает ~6 каталогов
   из 63; остальные честно объявлены строкой `… ещё N каталогов`.
+
+## code — ядро кодо-тулов
+
+Инструмент `code` — доступ к **общему ядру кодо-тулов агента**. Реализация
+живёт в крейте `ko-code-tools` (workspace-member этого же репозитория) и тем же
+кодом пользуется хост King Orch: реализация одна на всех, а не копия в двух
+репозиториях.
+
+Тулы: `read_file`, `read_many_files`, `write_file`, `edit_file`, `grep`, `glob`,
+`list_directory`, `bash`, `run_tests`.
+
+### Использование
+
+```bash
+agent-tools code call read_file --root . --args '{"path":"src/main.rs"}'
+agent-tools code call grep    --root . --args '{"pattern":"fn main","path":"src"}'
+agent-tools code call bash    --root . --args '{"command":"cargo test"}'
+```
+
+`--root` — корень проекта (по умолчанию текущий каталог), `--args` — JSON
+аргументов тула (по умолчанию `{}`). Имя тула — позиционный аргумент; список
+доступен через `agent-tools code mcp` → `tools/list`.
+
+### MCP-режим
+
+```bash
+agent-tools code mcp --root .     # JSON-RPC 2.0 построчно через stdin/stdout
+```
+
+`tools/list` отдаёт те же девять тулов со схемами из ядра; `tools/call` —
+обычный вызов. Ошибка (нет файла, запрет записи) приходит как `isError` с
+текстом причины.
+
+### Политика записи
+
+- CLI: авто-запись только внутри корня (`--root`); вне — честный отказ с
+  причиной и кодом 4. Молчаливой записи нет;
+- линт-гейт («новая синтаксическая ошибка → откат правки») в CLI **не
+  выполняется**: сервера проверки здесь нет, и это объявлено в описании тула.
+  В хосте King Orch гейт подключён к `rust-analyzer`, и правка, ломающая код,
+  откатывается с показом строк вокруг ошибки.
+
+### Что умеет ядро сверх «простого варианта»
+
+- `edit_file` ищет фрагмент тремя попытками: точное совпадение → снятие
+  префиксов номеров строк → нечёткое совпадение (нормализация отступов и
+  пробелов; кандидат должен быть **ровно один**, иначе — отказ с перечнем
+  кандидатов, а не правка не того места);
+- `run_tests` выкидывает PASS-шум из вывода тестов и режет огромный блок
+  упавшего теста **посередине** (голова + хвост): стектрейс в конце остаётся.
 
 ## websearch — мульти-движковый поиск
 
@@ -471,8 +529,17 @@ src/tools/codemap/render.rs  круговой рендер карты под б�
 src/tools/codemap/inventory.rs  секция «Структура проекта»
 src/tools/codemap/store.rs   индекс на диске, кеш по mtime, .git/info/exclude
 src/tools/codemap/search.rs  поиск символов и обратные ссылки
-src/tools/codemap/cli.rs     операции: index / map / search / callers / mcp
+src/tools/codemap/cli.rs     операции: index / map / search / callers / skeleton / body / mcp
 src/tools/codemap/mcp.rs     JSON-RPC-сервер карты (stdout принадлежит протоколу)
+src/tools/codemap/lookup.rs  разбор ОДНОГО файла: язык, строки, теги (для skeleton/body)
+src/tools/codemap/skeleton.rs скелет файла: импорты и сигнатуры с номерами строк
+src/tools/codemap/body.rs    тело одного символа: от объявления до следующего объявления
+src/tools/code/mod.rs        дверь сабкоманды `code` (CLI и MCP)
+src/tools/code/cli.rs        разбор аргументов и вызов тула ядра
+src/tools/code/mcp.rs        JSON-RPC-сервер кодо-тулов (stdout принадлежит протоколу)
+ko-code-tools/                ЯДРО кодо-тулов (SSOT): contract.rs (контракт, хук записи,
+                              хук проверки качества), fs.rs, search.rs, shell.rs,
+                              fuzzy.rs (нечёткое соппадение), pruner.rs (чистка лога тестов)
 ```
 
 Добавление инструмента: создать `src/tools/<name>/`, добавить вариант в

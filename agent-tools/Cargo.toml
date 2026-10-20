@@ -15,6 +15,9 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { workspace = true }
+# Ядро кодо-тулов (SSOT с King Orch): файлы/поиск/shell. Отдаёт CodeTool-контракт
+# тула `code` (CLI call/mcp). regex/ignore/globset приходят через это ядро.
+ko-code-tools = { path = "../ko-code-tools" }
 # Фича blocking аддитивна: остальные крейты воркспейса её не получают.
 # gzip/deflate/brotli — декомпрессия ответов поисковиков (порт web_http.ts decodeBody).
 # Все три бэкенда pure Rust (miniz_oxide, brotli), C не компилируется.

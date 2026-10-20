@@ -21,12 +21,15 @@ use std::path::{Path, PathBuf};
 
 use crate::exit::Exit;
 
+use super::body;
 use super::graph;
+use super::lookup;
 use super::mcp;
 use super::rank;
 use super::render;
 use super::scan;
 use super::search;
+use super::skeleton;
 use super::store;
 
 /// Бюджет токенов карты по умолчанию.
@@ -55,6 +58,12 @@ pub enum CodemapSub {
     /// Показать, кто вызывает символ.
     #[command(about = ABOUT)]
     Callers(CallersArgs),
+    /// Показать скелет одного файла: импорты и сигнатуры с номерами строк.
+    #[command(about = ABOUT)]
+    Skeleton(SkeletonArgs),
+    /// Показать тело одного символа файла.
+    #[command(about = ABOUT)]
+    Body(BodyArgs),
     /// Работать как MCP-сервер (JSON-RPC через stdin/stdout).
     #[command(about = ABOUT)]
     Mcp(McpArgs),
@@ -138,6 +147,35 @@ pub struct CallersArgs {
     /// (для чужих деревьев: крейтов из cargo registry, соседних репозиториев).
     #[arg(long)]
     pub no_cache: bool,
+}
+
+/// Аргументы операции «скелет файла».
+///
+/// Индекс не нужен: операция разбирает ровно один файл и ничего не пишет на
+/// диск. Это делает её пригодной для чужих деревьев без флага `--no-cache` —
+/// кеша там всё равно нет и создавать его нельзя.
+#[derive(Debug, Args, Clone, Default)]
+pub struct SkeletonArgs {
+    /// Корень проекта (по умолчанию текущий каталог).
+    #[arg(long, value_name = "PATH")]
+    pub path: Option<PathBuf>,
+    /// Файл, скелет которого показать (относительно корня).
+    #[arg(value_name = "FILE")]
+    pub file: String,
+}
+
+/// Аргументы операции «тело символа».
+#[derive(Debug, Args, Clone, Default)]
+pub struct BodyArgs {
+    /// Корень проекта (по умолчанию текущий каталог).
+    #[arg(long, value_name = "PATH")]
+    pub path: Option<PathBuf>,
+    /// Файл, в котором ищем символ (относительно корня).
+    #[arg(value_name = "FILE")]
+    pub file: String,
+    /// Имя символа.
+    #[arg(value_name = "SYMBOL")]
+    pub symbol: String,
 }
 
 #[derive(Debug, Args, Clone, Default)]
@@ -271,6 +309,22 @@ impl Cli {
         Ok(out)
     }
 
+    /// Показать скелет одного файла: импорты и сигнатуры с номерами строк.
+    ///
+    /// Индекс не строится и на диск ничего не пишется: операция разбирает
+    /// ровно один файл. Для агента это самый дешёвый способ понять, что в
+    /// файле есть, не тратя контекст на тела функций.
+    pub fn skeleton(&self, file: &str) -> Result<String, lookup::LookupError> {
+        let view = lookup::FileView::open(&self.root, file)?;
+        Ok(skeleton::skeleton(&view))
+    }
+
+    /// Показать тело одного символа файла.
+    pub fn body(&self, file: &str, symbol: &str) -> Result<String, lookup::LookupError> {
+        let view = lookup::FileView::open(&self.root, file)?;
+        body::body(&view, symbol)
+    }
+
     /// Взять индекс, соответствующий текущему состоянию каталога.
     ///
     /// Индекс достраивается, если его нет, и **пересобирается, если он разошёлся с
@@ -336,6 +390,14 @@ pub fn run(argv: Vec<String>) -> Exit {
             let cli = Cli { root: root_of(args.path), tokens: DEFAULT_TOKENS, no_cache: args.no_cache };
             finish(cli.callers(&args.symbol))
         }
+        CodemapSub::Skeleton(args) => {
+            let cli = Cli { root: root_of(args.path), tokens: DEFAULT_TOKENS, no_cache: true };
+            finish_lookup(cli.skeleton(&args.file))
+        }
+        CodemapSub::Body(args) => {
+            let cli = Cli { root: root_of(args.path), tokens: DEFAULT_TOKENS, no_cache: true };
+            finish_lookup(cli.body(&args.file, &args.symbol))
+        }
         CodemapSub::Mcp(args) => {
             let cli = Cli { root: root_of(args.path), tokens: args.tokens, no_cache: false };
             mcp::serve(cli)
@@ -391,7 +453,29 @@ fn finish(result: Result<String, String>) -> Exit {
     }
 }
 
-/// Корень проекта: явный путь либо текущий каталог.
+/// Код возврата операций разведки (`skeleton`, `body`).
+///
+/// Два класса отказа разведены намеренно: «файла нет» и «символа нет» —
+/// ошибка запроса (агент указал не то, код 2), а «файл есть, но не читается
+/// или не разобран» — отказ исполнения (код 4).
+fn finish_lookup(result: Result<String, lookup::LookupError>) -> Exit {
+    match result {
+        Ok(text) => {
+            println!("{text}");
+            Exit::Ok
+        }
+        Err(lookup::LookupError::Input(reason)) => {
+            eprintln!("codemap: {reason}");
+            Exit::Input
+        }
+        Err(lookup::LookupError::Failed(reason)) => {
+            eprintln!("codemap: {reason}");
+            Exit::Internal
+        }
+    }
+}
+
+/// Корневой путь: явный путь либо текущий каталог.
 fn root_of(path: Option<PathBuf>) -> PathBuf {
     path.unwrap_or_else(|| PathBuf::from("."))
 }

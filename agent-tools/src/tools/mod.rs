@@ -9,13 +9,14 @@
 
 use crate::exit::Exit;
 
+pub mod code;
 pub mod codemap;
 pub mod consult;
 pub mod websearch;
 
 /// Реестр инструментов: единственный список, по которому печатается справка
 /// и который обходится при добавлении нового инструмента.
-pub const ALL: &[Tool] = &[Tool::Consult, Tool::Codemap, Tool::Websearch];
+pub const ALL: &[Tool] = &[Tool::Consult, Tool::Codemap, Tool::Code, Tool::Websearch];
 
 /// Инструмент набора.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,6 +25,8 @@ pub enum Tool {
     Consult,
     /// Карта репозитория: AST → лексика → граф → сжатая карта под бюджет.
     Codemap,
+    /// Кодо-тулы ядра ko-code-tools: файлы, поиск, shell (SSOT с King Orch).
+    Code,
     /// Мульти-движковый поиск в интернете без API-ключей (порт web_search.ts).
     Websearch,
 }
@@ -34,6 +37,7 @@ impl Tool {
         match self {
             Tool::Consult => "consult",
             Tool::Codemap => "codemap",
+            Tool::Code => "code",
             Tool::Websearch => "websearch",
         }
     }
@@ -46,6 +50,9 @@ impl Tool {
             }
             Tool::Codemap => {
                 "Построить карту репозитория: AST, граф, ранжирование символов, карта под бюджет токенов"
+            }
+            Tool::Code => {
+                "Файловые/поисковые/shell тула ядра ko-code-tools (read_file, grep, bash, ...) — CLI и MCP"
             }
             Tool::Websearch => {
                 "Поиск в интернете по 11 движкам без API-ключей (chain/parallel, multi-query, MCP-режим)"
@@ -61,6 +68,7 @@ impl Tool {
         match args.first().map(String::as_str) {
             Some("consult") => Some(Tool::Consult),
             Some("codemap") => Some(Tool::Codemap),
+            Some("code") => Some(Tool::Code),
             Some("websearch") => Some(Tool::Websearch),
             _ => None,
         }
@@ -72,6 +80,7 @@ impl Tool {
         match self {
             Tool::Consult => consult::run(args),
             Tool::Codemap => codemap::run(args),
+            Tool::Code => code::run(args),
             Tool::Websearch => websearch::run(args),
         }
     }
@@ -89,6 +98,7 @@ mod tests {
     fn registry_parses_known_tool() {
         assert_eq!(Tool::from_args(&args(&["consult"])), Some(Tool::Consult));
         assert_eq!(Tool::from_args(&args(&["codemap"])), Some(Tool::Codemap));
+        assert_eq!(Tool::from_args(&args(&["code"])), Some(Tool::Code));
         assert_eq!(Tool::from_args(&args(&["websearch"])), Some(Tool::Websearch));
     }
 
@@ -105,6 +115,8 @@ mod tests {
         assert!(!Tool::Consult.about().is_empty());
         assert_eq!(Tool::Codemap.name(), "codemap");
         assert!(!Tool::Codemap.about().is_empty());
+        assert_eq!(Tool::Code.name(), "code");
+        assert!(!Tool::Code.about().is_empty());
         assert_eq!(Tool::Websearch.name(), "websearch");
         assert!(!Tool::Websearch.about().is_empty());
     }
@@ -113,7 +125,7 @@ mod tests {
     fn registry_lists_every_tool() {
         assert_eq!(
             ALL,
-            &[Tool::Consult, Tool::Codemap, Tool::Websearch],
+            &[Tool::Consult, Tool::Codemap, Tool::Code, Tool::Websearch],
             "новый инструмент обязан попасть в ALL"
         );
     }

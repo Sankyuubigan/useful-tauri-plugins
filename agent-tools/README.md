@@ -11,6 +11,7 @@ CLI-набор инструментов для ИИ-агентов кодеро�
 |------------|------------|
 | [`codemap`](#codemap--карта-репозитория) | карта проекта под бюджет токенов: AST → граф → сжатый текст |
 | [`consult`](#consult--эскалация-к-умной-модели) | отчёт рабочего агента → умная модель через шлюз 9Router, с жёстким лимитом вызовов |
+| [`websearch`](#websearch--мульти-движковый-поиск) | интернет-поиск через 11 keyless-движков: цепочка фолбэков, multi-query, кеш и статистика отказов |
 
 # полезные источники
 https://mcp.so/
@@ -404,13 +405,57 @@ set AGENT_TOOLS_LOG=info    # весь лог в stderr (warn по умолча�
 - **Инвентарь показывает не все каталоги.** На 2048 токенах влезает ~6 каталогов
   из 63; остальные честно объявлены строкой `… ещё N каталогов`.
 
+## websearch — мульти-движковый поиск
+
+Прямой порт Deno-тулa `src-tauri/mcp_servers/web_search.ts` из King Orch
+(диф-аудит 1-в-1, см. `king_orch_3/tasks/18.10.26 Порт поисковых тулов в
+agent-tools.md`). 11 keyless-движков: `duckduckgo`, `wiby`, `marginalia`,
+`brave`, `startpage`, `sogou`, `baidu`, `bing`, `juejin`, `csdn`, `exa`,
+с антибот-эвристиками (DDG «anomaly», PoW-челлендж startpage, капчи).
+
+### Использование
+
+```bash
+agent-tools websearch "rust tokio mpsc channel"           # цепочка фолбэков (дефолт)
+agent-tools websearch "rust tokio" --limit 5              # до 5 результатов (3..20)
+agent-tools websearch --queries "tokio,axum"              # multi-query, до 5 запросов
+agent-tools websearch --engines "duckduckgo,brave" ...    # свой список (fan-out)
+agent-tools websearch --stats                             # сводка статистики движков
+agent-tools websearch mcp                                 # MCP: JSON-RPC 2.0 stdin/stdout
+```
+
+Агент вызывает `bash`-ом с `timeout = 120000`: живой поиск иногда идёт
+20–60 с (цепочка движков с дедлайнами). Кеш результатов — 30 минут
+(`search_cache.json` рядом с бинарем, путь умеет переопределяться env
+`KING_ORCH_BINS_DIR`).
+
+### Коды возврата
+
+| Код | Что произошло |
+|-----|---------------|
+| `0` | есть результат (в stdout, формат: `[N] Название`, `Ссылка:`, `Описание:`) |
+| `2` | ошибка ввода (пустой/слишком много запросов, неизвестный флаг) |
+| `3` | все движки упали или вернули пусто — текст причины в stdout; ретрать того же запроса подряд бессмыслен |
+
+### MCP-контракт
+
+`agent-tools websearch mcp` — тот же протокол, что у Deno-сервера
+`web_search.ts`: `initialize` → `tools/list` → `tools/call` c
+`{"name":"WebSearch","arguments":{"query":"...","limit":N}}`. Ответы
+построчно, весь лог — в stderr, stdout принадлежит протоколу.
+
 ## Архитектура
 
 ```text
 src/main.rs                  вход: выбор инструмента, код возврата процесса
-src/exit.rs                  контракт «тул ↔ агент»: коды 0/1/2/3/4
+src/exit.rs                  контракт «тул ↔ агент»: коды 0/1/2/3/4 (websearch: 0/2/3)
 src/logging.rs               минимальный log::Log → stderr
 src/tools/mod.rs             реестр инструментов (Tool, ALL)
+src/tools/websearch/mod.rs   дверь модуля + handler WebSearch (CLI и MCP-вопросы)
+src/tools/websearch/…        http.rs, cache.rs, stats.rs, mcp.rs,
+                             engines/{duckduckgo,wiby,marginalia,brave,
+                             startpage,sogou,baidu,bing,juejin,csdn,exa}.rs,
+                             resolve_engines/run_chain/run_parallel/format_results
 src/tools/consult/cli.rs     аргументы сабкоманды + разбор намерения
 src/tools/consult/state.rs   состояние и лимиты (reserve/refund/is_exhausted)
 src/tools/consult/client.rs  HTTP к OpenAI-совместимому API шлюза

@@ -11,10 +11,11 @@ use crate::exit::Exit;
 
 pub mod codemap;
 pub mod consult;
+pub mod websearch;
 
 /// Реестр инструментов: единственный список, по которому печатается справка
 /// и который обходится при добавлении нового инструмента.
-pub const ALL: &[Tool] = &[Tool::Consult, Tool::Codemap];
+pub const ALL: &[Tool] = &[Tool::Consult, Tool::Codemap, Tool::Websearch];
 
 /// Инструмент набора.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +24,8 @@ pub enum Tool {
     Consult,
     /// Карта репозитория: AST → лексика → граф → сжатая карта под бюджет.
     Codemap,
+    /// Мульти-движковый поиск в интернете без API-ключей (порт web_search.ts).
+    Websearch,
 }
 
 impl Tool {
@@ -31,6 +34,7 @@ impl Tool {
         match self {
             Tool::Consult => "consult",
             Tool::Codemap => "codemap",
+            Tool::Websearch => "websearch",
         }
     }
 
@@ -43,6 +47,9 @@ impl Tool {
             Tool::Codemap => {
                 "Построить карту репозитория: AST, граф, ранжирование символов, карта под бюджет токенов"
             }
+            Tool::Websearch => {
+                "Поиск в интернете по 11 движкам без API-ключей (chain/parallel, multi-query, MCP-режим)"
+            }
         }
     }
 
@@ -54,6 +61,7 @@ impl Tool {
         match args.first().map(String::as_str) {
             Some("consult") => Some(Tool::Consult),
             Some("codemap") => Some(Tool::Codemap),
+            Some("websearch") => Some(Tool::Websearch),
             _ => None,
         }
     }
@@ -64,6 +72,7 @@ impl Tool {
         match self {
             Tool::Consult => consult::run(args),
             Tool::Codemap => codemap::run(args),
+            Tool::Websearch => websearch::run(args),
         }
     }
 }
@@ -80,6 +89,7 @@ mod tests {
     fn registry_parses_known_tool() {
         assert_eq!(Tool::from_args(&args(&["consult"])), Some(Tool::Consult));
         assert_eq!(Tool::from_args(&args(&["codemap"])), Some(Tool::Codemap));
+        assert_eq!(Tool::from_args(&args(&["websearch"])), Some(Tool::Websearch));
     }
 
     #[test]
@@ -95,10 +105,16 @@ mod tests {
         assert!(!Tool::Consult.about().is_empty());
         assert_eq!(Tool::Codemap.name(), "codemap");
         assert!(!Tool::Codemap.about().is_empty());
+        assert_eq!(Tool::Websearch.name(), "websearch");
+        assert!(!Tool::Websearch.about().is_empty());
     }
 
     #[test]
     fn registry_lists_every_tool() {
-        assert_eq!(ALL, &[Tool::Consult, Tool::Codemap], "новый инструмент обязан попасть в ALL");
+        assert_eq!(
+            ALL,
+            &[Tool::Consult, Tool::Codemap, Tool::Websearch],
+            "новый инструмент обязан попасть в ALL"
+        );
     }
 }

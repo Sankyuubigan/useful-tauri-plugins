@@ -16,6 +16,8 @@ path = "src/main.rs"
 [dependencies]
 clap = { workspace = true }
 # Фича blocking аддитивна: остальные крейты воркспейса её не получают.
+# gzip/deflate/brotli — декомпрессия ответов поисковиков (порт web_http.ts decodeBody).
+# Все три бэкенда pure Rust (miniz_oxide, brotli), C не компилируется.
 reqwest = { workspace = true, features = ["blocking"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -23,6 +25,25 @@ thiserror = { workspace = true }
 # log без "std" не умеет set_logger: логгер пишет предупреждения ko-json-store в stderr.
 log = { workspace = true, features = ["std"] }
 ko-json-store = { path = "../ko-json-store" }
+
+# Разжатие ответов поисковиков — ПОРТ decodeBody (web_http.ts) вручную.
+# Фичи reqwest (gzip/deflate/brotli) тянут async-compression, которого нет в
+# кешe этой машины, а crates.io недоступен (SSL reset); flate2/brotli уже в
+# локальном кешe и оба pure-Rust (miniz_oxide), C не компилируется.
+flate2 = "1"
+brotli = "7"
+
+# Инструмент websearch: async-поиск по 11 движкам (порт web_search.ts).
+# Каждый движок = отдельный файл; параллельный режим через join_all.
+tokio = { workspace = true }
+futures-util = { workspace = true }
+# Регулярки выдачи (порт JS-регулярок); \p{L}/\p{N} поддерживаются.
+regex = "1"
+# Bing (u= base64url) и double-decode uddg DDG. Оба pure Rust.
+base64 = "0.22"
+percent-encoding = "2"
+# Разбор URL (sogou_expand_url, source=hostname у startpage). Pure Rust.
+url = "2"
 
 # Инструмент codemap: карта проекта (AST -> лексика -> граф) на чистом Rust.
 # Все парсеры проверены на отсутствие C-компиляции во всём графе зависимостей.

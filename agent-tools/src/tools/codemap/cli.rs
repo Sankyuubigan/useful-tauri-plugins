@@ -64,11 +64,25 @@ const ABOUT: &str = "Построить карту репозитория: ра�
 графом и отдать сжатую карту под бюджет токенов. Работает с любым репозиторием: \
 Rust, TS/JS через oxc, Python; остальные расширения — как плоский текст.";
 
+/// Общий для map/search/callers (и честно отвергаемый index'ом) флаг поля
+/// `no_cache`: смысл у него один — «чужое дерево» (крейт из cargo registry,
+/// соседний репозиторий), у которого нет своего каталога `.codemap` и которому
+/// его создавать нельзя. С кешем (`refresh`) связывать нечего: полная
+/// пересборка при каждом вызове, зато ноль операций записи на диск.
+/// (Поля объявляются в каждой структуре: макрос в позиции полей не работает.)
+
 #[derive(Debug, Args, Clone, Default)]
 pub struct IndexArgs {
     /// Корень проекта (по умолчанию текущий каталог).
     #[arg(long, value_name = "PATH")]
     pub path: Option<PathBuf>,
+    /// Вычислить ответ в памяти: не читать кеш и ничего не записывать на диск
+    /// (для чужих деревьев: крейтов из cargo registry, соседних репозиториев).
+    ///
+    /// Для `index` флаг валиден только чтобы получить отказ с объяснением:
+    /// операция существует ради записи кеша на диск.
+    #[arg(long)]
+    pub no_cache: bool,
 }
 
 #[derive(Debug, Args, Clone, Default)]
@@ -89,6 +103,10 @@ pub struct MapArgs {
     /// stdout флаг ничего не пишет — это канал карты (и JSON-RPC в MCP-режиме).
     #[arg(long)]
     pub explain: bool,
+    /// Вычислить ответ в памяти: не читать кеш и ничего не записывать на диск
+    /// (для чужих деревьев: крейтов из cargo registry, соседних репозиториев).
+    #[arg(long)]
+    pub no_cache: bool,
 }
 
 #[derive(Debug, Args, Clone, Default)]
@@ -102,6 +120,10 @@ pub struct SearchArgs {
     /// Сколько результатов вернуть.
     #[arg(long, value_name = "N", default_value_t = 10)]
     pub limit: usize,
+    /// Вычислить ответ в памяти: не читать кеш и ничего не записывать на диск
+    /// (для чужих деревьев: крейтов из cargo registry, соседних репозиториев).
+    #[arg(long)]
+    pub no_cache: bool,
 }
 
 #[derive(Debug, Args, Clone, Default)]
@@ -112,6 +134,10 @@ pub struct CallersArgs {
     /// Имя символа.
     #[arg(value_name = "SYMBOL")]
     pub symbol: String,
+    /// Вычислить ответ в памяти: не читать кеш и ничего не записывать на диск
+    /// (для чужих деревьев: крейтов из cargo registry, соседних репозиториев).
+    #[arg(long)]
+    pub no_cache: bool,
 }
 
 #[derive(Debug, Args, Clone, Default)]
@@ -134,6 +160,11 @@ pub struct Cli {
     pub root: PathBuf,
     /// Бюджет токенов карты по умолчанию.
     pub tokens: u32,
+    /// Не использовать дисковый кеш: считать всё в памяти (см. [`store::compute_only`]).
+    ///
+    /// MCP-режим флага не имеет: корень MCP-сервера — «свой» проект, кеш там
+    /// уместен всегда.
+    pub no_cache: bool,
 }
 
 impl Cli {
@@ -143,6 +174,7 @@ impl Cli {
         Cli {
             root: PathBuf::from("."),
             tokens: DEFAULT_TOKENS,
+            no_cache: false,
         }
     }
 
@@ -239,16 +271,23 @@ impl Cli {
         Ok(out)
     }
 
-/// Взять индекс, соответствующий текущему состоянию каталога.
-///
-/// Индекс достраивается, если его нет, и **пересобирается, если он разошёлся с
-/// диском**: удалённый файл обязан исчезнуть из карты, а добавленный — появиться
-/// без ручного `codemap index`. Проверка стоит одного обхода метаданных, поэтому
-/// держать карту нарочно устаревшей было бы уже не экономией, а просто
-/// неправдой.
-fn load_or_build(&self) -> Result<super::model::Index, String> {
-    store::refresh(&self.root)
-}
+    /// Взять индекс, соответствующий текущему состоянию каталога.
+    ///
+    /// Индекс достраивается, если его нет, и **пересобирается, если он разошёлся с
+    /// диском**: удалённый файл обязан исчезнуть из карты, а добавленный — появиться
+    /// без ручного `codemap index`. Проверка стоит одного обхода метаданных, поэтому
+    /// держать карту нарочно устаревшей было бы уже не экономией, а просто
+    /// неправдой.
+    ///
+    /// В режиме `--no-cache` диск вообще не участвует в хранении: полный
+    /// scan+parse в памяти при каждом вызове — плата за запрет создавать что-либо
+    /// в чужом корне ([`store::compute_only`]).
+    fn load_or_build(&self) -> Result<super::model::Index, String> {
+        match self.no_cache {
+            true => store::compute_only(&self.root),
+            false => store::refresh(&self.root),
+        }
+    }
 }
 
 /// Точка входа инструмента: разбор аргументов и выбор режима.
@@ -272,23 +311,33 @@ pub fn run(argv: Vec<String>) -> Exit {
 
     match parsed.command {
         CodemapSub::Index(args) => {
-            let cli = Cli { root: root_of(args.path), tokens: DEFAULT_TOKENS };
+            if args.no_cache {
+                // Честное объяснение вместо generic-отказа clap: смысл операции
+                // прямо противоположен флагу, и подменять его молча нельзя.
+                eprintln!(
+                    "codemap index: флаг --no-cache несовместим: операция существует, \
+                     чтобы построить и сохранить кеш на диске. Для карты чужого дерева \
+                     без записей используйте map/search/callers с --no-cache."
+                );
+                return Exit::Input;
+            }
+            let cli = Cli { root: root_of(args.path), tokens: DEFAULT_TOKENS, no_cache: false };
             finish(cli.index(None))
         }
         CodemapSub::Map(args) => {
-            let cli = Cli { root: root_of(args.path), tokens: args.tokens };
+            let cli = Cli { root: root_of(args.path), tokens: args.tokens, no_cache: args.no_cache };
             finish(cli.map(args.tokens, &args.file, args.explain))
         }
         CodemapSub::Search(args) => {
-            let cli = Cli { root: root_of(args.path), tokens: DEFAULT_TOKENS };
+            let cli = Cli { root: root_of(args.path), tokens: DEFAULT_TOKENS, no_cache: args.no_cache };
             finish(cli.search(&args.query, args.limit))
         }
         CodemapSub::Callers(args) => {
-            let cli = Cli { root: root_of(args.path), tokens: DEFAULT_TOKENS };
+            let cli = Cli { root: root_of(args.path), tokens: DEFAULT_TOKENS, no_cache: args.no_cache };
             finish(cli.callers(&args.symbol))
         }
         CodemapSub::Mcp(args) => {
-            let cli = Cli { root: root_of(args.path), tokens: args.tokens };
+            let cli = Cli { root: root_of(args.path), tokens: args.tokens, no_cache: false };
             mcp::serve(cli)
         }
     }
@@ -436,7 +485,6 @@ mod tests {
     }
 
     /// Фокус обязан менять карту — иначе `--file` объявлен, а не работает.
-///
 /// Проверяется сквозным путём `Cli::map`, а не вызовом `graph::build`: чинить
 /// пришлось именно проводку (флаг разбирался и никуда не передавался), и тест
 /// на внутренний вызов такой поломки не увидел бы.
@@ -468,6 +516,7 @@ fn gate12_focus_flag_moves_the_focused_file_up_the_map() {
     let cli = Cli {
         root: root.clone(),
         tokens: 2_048,
+        no_cache: false,
     };
     let plain = cli.map(2_048, &[], false).expect("карта без фокуса");
     let focused = cli
@@ -500,6 +549,89 @@ fn gate12_focus_flag_moves_the_focused_file_up_the_map() {
     #[test]
     fn mcp_subcommand_parses() {
         assert!(matches!(parse(&["mcp"]), CodemapSub::Mcp(_)));
+    }
+
+    /// Флаг `--no-cache` обязан разбираться на всех операциях чтения карты:
+    /// это единое имя для «чужого дерева» на четырёх командах сразу.
+    #[test]
+    fn no_cache_flag_parses_on_every_read_command() {
+        match parse(&["map", "--no-cache"]) {
+            CodemapSub::Map(args) => assert!(args.no_cache),
+            other => panic!("ожидался map, получен {other:?}"),
+        }
+        match parse(&["search", "handle_payment", "--no-cache"]) {
+            CodemapSub::Search(args) => assert!(args.no_cache),
+            other => panic!("ожидался search, получен {other:?}"),
+        }
+        match parse(&["callers", "handle_payment", "--no-cache"]) {
+            CodemapSub::Callers(args) => assert!(args.no_cache),
+            other => panic!("ожидался callers, получен {other:?}"),
+        }
+        match parse(&["index", "--no-cache"]) {
+            CodemapSub::Index(args) => assert!(args.no_cache),
+            other => panic!("ожидался index, получен {other:?}"),
+        }
+    }
+
+    /// Без флага поведение прежнее: поле по умолчанию выключено.
+    #[test]
+    fn no_cache_is_off_by_default() {
+        match parse(&["map"]) {
+            CodemapSub::Map(args) => assert!(!args.no_cache),
+            other => panic!("ожидался map, получен {other:?}"),
+        }
+    }
+
+    /// `index` существует ради записи кеша на диск: флаг с ним несовместим и
+    /// обязан быть отвергнут кодом ввода с объяснением, а не брошен clap'ом
+    /// generic-текстом про «неизвестный аргумент».
+    #[test]
+    fn index_with_no_cache_is_rejected_as_input_error() {
+        let exit = run(vec![
+            "agent-tools".into(),
+            "codemap".into(),
+            "index".into(),
+            "--no-cache".into(),
+        ]);
+        assert_eq!(exit, Exit::Input);
+    }
+
+    /// Карта чужого дерева в no-cache режиме отвечает, и на диске ничего
+    /// не появляется: ни каталога кеша, ни правок exclude в `.git`.
+    ///
+    /// Исходник обязан содержать и определение, и ссылку: карта ранжирует
+    /// определения по связям, и файл без единой ссылки картой не показывается
+    /// вовсе (см. [`rank::rank_definitions`]) — это независимое от no-cache
+    /// поведение, и тест не должен путать его с отказом флага.
+    #[test]
+    fn map_no_cache_answers_and_writes_nothing() {
+        let root = std::env::temp_dir().join("codemap_cli_no_cache");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".git")).expect("имитация чужого репозитория");
+        std::fs::create_dir_all(root.join("src")).expect("каталог");
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn plain_math() -> u32 { plain_inner() }\n\
+             pub fn plain_inner() -> u32 { 3 }\n",
+        )
+        .expect("исходник");
+
+        let cli = Cli {
+            root: root.clone(),
+            tokens: 1_024,
+            no_cache: true,
+        };
+        let map = cli.map(1_024, &[], false).expect("карта в памяти");
+        assert!(
+            map.contains("plain_math"),
+            "символ чужого дерева обязан попасть в карту:\n{map}"
+        );
+        assert!(!store::index_dir(&root).exists(), "каталог кеша запрещён");
+        assert!(
+            !root.join(".git/info/exclude").exists(),
+            "exclude чужого корня запрещён"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -720,6 +720,91 @@ fn custom_state_file_isolates_counters() {
 
 // ─────────────────────────────── живой шлюз (--ignored) ──────────────────────
 
+/// Сквозной контракт `--no-cache` на настоящем бинаре: карта чужого дерева
+/// приходит в stdout, а на диске не появляется ничего — ни кеша, ни правок
+/// exclude`.git/info`.
+///
+/// Режим существует для крейтов из cargo registry и соседних репозиториев:
+/// составлять их индекс «рядом с кодом» категорически запрещено.
+#[test]
+fn codemap_no_cache_maps_a_foreign_folder_and_writes_nothing() {
+    let dir = tmp_dir("codemap_no_cache");
+    std::fs::create_dir_all(dir.join(".git")).expect("имитация чужого репозитория");
+
+    let source = dir.join("src");
+    std::fs::create_dir_all(&source).expect("каталог исходников чужого дерева");
+    // Определение + ссылка: карта ранжирует определения по связям, и файл
+    // без единой ссылки в карту не попадает вовсе (см. rank::rank_definitions) —
+    // это поведение флага --no-cache не должно маскировать.
+    std::fs::write(
+        source.join("lib.rs"),
+        "pub fn foreign_value() -> u32 { foreign_inner() }\n\
+         pub fn foreign_inner() -> u32 { 7 }\n",
+    )
+    .expect("исходник чужого дерева");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-tools"))
+        .current_dir(&dir)
+        .args(["codemap", "map", "--path", ".", "--no-cache", "--tokens", "512"])
+        .env_remove("ROUTER_BASE_URL")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("запустить бинарь");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "карта чужого дерева провалилась.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("# Карта проекта"),
+        "карта обязана прийти в stdout, а не в файл:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("foreign_value"),
+        "символ чужого дерева обязан попасть в карту:\n{stdout}"
+    );
+    assert!(
+        !dir.join(".codemap").exists(),
+        "в чужом корне обязан не появиться каталог кеша"
+    );
+    assert!(
+        !dir.join(".git/info/exclude").exists(),
+        "exclude чужого корня обязан остаться нетронутым"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Сквозной отказ: `index --no-cache` обязан вернуть код ввода и объяснение,
+/// а не generic-ошибку разбора аргументов.
+#[test]
+fn codemap_index_with_no_cache_rejects_with_honest_message() {
+    let dir = tmp_dir("codemap_index_reject");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_agent-tools"))
+        .current_dir(&dir)
+        .args(["codemap", "index", "--no-cache"])
+        .env_remove("ROUTER_BASE_URL")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("запустить бинарь");
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert_eq!(output.status.code(), Some(2), "код обязан быть ошибкой ввода: {stderr}");
+    assert!(
+        stderr.contains("--no-cache") && stderr.contains("map"),
+        "отказ обязан объяснять альтернативу (map/search/callers), {stderr}"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+
 /// Боевая проверка: настоящий 9Router на `http://localhost:20128/v1` и настоящее
 /// combo `google-low-tier`. Требует запущенного шлюза и тратит один вызов.
 ///

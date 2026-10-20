@@ -138,7 +138,29 @@ pub fn build(root: &Path, scan: scan::Scan) -> Result<(Index, BuildStats), Strin
     // Старый индекс читается ОДИН раз. Чтение внутри цикла дало бы
     // O(файлов²) работы и на большом репозитории стало бы главным тормозом
     // всей сборки — при том, что весь смысл кеша в экономии этой работы.
-    let old = load(root)?;
+    build_from_old(root, scan, load(root)?)
+}
+
+/// Собрать индекс без чтения кеша и без записи на диск.
+///
+/// Режим `--no-cache` для чужих деревьев (крейты cargo registry, соседние
+/// репозитории): их индекс никто не хранит и хранить не должен — на чужом
+/// корне запрещено создавать `.codemap/` и трогать его метаданные git.
+/// Ответ агенту — отрендеренная карта, а не сохранённый файл, поэтому
+/// результат считается в памяти и уходит в stdout напрямую.
+pub fn build_without_cache(root: &Path, scan: scan::Scan) -> Result<(Index, BuildStats), String> {
+    build_from_old(root, scan, None)
+}
+
+/// Тело сборки: что строить, если «старого индекса» задан явно.
+///
+/// Кеш здесь не читается (его принёс вызывающий) и не пишется: сохранение —
+/// отдельное решение [`refresh`]/[`save`], а не побочный эффект сборки.
+fn build_from_old(
+    root: &Path,
+    scan: scan::Scan,
+    old: Option<Index>,
+) -> Result<(Index, BuildStats), String> {
     let old_files: std::collections::HashMap<String, FileEntry> = old
         .as_ref()
         .map(|index| {
@@ -254,6 +276,27 @@ pub fn refresh(root: &Path) -> Result<Index, String> {
             Ok(index)
         }
     }
+}
+
+/// Вернуть индекс, посчитанный целиком в памяти, не трогая диск для записи.
+///
+/// `--no-cache`-режим чтения карты: полный scan+parse при каждом вызове, зато
+/// ни каталога `.codemap`, ни правок `.git/info/exclude` на чужом корне.
+/// Наборы счётчиков те же, что у [`build`], поэтому логи честно показывают,
+/// сколько файлов пришлось разобрать заново.
+pub fn compute_only(root: &Path) -> Result<Index, String> {
+    let scan = scan::walk(root)?;
+    let started = std::time::Instant::now();
+    let (index, stats) = build_without_cache(root, scan)?;
+    log::info!(
+        "codemap (no-cache): scanned {} | parsed {} | binary {} | failed {} | {} мс | на диске ничего не записано",
+        stats.scanned,
+        stats.parsed,
+        stats.binary,
+        stats.failed,
+        started.elapsed().as_millis()
+    );
+    Ok(index)
 }
 
 /// Совпадает ли индекс с тем, что лежит на диске.
@@ -505,6 +548,49 @@ mod tests {
         assert_eq!(stats.reused, 1, "неизменившийся файл обязан прийти из кеша");
         assert_eq!(stats.parsed, 0, "перечитывать неизменившееся — значит читать впустую");
         assert!(rebuilt.tags.iter().any(|t| t.name == "alpha"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Режим `--no-cache`: ответ считается в памяти, а диск остаётся нетронутым
+    /// — ни каталога кеша, ни правок exclude в `.git` чужого корня.
+    #[test]
+    fn compute_only_answers_without_touching_the_disk() {
+        let root = temp_root("compute_only");
+        fs::create_dir_all(root.join(".git")).expect("имитация чужого репозитория");
+        fs::create_dir_all(root.join("src")).expect("каталог");
+        fs::write(root.join("src/main.rs"), "pub fn main_entry() -> u32 { 0 }\n").expect("файл");
+
+        let index = compute_only(&root).expect("вычислить в памяти");
+        assert!(
+            index.tags.iter().any(|t| t.name == "main_entry"),
+            "символы чужого дерева обязаны быть найдены"
+        );
+        assert_eq!(index.files.len(), 1);
+        assert!(
+            !index_dir(&root).exists(),
+            "no-cache режим обязан не создавать каталог кеша"
+        );
+        assert!(
+            !root.join(".git/info/exclude").exists(),
+            "no-cache режим обязан не трогать .git/info/exclude чужого корня"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Сборка без кеша обязана разобрать ВСЁ: кеша нет, «переиспользовать»
+    /// нечего — иначе карта выдала бы пустоту молча.
+    #[test]
+    fn build_without_cache_parses_everything_anew() {
+        let root = temp_root("no_cache_full");
+        fs::create_dir_all(root.join("src")).expect("каталог");
+        fs::write(root.join("src/a.rs"), "pub fn alpha() -> u32 { 1 }\n").expect("файл");
+
+        let scan = scan::walk(&root).expect("обход");
+        let (index, stats) = build_without_cache(&root, scan).expect("сборка без кеша");
+        assert_eq!(stats.scanned, 1);
+        assert_eq!(stats.parsed, 1, "без кеша файл обязан быть разобран заново");
+        assert_eq!(stats.reused, 0, "переиспользовать нечего");
+        assert!(index.tags.iter().any(|t| t.name == "alpha"));
         let _ = fs::remove_dir_all(&root);
     }
 }

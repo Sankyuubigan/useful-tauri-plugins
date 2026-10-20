@@ -21,7 +21,9 @@ const {
     gitFetchTagsForce,
     getBranch,
     releaseCommittedFiles,
+    assertNotAlreadyPartiallyPublished,
 } = require('./github.cjs');
+const { printReleaseState } = require('./release-state.cjs');
 
 function cleanupBundle(cfg) {
     const nsisDir = path.join(BUNDLE_DIR(cfg), 'nsis');
@@ -39,6 +41,12 @@ async function run(cfg) {
     // Без этой проверки падение на `git add` случилось бы уже ПОСЛЕ публикации
     // релиза на GitHub — релиз есть, а манифеста апдейтера в репозитории нет.
     checkCommittedFilesNotIgnored(cfg); // Р“РђР Р” в„–1: РґРѕ Р»СЋР±С‹С… git/gh РѕРїРµСЂР°С†РёР№
+
+    // ГАРД §2.6.2: частично опубликованный релиз (тег есть, release-коммит не
+    // запушен) НЕ должен пройти дальше prep(): prep() бампает версию -> повтор
+    // незаметно переехал бы на следующий тег и оставил незапушенный manifest.
+    // Бросок ДО prep() = до траты минут на пересборку.
+    assertNotAlreadyPartiallyPublished(cfg);
 
     await prep(cfg);
 
@@ -84,24 +92,47 @@ async function run(cfg) {
         .replace('${tag}', tag);
 
     checkGhAuth(cfg);
-    ghReleaseCreate(cfg, {
-        tag,
-        title: tag,
-        notes,
-        assets: [installer, `${installer}.sig`],
-    });
 
-    generateLatestJson(cfg, { version, exeFileName, notes: `${product} ${version}` });
+    // Обогащение каждой фазы общим state (§2.6.1). Печатается на обоих путях
+    // (success/fail) — правдивое состояние релиза вместо голого [ERROR].
+    const branch = getBranch(cfg);
+    const state = { published: false, latestJson: false, committed: false, pushed: false, fetchTags: false };
+    try {
+        ghReleaseCreate(cfg, {
+            tag,
+            title: tag,
+            notes,
+            assets: [installer, `${installer}.sig`],
+        });
+        state.published = true;
 
-const branch = getBranch(cfg);
-    commitAndPush(cfg, {
-        // SSOT: тот же список, который проверяет гард checkCommittedFilesNotIgnored.
-        files: releaseCommittedFiles(cfg),
-        message: `chore(release): ${tag}`,
-        branch,
-});
+        generateLatestJson(cfg, { version, exeFileName, notes: `${product} ${version}` });
+        state.latestJson = true;
+    } catch (e) {
+        printReleaseState(state, { tag, version, branch, error: e });
+        throw e;
+    }
 
-    gitFetchTagsForce(cfg);
+    try {
+        const pushSteps = await commitAndPush(cfg, {
+            // SSOT: тот же список, который проверяет гард checkCommittedFilesNotIgnored.
+            files: releaseCommittedFiles(cfg),
+            message: `chore(release): ${tag}`,
+            branch,
+        });
+        state.committed = pushSteps.committed;
+        state.pushed = pushSteps.pushed;
+        await gitFetchTagsForce(cfg);
+        state.fetchTags = true;
+    } catch (e) {
+        const extra = e.steps || {};
+        state.committed = Boolean(extra.committed ?? state.committed);
+        state.pushed = Boolean(extra.pushed ?? state.pushed);
+        printReleaseState(state, { tag, version, branch, error: e });
+        throw e;
+    }
+
+    printReleaseState(state, { tag, version, branch });
 
     // Success report: консоль не закрывается молча — печатаем итоги релиза
     // (сам шаблон release.bat делает pause после завершения).

@@ -324,7 +324,7 @@ pub fn gateway_state(port: u16, install_dir: &Path, data_dir: &Path) -> GatewayS
 pub fn read_combos_from_config(
     app: &AppHandle,
     router_id: RouterId,
-) -> Result<Vec<crate::router::client::ComboInfo>, String> {
+) -> Result<Vec<crate::router::combos::ComboInfo>, String> {
     let data_dir = config::router_data_dir(app, router_id);
     let cfg = cloud_routers_core::load_config(&data_dir);
     let combos = cloud_routers_core::models::list_combos(&cfg.providers);
@@ -335,7 +335,7 @@ pub fn read_combos_from_config(
     }
     Ok(combos
         .into_iter()
-        .map(|c| crate::router::client::ComboInfo {
+        .map(|c| crate::router::combos::ComboInfo {
             name: c.name,
             kind: Some(c.kind),
             models: c.models,

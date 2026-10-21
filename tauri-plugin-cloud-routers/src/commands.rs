@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::router::{
     client::{self, ChatMessage, ChatRequest},
+    combos,
     config::{self, dist_dir, node_exe, router_dir, server_script},
     gateway_process, installer, process,
 };
@@ -385,7 +386,7 @@ pub fn set_router_dir(app: AppHandle, router: String, path: String) -> Result<Ro
 /// Список комбо роутера (только LLM). Если сервер не запущен и установлен —
 /// стартует лениво, но только когда включён автозапуск.
 #[tauri::command]
-pub async fn get_combos(app: AppHandle, router: String) -> Result<Vec<client::ComboInfo>, String> {
+pub async fn get_combos(app: AppHandle, router: String) -> Result<Vec<combos::ComboInfo>, String> {
     let router_id = router.parse::<RouterId>()?;
     let status = build_status(&app, router_id);
     if !status.installed {
@@ -432,7 +433,7 @@ pub async fn get_combos(app: AppHandle, router: String) -> Result<Vec<client::Co
     let api_key = cfg.api_key.clone();
     log::info!("get_combos: запрос к {} ...", base);
     let base_clone = base.clone();
-    match tauri::async_runtime::spawn_blocking(move || client::get_combos(&base_clone, api_key.as_deref()))
+    match tauri::async_runtime::spawn_blocking(move || combos::get_combos(&base_clone, api_key.as_deref()))
         .await
     {
         Ok(Ok(combos)) => {
@@ -463,7 +464,7 @@ pub async fn open_dashboard(app: AppHandle, router: String) -> Result<(), String
     let cfg = config::load_config(&app, router_id);
     let base_url = cfg.base_url(router_id);
     let health_url = base_url.clone();
-    let healthy = tauri::async_runtime::spawn_blocking(move || client::is_healthy(&health_url))
+    let healthy = tauri::async_runtime::spawn_blocking(move || combos::is_healthy(&health_url))
         .await
         .map_err(|e| format!("health task join error: {}", e))?;
     if !healthy {

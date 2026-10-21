@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use crate::exit::Exit;
 
+use super::check;
 use super::mcp;
 use ko_code_tools::{AllowWithinRoot, ToolCtx, ToolError, all_code_tools};
 
@@ -30,11 +31,15 @@ pub enum CodeSub {
     /// Работать как MCP-сервер (JSON-RPC через stdin/stdout).
     #[command(about = ABOUT)]
     Mcp(McpArgs),
+    /// Проверить синтаксис одного файла: 0 — порядок, 2 — неверный запрос
+    /// (файла нет/бинарник), 4 — ошибка разбора или расширение без парсера.
+    Check(check::CheckArgs),
 }
 
 const ABOUT: &str = "Файловые, поисковые и shell-тулы code-агента (SSOT кодо-тулов \
 King Orch): read_file/read_many_files/write_file/edit_file/grep/glob/\
-list_directory/bash/run_tests. Запись внутри корня авто, вне — запрет.";
+list_directory/bash/run_tests. Запись внутри корня авто, вне — запрет; \
+исправность записанного файла проверяет синтакс-гейт.";
 
 #[derive(Debug, Args, Clone, Default)]
 pub struct CallArgs {
@@ -74,9 +79,16 @@ impl Cli {
     ///
     /// Политика записи — дефолтная ядерная: запись внутри корня авто,
     /// вне — честный запрет (CLI не дублирует сессионные политики хоста).
+    ///
+    /// К каждой записи подключён синтакс-гейт ([`gate::SyntaxGate`]): ядро
+    /// снимает baseline проблем ДО записи и откатывает её, если появилась
+    /// новая синтаксическая ошибка. Для неподдерживаемых языков гейт честно
+    /// отказывается проверять — причина попадает в ответ тула, запись не
+    /// выдаётся за проверенную.
     pub fn run_tool(&self, name: &str, args: &Value) -> Result<String, ToolError> {
         let auth = AllowWithinRoot::new(self.root.clone());
-        let ctx = ToolCtx::new(&self.root, &auth);
+        let gate = super::gate::SyntaxGate::new(self.root.clone());
+        let ctx = ToolCtx::new(&self.root, &auth).with_lint_gate(&gate);
         for tool in all_code_tools() {
             if tool.name() == name {
                 return tool.execute(args, &ctx);
@@ -122,6 +134,7 @@ pub fn run(argv: Vec<String>) -> Exit {
             let cli = Cli { root: root_of(args.root) };
             mcp::serve(cli)
         }
+        CodeSub::Check(args) => check::run(args),
     }
 }
 
@@ -194,6 +207,27 @@ mod tests {
     #[test]
     fn mcp_subcommand_parses() {
         assert!(matches!(parse(&["mcp"]), CodeSub::Mcp(_)));
+    }
+
+    #[test]
+    fn check_subcommand_parses_file_and_optional_root() {
+        match parse(&["check", "src/a.rs"]) {
+            CodeSub::Check(args) => {
+                assert_eq!(args.file, "src/a.rs");
+                assert_eq!(args.root, None);
+            }
+            other => panic!("ожидался check, получен {other:?}"),
+        }
+        match parse(&["check", "--root", "D:/projects/demo", "src/a.rs"]) {
+            CodeSub::Check(args) => {
+                assert_eq!(args.file, "src/a.rs");
+                assert_eq!(
+                    args.root.as_ref().map(|path| path.to_string_lossy().to_string()),
+                    Some("D:/projects/demo".to_string())
+                );
+            }
+            other => panic!("ожидался check с --root, получен {other:?}"),
+        }
     }
 
     #[test]

@@ -23,19 +23,28 @@ use super::text;
 /// запроса (агент указал не то, код 2), а «файл есть, но не читается или не
 /// разобран» — отказ исполнения (код 4). Смешивать их в один код значит
 /// отличить опечатку агента от сломанного репозитория только по тексту.
+///
+/// `Missing` держит тот же код исхода (ошибка запроса), но выделен отдельным
+/// вариантом: для разведки отсутствие файла — отказ, а для lint-gate (снимок
+/// baseline ДО записи) «файла ещё нет» — норма нового файла. Гейт различает
+/// это по типу, а не разбором текста сообщения.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LookupError {
     /// Запрос неверен: файла или символа нет.
     Input(String),
     /// Файл найден, но прочитать или разобрать его не удалось.
     Failed(String),
+    /// Файла нет по указанному пути.
+    Missing(String),
 }
 
 impl LookupError {
     /// Короткий текст причины — без префикса.
     pub fn reason(&self) -> &str {
         match self {
-            LookupError::Input(reason) | LookupError::Failed(reason) => reason,
+            LookupError::Input(reason)
+            | LookupError::Failed(reason)
+            | LookupError::Missing(reason) => reason,
         }
     }
 }
@@ -134,7 +143,10 @@ impl FileView {
 ///
 /// Абсолютный путь принимается, только если он внутри корня: иначе операция
 /// «посмотреть скелет файла проекта» превратилась бы в чтение чего угодно.
-fn resolve(root: &Path, file: &str) -> Result<(PathBuf, String), LookupError> {
+///
+/// Отсутствие файла отличено от прочих отказов запроса: гейт различает это
+/// по [`LookupError::Missing`], а не по разбору текста сообщения.
+pub(crate) fn resolve(root: &Path, file: &str) -> Result<(PathBuf, String), LookupError> {
     let trimmed = file.trim();
     if trimmed.is_empty() {
         return Err(LookupError::Input("не указан файл".to_string()));
@@ -159,7 +171,7 @@ fn resolve(root: &Path, file: &str) -> Result<(PathBuf, String), LookupError> {
         .to_string_lossy()
         .replace('\\', "/");
     if !normalized.is_file() {
-        return Err(LookupError::Input(format!(
+        return Err(LookupError::Missing(format!(
             "{rel_path}: файла нет (корень: {})",
             root.display()
         )));
@@ -187,7 +199,7 @@ fn normalize(path: &Path) -> PathBuf {
 }
 
 /// Расширение файла без точки, в нижнем регистре.
-fn extension_of(path: &Path) -> String {
+pub(crate) fn extension_of(path: &Path) -> String {
     path.extension()
         .map(|ext| ext.to_string_lossy().to_lowercase())
         .unwrap_or_default()
@@ -236,18 +248,24 @@ mod tests {
     fn error_classes_are_distinct() {
         let input = LookupError::Input("нет".to_string());
         let failed = LookupError::Failed("сломан".to_string());
+        let missing = LookupError::Missing("не появился".to_string());
         assert_eq!(input.reason(), "нет");
         assert_eq!(failed.reason(), "сломан");
+        assert_eq!(missing.reason(), "не появился");
         assert_ne!(input, failed);
+        assert_ne!(input, missing);
     }
 
+    /// Отсутствующий файл — ошибка запроса (код 2), но при этом отдельный
+    /// вариант `Missing`: lint-gate снимает baseline ДО записи, когда файла
+    /// ещё нет, и обязан отличать это по типу, а не разбирать текст.
     #[test]
-    fn missing_file_is_an_input_error() {
+    fn missing_file_is_a_request_error() {
         let root = std::env::temp_dir();
         let error = FileView::open(&root, "definitely-missing-42.rs").unwrap_err();
         assert!(
-            matches!(error, LookupError::Input(_)),
-            "отсутствующий файл — ошибка запроса: {error}"
+            matches!(error, LookupError::Missing(_)),
+            "отсутствующий файл — отдельный вариант ошибки запроса: {error}"
         );
     }
 

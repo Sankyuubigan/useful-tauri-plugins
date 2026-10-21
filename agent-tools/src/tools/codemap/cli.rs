@@ -464,7 +464,7 @@ fn finish_lookup(result: Result<String, lookup::LookupError>) -> Exit {
             println!("{text}");
             Exit::Ok
         }
-        Err(lookup::LookupError::Input(reason)) => {
+        Err(lookup::LookupError::Input(reason)) | Err(lookup::LookupError::Missing(reason)) => {
             eprintln!("codemap: {reason}");
             Exit::Input
         }

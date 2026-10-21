@@ -149,11 +149,11 @@ pub fn tags(rel_path: &str, source: &str, lang: Lang) -> Result<Vec<Tag>, String
     Ok(out)
 }
 
-/// Тип источника по расширению файла.
+/// Тип источника для oxc-парсера по расширению файла.
 ///
-/// Расширение важно само по себе: без него `a.tsx` разбирается как `.ts` и файл
-/// с JSX падает целиком.
-fn source_type_of(lang: Lang, rel_path: &str) -> Result<SourceType, String> {
+/// Доступен и слою проверки ([`super::syntax`]): там тот же парсер, и тип
+/// источника обязан определяться одинаково, а не второй таблицей.
+pub(crate) fn source_type_of(lang: Lang, rel_path: &str) -> Result<SourceType, String> {
     if lang != Lang::TsJs {
         return Err(format!("{rel_path}: ожидался TS/JS, получен {}", lang.name()));
     }

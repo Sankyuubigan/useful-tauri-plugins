@@ -14,8 +14,8 @@
 | Модуль | Что делает |
 |--------|------------|
 | `contract.rs` | контракт: трейт `CodeTool` (имя/описание/schema/is_readonly/execute), контекст `ToolCtx`, ошибки `ToolError`, хук записи `WriteAuthorizer`, хук проверки качества `LintGate`, реестр `all_code_tools()` |
-| `fs.rs` | `read_file`, `read_many_files`, `write_file`, `edit_file` (+ гарды: устройства Windows, бинарные расширения, NUL-детект) |
-| `search.rs` | `grep` (regex, режимы content/files_with_matches/count, постраничный вывод), `glob`, `list_directory` |
+| `fs.rs` | фасад файловых тулов (имена тулов прежние): `fs/fs_read.rs` — `read_file`, `read_many_files` (гарды: устройства Windows, бинарные расширения, NUL-детект), `fs/fs_write.rs` — `write_file` (+ diff-сводка), `fs/fs_edit.rs` — `edit_file` (разбор `edits[]`, байтовые сплайсы, последовательное/нечёткое применение), `fs/fs_lint.rs` — baseline/проверка/откат + `LINT_CONTEXT_LINES` |
+| `search.rs` | `grep` (regex, режимы content/files_with_matches/count, постраничный вывод) + общий обходчик `.gitignore`; `glob`, `list_directory` — в `search/listing.rs` |
 | `shell.rs` | `bash` (таймаут, запрет git-мутаций и разрушительных команд), `run_tests` (белый список команд) |
 | `fuzzy.rs` | третья попытка `edit_file`: нечёткое совпадение по нормализованным отступам/пробелам |
 | `pruner.rs` | чистка вывода тестов: PASS-шум вон, имена упавших и стектрейсы — вон |
@@ -49,6 +49,12 @@ fn execute(tool: &dyn CodeTool, args: &serde_json::Value, ctx: &ToolCtx) -> Resu
 
 Хост строит ядровой `ToolCtx` сам: `ToolCtx::new(workspace_root, &authorizer)`,
 при необходимости `.with_lint_gate(&gate)`.
+
+Фактическое состояние подключений: `agent-tools` подключает гейт (`SyntaxGate`
+поверх синтакс-разбора rs/ts/js/tsx/jsx/py — см. README agent-tools, «Политика
+записи»); хост King Orch в текущем релизе подключает `ToolCtx` БЕЗ гейта —
+правки выполняются без автопроверки, и это объявлено в описании тулов (не
+тишина).
 
 ## Тесты
 

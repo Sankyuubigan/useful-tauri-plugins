@@ -45,6 +45,7 @@ pub mod scan;
 pub mod skeleton;
 pub mod search;
 pub mod store;
+pub mod syntax;
 pub mod tags;
 pub mod text;
 pub mod tokens;

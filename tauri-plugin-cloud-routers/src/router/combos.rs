@@ -47,8 +47,10 @@ pub fn is_healthy(base_url: &str) -> bool {
     }
 }
 
-/// Список комбо с ретраем: шлюз мог только подняться, первый запрос гонки
-/// за `.get posting`? — подождём 600 мс и повторим (заводской звонок UI).
+/// Список комбо с Retry-петлёй (3 попытки с задержкой 600мс) для ленивого
+/// старта сервера: после открытия TCP-порта Next.js/9Router ещё 1-2 секунды
+/// инициализирует внутренние роуты и SQLite, и первый запрос может упасть
+/// с 503/таймаутом.
 pub fn get_combos(base_url: &str, api_key: Option<&str>) -> Result<Vec<ComboInfo>, String> {
     let mut last_err = String::new();
     for attempt in 1..=3 {

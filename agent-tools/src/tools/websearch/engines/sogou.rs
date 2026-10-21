@@ -3,6 +3,7 @@
 use regex::Regex;
 
 use super::super::http;
+use super::clip_chars;
 use super::{http_status_error, SearchResult, UA_136};
 
 /// Порт `sogouExpandUrl`: у ссылки может лежать целевой URL в url/u/link.
@@ -83,14 +84,14 @@ pub(super) async fn search(query: &str, _limit: usize) -> Result<Vec<SearchResul
                 .captures(&block)
                 .map(|c| http::strip_tags(&c[1]))
                 .or_else(|| desc_p_re.captures(&block).map(|c| http::strip_tags(&c[1])))
-                .map(|s| crate::tools::websearch::engines::brave::clip_chars(&s, 400))
+                .map(|s| clip_chars(&s, 400))
                 .unwrap_or_default();
             let source = cite_re
                 .captures(&block)
-                .map(|c| crate::tools::websearch::engines::brave::clip_chars(&http::strip_tags(&c[1]), 80))
+                .map(|c| clip_chars(&http::strip_tags(&c[1]), 80))
                 .unwrap_or_default();
             out.push(SearchResult {
-                title: crate::tools::websearch::engines::brave::clip_chars(&title, 200),
+                title: clip_chars(&title, 200),
                 url,
                 snippet,
                 source,
@@ -139,12 +140,12 @@ mod tests {
                 if url.is_empty() || title.is_empty() { continue; }
                 let snippet = desc_re.captures(&block).map(|c| http::strip_tags(&c[1]))
                     .or_else(|| desc_p_re.captures(&block).map(|c| http::strip_tags(&c[1])))
-                    .map(|s| crate::tools::websearch::engines::brave::clip_chars(&s, 400)).unwrap_or_default();
+                    .map(|s| clip_chars(&s, 400)).unwrap_or_default();
                 out.push(SearchResult {
-                    title: crate::tools::websearch::engines::brave::clip_chars(&title, 200),
+                    title: clip_chars(&title, 200),
                     url,
                     snippet,
-                    source: cite_re.captures(&block).map(|c| crate::tools::websearch::engines::brave::clip_chars(&http::strip_tags(&c[1]), 80)).unwrap_or_default(),
+                    source: cite_re.captures(&block).map(|c| clip_chars(&http::strip_tags(&c[1]), 80)).unwrap_or_default(),
                 });
             }
         }

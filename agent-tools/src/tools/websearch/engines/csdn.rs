@@ -1,6 +1,7 @@
 //! CSDN — порт `searchCsdn` из web_search.ts: JSON API so.csdn.net (UA Apifox).
 
 use super::super::http;
+use super::clip_chars;
 use super::{http_status_error, SearchResult};
 
 pub(super) async fn search(query: &str, _limit: usize) -> Result<Vec<SearchResult>, String> {
@@ -35,9 +36,9 @@ pub(super) async fn search(query: &str, _limit: usize) -> Result<Vec<SearchResul
             continue;
         }
         out.push(SearchResult {
-            title: crate::tools::websearch::engines::brave::clip_chars(&title, 200),
+            title: clip_chars(&title, 200),
             url: url2,
-            snippet: crate::tools::websearch::engines::brave::clip_chars(&http::strip_tags(&str_field(r, "digest")), 400),
+            snippet: clip_chars(&http::strip_tags(&str_field(r, "digest")), 400),
             source: {
                 let nick = str_field(r, "nickname");
                 if nick.is_empty() { "csdn.net".into() } else { nick }
@@ -65,9 +66,9 @@ mod tests {
             );
             if title.is_empty() || url2.is_empty() { continue; }
             out.push(SearchResult {
-                title: crate::tools::websearch::engines::brave::clip_chars(&title, 200),
+                title: clip_chars(&title, 200),
                 url: url2,
-                snippet: crate::tools::websearch::engines::brave::clip_chars(&http::strip_tags(&str_field(r, "digest")), 400),
+                snippet: clip_chars(&http::strip_tags(&str_field(r, "digest")), 400),
                 source: {
                     let nick = str_field(r, "nickname");
                     if nick.is_empty() { "csdn.net".into() } else { nick }

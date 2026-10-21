@@ -4,6 +4,7 @@
 use regex::Regex;
 
 use super::super::http;
+use super::clip_chars;
 use super::{http_status_error, SearchResult, UA_CHROME_112};
 
 pub(super) async fn search(query: &str, _limit: usize) -> Result<Vec<SearchResult>, String> {
@@ -84,11 +85,11 @@ pub(super) async fn search(query: &str, _limit: usize) -> Result<Vec<SearchResul
         let snippet = snip_re
             .captures(tail)
             .map(|c| {
-                crate::tools::websearch::engines::brave::clip_chars(&http::strip_tags(&c[1]).replace("&shy;", ""), 400)
+                clip_chars(&http::strip_tags(&c[1]).replace("&shy;", ""), 400)
             })
             .unwrap_or_default();
         out.push(SearchResult {
-            title: crate::tools::websearch::engines::brave::clip_chars(&title, 200),
+            title: clip_chars(&title, 200),
             url,
             snippet,
             source: String::new(),
@@ -118,9 +119,9 @@ mod tests {
             let title = http::strip_tags(&m[2]).replace("&shy;", "").trim().to_string();
             if url.is_empty() || title.is_empty() { continue; }
             let tail = &html[whole.end()..];
-            let snippet = snip_re.captures(tail).map(|c| crate::tools::websearch::engines::brave::clip_chars(&http::strip_tags(&c[1]).replace("&shy;", ""), 400)).unwrap_or_default();
+            let snippet = snip_re.captures(tail).map(|c| clip_chars(&http::strip_tags(&c[1]).replace("&shy;", ""), 400)).unwrap_or_default();
             out.push(SearchResult {
-                title: crate::tools::websearch::engines::brave::clip_chars(&title, 200),
+                title: clip_chars(&title, 200),
                 url,
                 snippet,
                 source: String::new(),

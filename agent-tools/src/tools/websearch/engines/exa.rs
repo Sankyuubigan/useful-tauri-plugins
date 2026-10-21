@@ -2,6 +2,7 @@
 //! exa.ai/search/api/search-fast (POST с фиксированным payload).
 
 use super::super::http;
+use super::clip_chars;
 use super::{http_status_error, SearchResult};
 
 pub(super) async fn search(query: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
@@ -59,7 +60,7 @@ pub(super) async fn search(query: &str, limit: usize) -> Result<Vec<SearchResult
             .map(|u| u.host_str().unwrap_or_default().to_string())
             .unwrap_or_default();
         out.push(SearchResult {
-            title: crate::tools::websearch::engines::brave::clip_chars(&title_raw, 200),
+            title: clip_chars(&title_raw, 200),
             url,
             snippet: meta_parts.join(". "),
             source,
@@ -90,7 +91,7 @@ mod tests {
                 meta_parts.push(format!("Опубликовано: {date}"));
             }
             out.push(SearchResult {
-                title: crate::tools::websearch::engines::brave::clip_chars(&title_raw, 200),
+                title: clip_chars(&title_raw, 200),
                 url: url.clone(),
                 snippet: meta_parts.join(". "),
                 source: url::Url::parse(&url).map(|u| u.host_str().unwrap_or_default().to_string()).unwrap_or_default(),

@@ -55,7 +55,7 @@ impl Tool {
                 "Файловые/поисковые/shell тула ядра ko-code-tools (read_file, grep, bash, ...) — CLI и MCP"
             }
             Tool::Websearch => {
-                "Поиск в интернете по 11 движкам без API-ключей (chain/parallel, multi-query, MCP-режим)"
+                "Поиск в интернете по 17 движкам без API-ключей (chain/parallel, multi-query, MCP-режим)"
             }
         }
     }

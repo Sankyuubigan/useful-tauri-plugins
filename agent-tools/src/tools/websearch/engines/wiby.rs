@@ -3,6 +3,7 @@
 use regex::Regex;
 
 use super::super::http;
+use super::clip_chars;
 use super::{http_status_error, SearchResult, UA_CHROME_112};
 
 pub(super) async fn search(query: &str, _limit: usize) -> Result<Vec<SearchResult>, String> {
@@ -37,10 +38,10 @@ pub(super) async fn search(query: &str, _limit: usize) -> Result<Vec<SearchResul
         };
         let snippet = next_re
             .captures(after)
-            .map(|c| crate::tools::websearch::engines::brave::clip_chars(&http::strip_tags(&c[1]), 400))
+            .map(|c| clip_chars(&http::strip_tags(&c[1]), 400))
             .unwrap_or_default();
         out.push(SearchResult {
-            title: crate::tools::websearch::engines::brave::clip_chars(&title, 200),
+            title: clip_chars(&title, 200),
             url,
             snippet,
             source: String::new(),
@@ -72,9 +73,9 @@ r#"<blockquote><a class="tlink" href="https://plain.t/page">Прямая ссы�
                 Some(idx) => &html[idx + block.len()..],
                 None => continue,
             };
-            let snippet = next_re.captures(after).map(|c| crate::tools::websearch::engines::brave::clip_chars(&http::strip_tags(&c[1]), 400)).unwrap_or_default();
+            let snippet = next_re.captures(after).map(|c| clip_chars(&http::strip_tags(&c[1]), 400)).unwrap_or_default();
             out.push(SearchResult {
-                title: crate::tools::websearch::engines::brave::clip_chars(&title, 200),
+                title: clip_chars(&title, 200),
                 url,
                 snippet,
                 source: String::new(),

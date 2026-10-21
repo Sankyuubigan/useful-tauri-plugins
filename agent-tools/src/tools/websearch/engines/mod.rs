@@ -10,17 +10,27 @@ use std::future::Future;
 use regex::Regex;
 use super::stats;
 
+pub mod api_search;
 pub mod baidu;
 pub mod bing;
 pub mod brave;
+pub mod crates;
 pub mod csdn;
 pub mod duckduckgo;
+pub mod engine_ranking;
 pub mod exa;
+pub mod format;
+pub mod huggingface;
 pub mod juejin;
 pub mod marginalia;
+pub mod mdn;
+pub mod npm;
 pub mod sogou;
 pub mod startpage;
+pub mod stackexchange;
+pub mod text_util;
 pub mod wiby;
+pub mod wikimedia;
 
 pub const MAX_RESULTS: usize = 8;
 pub const CHAIN_PAUSE_MS: u64 = 800;
@@ -49,7 +59,9 @@ pub struct Failure {
     pub message: String,
 }
 
-/// Имена движков в реестре — порядок как в TS `ENGINES` (Object.keys).
+/// Имена движков в реестре. Адресные движки (commons, stackexchange, npm,
+/// mdn, huggingface, crates) в списке есть, но в DEFAULT_ORDER не входят
+/// (PRP Шаг 4: строгое правило маршрутизации).
 pub const ENGINE_NAMES: &[&str] = &[
     "duckduckgo",
     "wiby",
@@ -62,9 +74,21 @@ pub const ENGINE_NAMES: &[&str] = &[
     "juejin",
     "csdn",
     "exa",
+    // Доменный/адресные движки:
+    "commons",
+    "stackexchange",
+    "npm",
+    "mdn",
+    "huggingface",
+    "crates",
 ];
 
-/// Цепочка по надёжности — порт `DEFAULT_ORDER`.
+/// Цепочка по надёжности — порт `DEFAULT_ORDER`. Остаётся fallback
+/// при пустой статистике (PRP Шаг 1). Адресные движки (commons и 5 API)
+/// сюда НЕ входят: цепочка зовёт только универсальные —commons мог бы
+/// отсекать непрофильные запросы «пусто без HTTP», но делая HTTP ВСЕХ
+/// остальных — большинство запросов заканчивалось бы раньше; clean-
+/// решение — commons живёт ТОЛЬКО в адресном режиме (PRP core §1.9).
 pub const DEFAULT_ORDER: &[&str] = &[
     "duckduckgo",
     "wiby",
@@ -78,6 +102,19 @@ pub const DEFAULT_ORDER: &[&str] = &[
     "bing",
     "exa",
 ];
+
+/// Дефолтная цепочка с учётом боевой статистики (PRP Шаг 1): порядок
+/// считается из search_stats.json; пустая статистика → fallback выше.
+pub fn default_chain() -> Vec<String> {
+    engine_ranking::current_default_chain()
+}
+
+/// Дверь текстовых утилит (PRP Шаг 5): движки зовут `super::clip_chars`,
+/// а не чужой модуль.
+pub use text_util::clip_chars;
+
+/// Дверь форматирования (вынесено в format.rs, PRP Шаг 5).
+pub use format::{format_multi_results, format_results};
 
 /// Диспатч вызова движка (аналог ENGINES[name](q, l)).
 pub async fn engine_search(name: &str, query: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
@@ -93,6 +130,12 @@ pub async fn engine_search(name: &str, query: &str, limit: usize) -> Result<Vec<
         "juejin" => Box::pin(juejin::search(query, limit)),
         "csdn" => Box::pin(csdn::search(query, limit)),
         "exa" => Box::pin(exa::search(query, limit)),
+        "commons" => Box::pin(wikimedia::search(query, limit)),
+        "stackexchange" => Box::pin(stackexchange::search(query, limit)),
+        "npm" => Box::pin(npm::search(query, limit)),
+        "mdn" => Box::pin(mdn::search(query, limit)),
+        "huggingface" => Box::pin(huggingface::search(query, limit)),
+        "crates" => Box::pin(crates::search(query, limit)),
         other => return Err(format!("Неизвестный движок: {other}")),
     };
     future.await
@@ -294,7 +337,7 @@ pub async fn run_chain(
     }
     let total_sec = secs(start.elapsed());
     engine_log("", &format!("Итог по запросу \"{}\": {} | собрано {} рез. за {}с",
-        clip(query, 60), summary.join(", "), all.len(), total_sec), None);
+        clip_chars(query, 60), summary.join(", "), all.len(), total_sec), None);
     (all, failures)
 }
 
@@ -360,7 +403,7 @@ pub async fn run_parallel(
     }
     let total_sec = secs(start.elapsed());
     engine_log("", &format!("Итог по запросу \"{}\": {} | собрано {} рез. за {}с",
-        clip(query, 60), summary.join(", "), all.len(), total_sec), None);
+        clip_chars(query, 60), summary.join(", "), all.len(), total_sec), None);
     (all, failures)
 }
 
@@ -368,99 +411,8 @@ fn secs(elapsed: std::time::Duration) -> String {
     format!("{:.1}", elapsed.as_secs_f64())
 }
 
-/// Верхушка строки для лога (port `query.slice(0, 60)`).
-fn clip(text: &str, max: usize) -> String {
-    text.chars().take(max).collect()
-}
-
-/// Формат одного запроса — порт `formatResults` (байт-в-байт с текстом TS).
-pub fn format_results(
-    all: Vec<SearchResult>,
-    failures: &[Failure],
-    limit: usize,
-) -> String {
-    let deduped = dedupe(all).into_iter().take(limit).collect::<Vec<_>>();
-    let mut lines: Vec<String> = deduped
-        .iter()
-        .enumerate()
-        .map(|(i, r)| {
-            let extra = if r.source.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", r.source)
-            };
-            format!(
-                "[{}] {}{}\nСсылка: {}\nОписание: {}",
-                i + 1,
-                r.title,
-                extra,
-                r.url,
-                if r.snippet.is_empty() { "—".to_string() } else { r.snippet.clone() }
-            )
-        })
-        .collect();
-    if !failures.is_empty() {
-        lines.push(format!(
-            "\n⚠️ Движки с ошибками: {}",
-            failures
-                .iter()
-                .map(|f| format!("{} ({})", f.name, f.message))
-                .collect::<Vec<_>>()
-                .join(", ")
-        ));
-    }
-    lines.join("\n")
-}
-
-/// Формат multi-query — порт `formatMultiResults` байт-в-байт: секции по
-/// каждому запросу, сквозная нумерация, дедуп по домену МЕЖДУ запросами
-/// (рукописный цикл TS, не `dedupeByDomain`: без dedupe по URL — URL уже
-/// вычищены в обработчике).
-pub fn format_multi_results(
-    per_query: &[(&str, Vec<SearchResult>, Vec<Failure>)],
-    limit: usize,
-) -> String {
-    let mut out: Vec<String> = Vec::new();
-    let mut seen_domains: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut index = 1usize;
-    for (query, all, failures) in per_query {
-        out.push(format!("=== Запрос: {query} ==="));
-        for r in all {
-            if index > limit {
-                break;
-            }
-            let domain = extract_domain(&r.url);
-            if !domain.is_empty() {
-                if seen_domains.contains(&domain) {
-                    continue;
-                }
-                seen_domains.insert(domain);
-            }
-            let extra = if r.source.is_empty() { String::new() } else { format!(" ({})", r.source) };
-            out.push(format!(
-                "[{}] {}{}\nСсылка: {}\nОписание: {}",
-                index,
-                r.title,
-                extra,
-                r.url,
-                if r.snippet.is_empty() { "—".to_string() } else { r.snippet.clone() }
-            ));
-            index += 1;
-        }
-        if !failures.is_empty() {
-            out.push(format!(
-                "⚠️ Движки с ошибками: {}",
-                failures
-                    .iter()
-                    .map(|f| format!("{} ({})", f.name, f.message))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-        out.push(String::new());
-    }
-    out.join("\n").trim().to_string()
-}
+// Форматирование вывода (formatResults/formatMultiResults) вынесено
+// в `format.rs` (PRP Шаг 5, счётчик строк — core §2.4).
 
 #[cfg(test)]
 mod tests {
@@ -524,49 +476,7 @@ mod tests {
         );
     }
 
-    #[test]
-    fn format_results_uses_ts_layout() {
-        let all = vec![SearchResult {
-            title: "Заголовок".into(),
-            url: "https://u/1".into(),
-            snippet: "описание".into(),
-            source: "site.ru".into(),
-        }];
-        let failures = vec![Failure { name: "brave".into(), message: "капча".into() }];
-        let text = format_results(all, &failures, 8);
-        assert_eq!(
-            text,
-            "[1] Заголовок (site.ru)\nСсылка: https://u/1\nОписание: описание\n\n⚠️ Движки с ошибками: brave (капча)"
-        );
-    }
-
-    #[test]
-    fn format_results_omits_empty_source_and_dash_snippet() {
-        let all = vec![SearchResult {
-            title: "T".into(),
-            url: "https://u/2".into(),
-            snippet: String::new(),
-            source: String::new(),
-        }];
-        let text = format_results(all, &[], 8);
-        assert!(text.starts_with("[1] T\nСсылка: https://u/2\nОписание: —"));
-    }
-
-    #[test]
-    fn multi_format_numbers_across_queries_and_dedups_domains() {
-        let q1 = vec![hit("https://a.com/1"), hit("https://b.com/2")];
-        let q2 = vec![hit("https://a.com/3"), hit("https://c.com/4")];
-        let failures1 = vec![Failure { name: "bing".into(), message: "HTTP 429".into() }];
-        let text = format_multi_results(&[("первый", q1, failures1), ("второй", q2, vec![])], 8);
-        assert!(text.contains("=== Запрос: первый ==="));
-        assert!(text.contains("[1] t"));
-        assert!(text.contains("https://a.com/1"));
-        assert!(text.contains("https://b.com/2"));
-        // Домен a.com во втором запросе уже занят — остаётся только c.com.
-        assert!(text.contains("https://c.com/4"));
-        assert!(!text.contains("https://a.com/3"));
-        assert!(text.contains("⚠️ Движки с ошибками: bing (HTTP 429)"));
-    }
+    // Формат-тесты переехали в `format.rs` (PRP Шаг 5).
 
     #[tokio::test(flavor = "current_thread")]
     async fn engine_result() {

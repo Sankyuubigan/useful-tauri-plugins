@@ -108,6 +108,13 @@ fn load_from(dir: &Path) -> Value {
     json!({})
 }
 
+/// Сырая статистика движков целиком (дверь для `engine_ranking.rs` —
+/// PRP Шаг 1, SSOT: ранжирование читает ТОТ ЖЕ файл, куда пишет
+/// `record_engine_call`).
+pub fn raw_entries() -> Value {
+    load_from(&data_dir())
+}
+
 fn save_to(dir: &Path, data: &Value) {
     let _ = std::fs::create_dir_all(dir);
     let content = serde_json::to_string(data).unwrap_or_else(|_| "{}".to_string());

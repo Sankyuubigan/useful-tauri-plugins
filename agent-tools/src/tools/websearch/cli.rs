@@ -245,7 +245,10 @@ mod tests {
 
         assert_eq!(
             parse(&args(&["--engines", "yahoo"])).unwrap_err(),
-            "неизвестные движки: yahoo. Доступны: duckduckgo, wiby, marginalia, brave, startpage, sogou, baidu, bing, juejin, csdn, exa"
+            format!(
+                "неизвестные движки: yahoo. Доступны: {}",
+                crate::tools::websearch::engines::ENGINE_NAMES.join(", ")
+            )
         );
         assert!(parse(&args(&["--queries", "1,2,3,4,5,6"])).is_err());
         assert!(parse(&args(&["--limit", "2"])).is_err());

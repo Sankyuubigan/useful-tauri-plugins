@@ -3,6 +3,7 @@
 use regex::Regex;
 
 use super::super::http;
+use super::clip_chars;
 use super::{http_status_error, SearchResult, UA_91};
 
 pub(super) async fn search(query: &str, _limit: usize) -> Result<Vec<SearchResult>, String> {
@@ -45,10 +46,10 @@ pub(super) async fn search(query: &str, _limit: usize) -> Result<Vec<SearchResul
         let after = &res.text[m.get(0).expect("captures 0").start()..];
         let snippet = desc_re
             .captures(after)
-            .map(|c| crate::tools::websearch::engines::brave::clip_chars(&http::strip_tags(&c[1]), 400))
+            .map(|c| clip_chars(&http::strip_tags(&c[1]), 400))
             .unwrap_or_default();
         out.push(SearchResult {
-            title: crate::tools::websearch::engines::brave::clip_chars(&title, 200),
+            title: clip_chars(&title, 200),
             url,
             snippet,
             source: "baidu.com".into(),
@@ -81,9 +82,9 @@ mod tests {
             if url.is_empty() || title.is_empty() { continue; }
             let after = &html[start..];
             out.push(SearchResult {
-                title: crate::tools::websearch::engines::brave::clip_chars(&title, 200),
+                title: clip_chars(&title, 200),
                 url,
-                snippet: desc_re.captures(after).map(|c| crate::tools::websearch::engines::brave::clip_chars(&http::strip_tags(&c[1]), 400)).unwrap_or_default(),
+                snippet: desc_re.captures(after).map(|c| clip_chars(&http::strip_tags(&c[1]), 400)).unwrap_or_default(),
                 source: "baidu.com".into(),
             });
         }

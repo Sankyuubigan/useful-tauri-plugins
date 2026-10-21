@@ -113,6 +113,12 @@ fn prune_over_limit(data: &mut Value) {
 mod tests {
     use super::*;
 
+    // Тестовый крюк TEST_NOW — общий static для модуля; юнит-тесты cargo
+    // исполняются параллельно, поэтому все тесты, меняющие TEST_NOW,
+    // обязаны держать этот замок, иначе now(ts) записи ломается между
+    // шагами теста (несинхронный тест ловил Some при ожидании None).
+    static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn temp_dir() -> std::path::PathBuf {
         static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -139,6 +145,7 @@ mod tests {
 
     #[test]
     fn put_get_and_ttl_expiry() {
+        let _guard = TEST_LOCK.lock().expect("serial lock");
         let dir = temp_dir();
         let _ = std::fs::remove_file(dir.join(CACHE_FILE));
         *TEST_NOW.lock().expect("крюк") = Some(1000);
@@ -153,6 +160,7 @@ mod tests {
 
     #[test]
     fn prune_keeps_newest_300() {
+        let _guard = TEST_LOCK.lock().expect("serial lock");
         let dir = temp_dir();
         let _ = std::fs::remove_file(dir.join(CACHE_FILE));
         let engines = vec!["exa".to_string()];

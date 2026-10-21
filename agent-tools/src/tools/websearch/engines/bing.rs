@@ -5,6 +5,7 @@ use base64::Engine as _;
 use regex::Regex;
 
 use super::super::http;
+use super::clip_chars;
 use super::{http_status_error, SearchResult};
 
 /// Порт `isBingBlocked`: блокировка по ≥2 капча-словам ИЛИ одно слово
@@ -109,14 +110,14 @@ pub(super) async fn search(query: &str, _limit: usize) -> Result<Vec<SearchResul
         }
         let snippet = desc_re
             .captures(&block)
-            .map(|c| crate::tools::websearch::engines::brave::clip_chars(&http::strip_tags(&c[1]), 400))
+            .map(|c| clip_chars(&http::strip_tags(&c[1]), 400))
             .unwrap_or_default();
         let source = cite_re
             .captures(&block)
-            .map(|c| crate::tools::websearch::engines::brave::clip_chars(&http::strip_tags(&c[1]), 80))
+            .map(|c| clip_chars(&http::strip_tags(&c[1]), 80))
             .unwrap_or_default();
         out.push(SearchResult {
-            title: crate::tools::websearch::engines::brave::clip_chars(&title, 200),
+            title: clip_chars(&title, 200),
             url,
             snippet,
             source,
@@ -186,10 +187,10 @@ mod tests {
             let title = http::strip_tags(&a[2]);
             if url.is_empty() || title.is_empty() { continue; }
             out.push(SearchResult {
-                title: crate::tools::websearch::engines::brave::clip_chars(&title, 200),
+                title: clip_chars(&title, 200),
                 url,
-                snippet: desc_re.captures(&block).map(|c| crate::tools::websearch::engines::brave::clip_chars(&http::strip_tags(&c[1]), 400)).unwrap_or_default(),
-                source: cite_re.captures(&block).map(|c| crate::tools::websearch::engines::brave::clip_chars(&http::strip_tags(&c[1]), 80)).unwrap_or_default(),
+                snippet: desc_re.captures(&block).map(|c| clip_chars(&http::strip_tags(&c[1]), 400)).unwrap_or_default(),
+                source: cite_re.captures(&block).map(|c| clip_chars(&http::strip_tags(&c[1]), 80)).unwrap_or_default(),
             });
         }
         out

@@ -148,8 +148,8 @@ fn token(html_text: &str) -> Option<String> {
         .map(|c| c[1].to_string())
 }
 
-/// Общий стриппер как в brave.rs (определение утилиты там, реэкспортируем).
-use super::brave::clip_chars as clip;
+/// Общий стриппер (определение в text_util.rs, re-export в engines/mod.rs).
+use super::clip_chars as clip;
 
 #[cfg(test)]
 mod tests {

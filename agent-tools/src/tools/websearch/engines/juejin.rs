@@ -1,6 +1,7 @@
 //! Juejin — порт `searchJuejin` из web_search.ts: JSON API search_api/v1.
 
 use super::super::http;
+use super::clip_chars;
 use super::{http_status_error, SearchResult, UA_CHROME_112};
 
 pub(super) async fn search(query: &str, limit: usize) -> Result<Vec<SearchResult>, String> {
@@ -61,7 +62,7 @@ pub(super) async fn search(query: &str, limit: usize) -> Result<Vec<SearchResult
         if title.is_empty() || url2.is_empty() {
             continue;
         }
-        let desc = crate::tools::websearch::engines::brave::clip_chars(
+        let desc = clip_chars(
             &http::strip_tags(&first_nonempty_str(item.get("content_highlight"), info.get("brief_content"))),
             300,
         );
@@ -86,7 +87,7 @@ pub(super) async fn search(query: &str, limit: usize) -> Result<Vec<SearchResult
             snippet_parts.push(meta);
         }
         out.push(SearchResult {
-            title: crate::tools::websearch::engines::brave::clip_chars(&title, 200),
+            title: clip_chars(&title, 200),
             url: url2,
             snippet: snippet_parts.join("\n"),
             source: if author.is_empty() { "juejin.cn".into() } else { author },
@@ -133,7 +134,7 @@ mod tests {
             let raw_title = first_nonempty_str(item.get("title_highlight"), info.get("title"));
             let title = http::strip_tags(&raw_title);
             if title.is_empty() || url2.is_empty() { continue; }
-            let desc = crate::tools::websearch::engines::brave::clip_chars(&http::strip_tags(&first_nonempty_str(item.get("content_highlight"), info.get("brief_content"))), 300);
+            let desc = clip_chars(&http::strip_tags(&first_nonempty_str(item.get("content_highlight"), info.get("brief_content"))), 300);
             let mut meta_parts: Vec<String> = Vec::new();
             if let Some(cat) = str_of(m.get("category")) { meta_parts.push(format!("Категория: {cat}")); }
             if !author.is_empty() { meta_parts.push(format!("Автор: {author}")); }
@@ -145,7 +146,7 @@ mod tests {
             if !desc.is_empty() { snippet_parts.push(desc); }
             if !meta.is_empty() { snippet_parts.push(meta); }
             out.push(SearchResult {
-                title: crate::tools::websearch::engines::brave::clip_chars(&title, 200),
+                title: clip_chars(&title, 200),
                 url: url2,
                 snippet: snippet_parts.join("\n"),
                 source: if author.is_empty() { "juejin.cn".into() } else { author },

@@ -3,6 +3,7 @@
 use regex::Regex;
 
 use super::super::http;
+use super::clip_chars;
 use super::{http_status_error, SearchResult, UA_CHROME_112};
 
 pub(super) async fn search(query: &str, _limit: usize) -> Result<Vec<SearchResult>, String> {
@@ -74,12 +75,6 @@ pub(super) async fn search(query: &str, _limit: usize) -> Result<Vec<SearchResul
         });
     }
     Ok(out)
-}
-
-/// Стриппер по символам: JS-подобный `slice(0, n)` (по кодовому «числу»).
-/// Порт `query.slice(0, 60)` / `title.slice(0, 200)`.
-pub(crate) fn clip_chars(text: &str, max: usize) -> String {
-    text.chars().take(max).collect()
 }
 
 #[cfg(test)]

@@ -109,7 +109,10 @@ fn js_parse_int(s: &str) -> Option<i64> {
 /// Возвращает resolved-список, флаг parallel и опциональную ошибку ввода —
 /// только на случай «все имена неизвестны» (как в TS).
 pub(crate) fn resolve_engines(args: &Value) -> Result<(Vec<String>, bool), HandlerError> {
-    let default: Vec<String> = engines::DEFAULT_ORDER.iter().map(|s| s.to_string()).collect();
+    // Дефолт — ранкинг из боевой статистики (PRP Шаг 1, SSOT stats.rs);
+    // пустая статистика → fallback DEFAULT_ORDER внутри engines::default_chain.
+    // Явный список engines=[...] обходу не мешается (cooldown не применяется).
+    let default: Vec<String> = engines::default_chain();
     let Some(list) = args
         .get("engines")
         .and_then(Value::as_array)
@@ -187,7 +190,28 @@ pub(crate) async fn handle(args: &Value) -> Result<String, HandlerError> {
     }
 
     let limit = parse_limit(args.get("limit"));
-    let (engines, parallel) = resolve_engines(args)?;
+    let (mut engines, mut parallel) = resolve_engines(args)?;
+
+    // Маршрутизация адресных движков (PRP Шаг 4): префикс в тексте запроса
+    // Перекрывает дефолт-цепочку ТОЛЬКО когда явный engines список не задан
+    // (явный `--engines` юзера имеет приоритет над авторазрутированием).
+    let explicit_engines = args
+        .get("engines")
+        .and_then(Value::as_array)
+        .map(|a| !a.is_empty())
+        .unwrap_or(false);
+    if !explicit_engines {
+        match engines::api_search::apply_prefixes(&mut queries) {
+            Ok(Some(name)) => {
+                // Префикс однозначен: рулит ТОЛЬКО адресный движок
+                // (универсальные не запускаются), режим параллельный.
+                engines = vec![name.to_string()];
+                parallel = true;
+            }
+            Ok(None) => {}
+            Err(msg) => return Err(HandlerError::input(format!("WebSearch: {msg}"))),
+        }
+    }
 
     let cache_key_str = cache::cache_key("web", &engines, parallel, &queries.join("|"));
     if let Some(cached) = cache::cache_get(&cache_key_str) {
@@ -302,7 +326,12 @@ mod tests {
     fn engines_without_array_gives_default_chain_not_parallel() {
         let (engines, parallel) = resolve_engines(&json!({})).expect("дефолт");
         assert!(!parallel);
-        assert_eq!(engines, engines::DEFAULT_ORDER.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        // Дефолт — ранкинг из stats: состав может отличаться от DEFAULT_ORDER
+        // (dead-движки отсеиваются), поэтому проверяем честные инварианты.
+        assert!(!engines.is_empty(), "дефолтная цепочка не пустая");
+        for name in &engines {
+            assert!(engines::ENGINE_NAMES.contains(&name.as_str()), "имя {name} из реестра");
+        }
     }
 
     #[test]

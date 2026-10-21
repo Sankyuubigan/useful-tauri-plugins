@@ -99,6 +99,32 @@ has published a measurement — including the vendor»). Что известно
 опубликованным шедулем и merged-GGUF, но БЕЗ LPIPS. Вердиктов «лучше/хуже» не
 выносим до наших замеров (bench-харнесс, см. §7).
 
+### Стек Krea-2-Turbo — в каталоге с 21.10.2026
+
+Отдельная архитектура 12.9B (НЕ Qwen-Image-2.1): diffusion `realrebelai/KREA-2_GGUFs/TURBO` +
+**Wan2.1 VAE** (Comfy-Org repackaged) + TE **Qwen3-VL-4B** + mmproj
+Qwen3-VL-4B-F16 (edit). Пресет — официальный Turbo-чекпоинт: 8 шагов, CFG 1.0,
+mu=1.15, сигма-сетка из `sampling.py` README `krea-ai/krea-2`
+(значения сверены с `krea_compare.rs`, формула в коде). Ref-режим редактирования
+подтверждён исходником sd.cpp (`diffusion_engine.cpp:3219` — auto-preset
+`krea2_ostris_edit`); живой смок-эдит — обязательный шаг валидации.
+
+Специфика против Qwen-стека:
+
+1. **model-args не посылается** (`krea2.hpp` не имеет парсера model-args —
+   qwen-ключ `qwen_image_2_1_prefix_cache_type` молча игнорировался бы; теперь
+   `--model-args` задаётся каталогом per-bundle, Krea2-записи поля не имеют).
+2. **Теги `<image1>/<image2>` не применяются** — конвенция Qwen-стека:
+   референс описывается словами («первая картинка — вторая картинка»).
+3. **8 ГБ — только Q3_K_M** (weights 5.5 ГБ diffusion; статический минимум
+   ~8.5 ГБ — впритык; применимость решит замер по методике §4 и запишет
+   фактический `compute_buffers_mb` в каталог; пороги не подгоняются).
+   Q4_K_M (7.2 ГБ diffusion) на 8-гб карту не влезает физически — квант
+   для 12+ ГБ VRAM (замер на 16 ГБ: пик 13.5–14.9 ГБ при img2img 2048²).
+
+Каталог: `krea2-turbo-q4km`, `krea2-turbo-q3km` (оба — полный функционал:
+генерация + редактирование + апскейл img2img; по правило mmproj у каждого).
+
 ## 3. Сигма-шедули (обязательно к точности)
 
 Turbo-семейство живёт по **фиксированным сигма-профилям**. Контракт sd.cpp
@@ -122,8 +148,9 @@ custom_sigmas поле `scheduler` НЕ влияет на шаги (игнори
 - `sd-server.exe`: native async `/sdcpp/v1/…`, совместимые `/v1`,`/sdapi/v1`,
   Web UI на `:1234/`.
 - Спавн (image_engine.rs): `--diffusion-model --vae --llm [--llm_vision mmproj]
-  --listen-ip --listen-port --fa --diffusion-fa --auto-fit on --max-vram -1
-  --model-args qwen_image_2_1_prefix_cache_type=q8_0`.
+  --listen-ip --listen-port --fa --diffusion-fa --auto-fit on --max-vram -1 [--model-args <ключ из каталога>]`.
+  Флаг `--model-args` задаётся полем `model_args` записи каталога (per-bundle):
+  qwen-бандлы — `qwen_image_2_1_prefix_cache_type=q8_0`, Krea2 — без флага.
 - `--offload-to-cpu` в текущей версии sd.cpp сохраняет скорость (см.
   performance.md); авто-fit сам решает сегментацию — в интеграции флаги
   размещения не передачаны (см. комментарий в `image_engine.rs` и PRP).
@@ -212,6 +239,12 @@ steps/cfg, load_time_s, free/total/peak/free-after VRAM, число провал
   examples/server/README.md
 - civitai api: `https://civitai.com/api/v1/models?types=LORA&query=...`
 - unsloth.ai/docs/models/qwen-image-2.1 (гайд + RAG-чат `?ask=...`)
+- krea-ai/krea-2 (README + sampling.py: Turbo-пресет 8 шагов, CFG 1.0, mu=1.15,
+  сигма-формула)
+- realrebelai/KREA-2_GGUFs (HF API tree TURBO, размеры 20.10.2026)
+- Qwen/Qwen3-VL-4B-Instruct-GGUF (HF API tree, TE + mmproj)
+- Comfy-Org/Wan_2.1_ComfyUI_repackaged (Wan2.1 VAE)
+- sd.cpp: docs/krea2.md (стек + ref-режим krea2_ostris_edit)
 
 ## Что отложено / снято (не в текущем каталоге)
 
@@ -233,6 +266,7 @@ steps/cfg, load_time_s, free/total/peak/free-after VRAM, число провал
   256px) и обзор myaiforce (3 прохода: iterative upscale + super-res + tiled
   refinement). Krea 2 — отдельный стек весов: diffusion Krea-2-Turbo/Raw
   (`realrebelai/KREA-2_GGUFs`, 12.9B) + **Wan2.1 VAE** + TE **Qwen3-VL-4B**
-  (документ sd.cpp `docs/krea2.md`). Заявления «апскейлы Krea 2 самые лучшие»
-  публичными замерами НЕ подтверждены; решение — после нашего bench-сравнения
-  (img2img-upscale vs tiled vs Krea2-Turbo).
+  (документ sd.cpp `docs/krea2.md`). **Обновление 21.10.2026:** базовые
+  Turbo-бандлы (Q4_K_M, Q3_K_M) уже в продуктовом каталоге (см. §2);
+  заявлений «лучшие апскейлы» публичные замеры не подтверждают — сравнение
+  остаётся за нашим bench (img2img-upscale vs tiled), tiled по-прежнему deferred.

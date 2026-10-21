@@ -2,7 +2,7 @@
   {
     "name": "qwen-image-2.1-turbo-unsloth-q5_ks",
     "label": "Qwen Image 2.1 Turbo (unsloth Q5_K_S) — 8 шагов, для карт ~8 ГБ",
-    "note": "Официальный Turbo-чекпоинт (fine-tune базы: 8 шагов, CFG 1.0, euler). LPIPS unsloth 0.103/083 (mean/held-out) — лучшая точность на байт. Полный функционал: генерация И редактирование (ммproj в наборе; референсы адресуются <image1>, <image2>). Размеры VRAM/RAM — ОЦЕНКИ; в общей папке TE/VAE/mmproj уже скачаны — новый файл только diffusion (~4.2 ГБ).",
+    "note": "Официальный Turbo-чекпоинт (fine-tune базы: 8 шагов, CFG 1.0, euler). LPIPS unsloth 0.103/083 (mean/held-out) — лучшая точность на байт. Полный функционал: генерация И редактирование (mmproj в наборе; референсы адресуются <image1>, <image2>). Размеры VRAM/RAM — ОЦЕНКИ; в общей папке TE/VAE/mmproj уже скачаны — новый файл только diffusion (~4.2 ГБ).",
     "is_default": true,
     "files": [
       {
@@ -30,6 +30,7 @@
         "size_bytes": 675509688
       }
     ],
+    "model_args": "qwen_image_2_1_prefix_cache_type=q8_0",
     "preset": {
       "cfg_scale": 1.0,
       "sampler": "euler",
@@ -74,6 +75,7 @@
         "size_bytes": 675509688
       }
     ],
+    "model_args": "qwen_image_2_1_prefix_cache_type=q8_0",
     "preset": {
       "cfg_scale": 1.0,
       "sampler": "euler",
@@ -86,5 +88,95 @@
     "size_gb": "11.2",
     "vram_fast_gb": 12.5,
     "ram_min_gb": 13.0
+  },
+  {
+    "name": "krea2-turbo-q4km",
+    "label": "Krea 2 Turbo (Q4_K_M) — 8 шагов, качество; нужна VRAM 12+ ГБ",
+    "note": "Krea-2-Turbo 12.9B (realrebelai, официальный Turbo-чекпоинт: 8 шагов, CFG 1.0, mu=1.15, сигма-сетка из sampling.py krea-ai/krea-2). Полный функционал: генерация И редактирование (Qwen3-VL-4B + mmproj-F16; ref-режим «krea2_edit» — поддержку подтверждает исходник sd.cpp, живой смок-эдит — этап валидации). ВАЖНО: qwen-теги <image1>/<image2> для Krea2 НЕ применяются — референс описывается словами («сделай … у первой картинки на основе второй»). Пик VRAM (замер 20.10.2026, img2img 2048²): ~13.5–14.9 ГБ на 16-гиговой карте. VRAM/RAM — ОЦЕНКИ (weights+буферы): на 8-гб карту НЕ влезает физически (diffusion 7.2 ГБ).",
+    "is_default": false,
+    "files": [
+      {
+        "role": "diffusion",
+        "filename": "Krea-2-Turbo-Q4_K_M.gguf",
+        "download_url": "https://huggingface.co/realrebelai/KREA-2_GGUFs/resolve/main/TURBO/Krea-2-Turbo-Q4_K_M.gguf?download=true",
+        "size_bytes": 7216993376
+      },
+      {
+        "role": "llm",
+        "filename": "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+        "download_url": "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true",
+        "size_bytes": 2497281664
+      },
+      {
+        "role": "mmproj",
+        "filename": "mmproj-Qwen3VL-4B-Instruct-F16.gguf",
+        "download_url": "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-F16.gguf?download=true",
+        "size_bytes": 836180256
+      },
+      {
+        "role": "vae",
+        "filename": "wan_2.1_vae.safetensors",
+        "download_url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors?download=true",
+        "size_bytes": 253815318
+      }
+    ],
+    "preset": {
+      "cfg_scale": 1.0,
+      "sampler": "euler",
+      "width": 1024,
+      "height": 1024,
+      "steps": 8,
+      "seed": -1,
+      "custom_sigmas": [1.0, 0.95672375, 0.90453076, 0.8403488, 0.75951093, 0.6545668, 0.5128441, 0.31090105, 0.0]
+    },
+    "size_gb": "10.8",
+    "vram_fast_gb": 11.5,
+    "vram_min_gb": 10.2,
+    "ram_min_gb": 11.8
+  },
+  {
+    "name": "krea2-turbo-q3km",
+    "label": "Krea 2 Turbo (Q3_K_M) — 8 шагов; единственный квант на ~8 ГБ свободной VRAM",
+    "note": "Тот же стек Krea-2-Turbo (12.9B, Turbo: 8 шагов, CFG 1.0, mu=1.15, сигма-сетка официал), diffusion квант Q3_K_M (5.5 ГБ). Полный функционал: генерация И редактирование (Qwen3-VL-4B + mmproj-F16). Статический минимум ~8.5 ГБ (diffusion + буферы 2 ГБ + резерв 1 ГБ) — ВПРИТЫК к 8 ГБ свободных; применимость решит замер (методика §4 docs/BUNDLES.md), после него сюда будет записано фактическое compute_buffers_mb бандла. Порог не подгоняется: если замер скажет «не влезает» — preflight честно откажет (Enforce). VRAM/RAM — ОЦЕНКИ.",
+    "is_default": false,
+    "files": [
+      {
+        "role": "diffusion",
+        "filename": "Krea-2-Turbo-Q3_K_M.gguf",
+        "download_url": "https://huggingface.co/realrebelai/KREA-2_GGUFs/resolve/main/TURBO/Krea-2-Turbo-Q3_K_M.gguf?download=true",
+        "size_bytes": 5514578016
+      },
+      {
+        "role": "llm",
+        "filename": "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+        "download_url": "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/Qwen3VL-4B-Instruct-Q4_K_M.gguf?download=true",
+        "size_bytes": 2497281664
+      },
+      {
+        "role": "mmproj",
+        "filename": "mmproj-Qwen3VL-4B-Instruct-F16.gguf",
+        "download_url": "https://huggingface.co/Qwen/Qwen3-VL-4B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-4B-Instruct-F16.gguf?download=true",
+        "size_bytes": 836180256
+      },
+      {
+        "role": "vae",
+        "filename": "wan_2.1_vae.safetensors",
+        "download_url": "https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/resolve/main/split_files/vae/wan_2.1_vae.safetensors?download=true",
+        "size_bytes": 253815318
+      }
+    ],
+    "preset": {
+      "cfg_scale": 1.0,
+      "sampler": "euler",
+      "width": 1024,
+      "height": 1024,
+      "steps": 8,
+      "seed": -1,
+      "custom_sigmas": [1.0, 0.95672375, 0.90453076, 0.8403488, 0.75951093, 0.6545668, 0.5128441, 0.31090105, 0.0]
+    },
+    "size_gb": "9.1",
+    "vram_fast_gb": 9.8,
+    "vram_min_gb": 8.5,
+    "ram_min_gb": 10.0
   }
 ]

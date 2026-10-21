@@ -13,6 +13,7 @@ use super::{ErrorReport, ReportingConfig, APP_VERSION, CONFIG};
 
 static QUEUE: OnceLock<Mutex<VecDeque<Value>>> = OnceLock::new();
 static SESSION: OnceLock<Mutex<SessionState>> = OnceLock::new();
+static HTTP_SHARE: OnceLock<Option<reqwest::Client>> = OnceLock::new();
 static FLUSHER_STARTED: AtomicBool = AtomicBool::new(false);
 static FLUSHING: AtomicBool = AtomicBool::new(false);
 
@@ -20,6 +21,24 @@ const SESSION_TIMEOUT_SECS: i64 = 4 * 60 * 60;
 const MAX_BATCH: usize = 25;
 const FLUSH_INTERVAL: Duration = Duration::from_secs(10);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// ЕДИНЫЙ HTTP-клиент Aptabase (лениво, с тем же таймаутом).
+///
+/// Раньше `try_flush` и `send_error` строили новый `reqwest::Client` на каждый
+/// вызов; при периодическом флаше (FLUSH_INTERVAL = 10 с) каждый POST открывал
+/// НОВУЮ TCP/TLS-коннекцию, и reqwest/hyper логировал это на DEBUG
+/// («starting new connection: https://eu.aptabase.com/») — строки сыпались в
+/// файл-лог каждые ~10–20 с. Общий клиент переиспользует keep-alive пул:
+/// коннект открывается только после простоя пула, а не на каждый флаш.
+/// строки сыпались в файл-лог каждые ~10–20 с. Общий клиент переиспользует
+/// keep-alive пул: коннект открывается только после простоя пула, а не на
+/// каждый флаш. Единичные остаточные коннект-строки дожимает фильтр таргетов
+/// в logger.rs (hyper и co. на WARN+ — их диагностика сбоев сети не теряется).
+fn http_client() -> Option<&'static reqwest::Client> {
+    HTTP_SHARE
+        .get_or_init(|| reqwest::Client::builder().timeout(HTTP_TIMEOUT).build().ok())
+        .as_ref()
+}
 
 #[derive(Default)]
 struct SessionState {
@@ -134,10 +153,8 @@ async fn try_flush() {
         return;
     }
 
-    let client = match reqwest::Client::builder().timeout(HTTP_TIMEOUT).build() {
-        Ok(c) => c,
-        Err(_) => return,
-    };
+    // Клиент строится лениво и переиспользуется (см. http_client).
+    let Some(client) = http_client() else { return };
     let url = format!("{}/api/v0/events", region_base(&cfg.app_key));
 
     loop {
@@ -199,10 +216,8 @@ pub fn send_error(cfg: ReportingConfig, report: ErrorReport) {
         "breadcrumbs": report.breadcrumbs,
     });
     tauri::async_runtime::spawn(async move {
-        let client = match reqwest::Client::builder().timeout(HTTP_TIMEOUT).build() {
-            Ok(c) => c,
-            Err(_) => return,
-        };
+        // Единый ленивый клиент (см. http_client) — без новой коннекции на каждую ошибку.
+        let Some(client) = http_client() else { return };
         let _ = client
             .post(&url)
             .header("App-Key", &app_key)
@@ -233,5 +248,18 @@ mod tests {
         assert!(ev["timestamp"].as_str().is_some());
         assert!(ev["systemProps"]["appVersion"].is_string());
         assert!(ev["props"].is_null());
+    }
+
+    /// Оба места отправки пользуются ОДНИМ клиентом (корень спама
+    /// «starting new connection» — новый клиент на каждый флаш).
+    #[test]
+    fn http_client_is_shared_across_calls() {
+        let first = http_client();
+        let second = http_client();
+        // Клиент обязан построиться (builder не падает на типичной машине)…
+        assert!(first.is_some(), "клиент не построился");
+        assert!(second.is_some(), "клиент не построился");
+        // …и это ровно та же статическая ссылка, без перестроения.
+        assert!(std::ptr::eq(first.unwrap(), second.unwrap()));
     }
 }

@@ -230,7 +230,17 @@ where
     let (free_before, total) = nvml_now();
 
     let load_start = Instant::now();
-    let engine = ImageEngine::new(engine_dir, bundle_dir, entry, variant_pref, log_cb.clone())?;
+    // Замерный режим preflight (см. PreflightPolicy): bench меряет ФИЗИЧЕЧЕСКУЮ
+    // возможность, а не оценку калькулятора (в дефиците VRAM оценка блокирует
+    // запуск, и замер невозможен).
+    let engine = ImageEngine::new_with_policy(
+        engine_dir,
+        bundle_dir,
+        entry,
+        variant_pref,
+        crate::engine::image_engine::PreflightPolicy::Measure,
+        log_cb.clone(),
+    )?;
     let load_time_s = load_start.elapsed().as_secs_f64();
 
     let mut failed = Vec::new();

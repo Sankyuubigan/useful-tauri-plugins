@@ -61,9 +61,12 @@ fn diffusion_bytes(entry: &ImageBundleEntry) -> u64 {
 /// Статическая оценка по бандлу + факты NVML/sysinfo.
 pub fn estimate_image_memory_mb(entry: &ImageBundleEntry) -> MemoryEstimate {
     const MIB: f64 = 1024.0 * 1024.0;
+    // Compute-буфер: замер бандла точнее общей константы (напр. Krea2 при
+    // img2img 2048² буферизует больше, чем 2048 МБ — решает замер §4 BUNDLES.md).
+    let buffers_mb = entry.compute_buffers_mb.unwrap_or(COMPUTE_BUFFERS_MB);
     let disk_mb = bundle_disk_bytes(entry) as f64 / MIB;
-    let full_mb = disk_mb + COMPUTE_BUFFERS_MB + SAFETY_RESERVE_MB;
-    let min_mb = diffusion_bytes(entry) as f64 / MIB + COMPUTE_BUFFERS_MB + SAFETY_RESERVE_MB;
+    let full_mb = disk_mb + buffers_mb + SAFETY_RESERVE_MB;
+    let min_mb = diffusion_bytes(entry) as f64 / MIB + buffers_mb + SAFETY_RESERVE_MB;
     let ram_need_mb = disk_mb + SAFETY_RESERVE_MB;
 
     let (vram_free_mb, vram_total_mb) = match nvml_wrapper::Nvml::init() {
@@ -155,21 +158,21 @@ mod tests {
     #[test]
     fn estimate_matches_catalog_thresholds() {
         let catalog = load_image_catalog();
-        assert_eq!(catalog.len(), 2, "в каталоге 2 turbo-бандла (q6k удалён)");
+        assert_eq!(catalog.len(), 4, "в каталоге 4 бандла (2 qwen-turbo + 2 krea2-turbo)");
         for e in &catalog {
             let est = estimate_image_memory_mb(e);
-            // Диск: olečen из bytes каталога (vcэšk diffusion 4.2–5.6 ГБ + llm 5.0 +
-            // mmproj 1.16 + vae 0.68) → 11.2–12.9 ГБ десятичных ≈ 10 600–13 000 МБ.
+            // Диск: из bytes каталога. Qwen-стек 11.2–11.4 ГБ десятичных;
+            // Krea2: Q4_K_M 10.8 ГБ, Q3_K_M 9.1 ГБ ⇒ диапазон 9–12.4 ГБ.
             assert!(
-                est.disk_mb > 10_500.0 && est.disk_mb < 14_000.0,
+                est.disk_mb > 8_500.0 && est.disk_mb < 14_000.0,
                 "{}: disk {}",
                 e.name,
                 est.disk_mb
             );
             // Full-режим дороже min (буферы/вторая копия весов) — инвариант формулы.
             assert!(est.full_mb > est.min_mb, "{}: full {} <= min {}", e.name, est.full_mb, est.min_mb);
-            // Замер 19.10.2026: turbo full-пик 13.0–14.6 ГБ — формулы-минимумы
-            // turbo-стека по диapasonic: diffusion 4.2–5.6 ГБ + буферы ⇒ 6–11 ГБ.
+            // Замер 19.10.2026: turbo full-пик 13.0–14.6 ГБ — минимумы бандлов
+            // по диапазону: diffusion 4.3–7.2 ГБ + буферы (2048) + резерв ⇒ 6–11 ГБ.
             assert!(
                 est.min_mb > 5000.0 && est.min_mb < 12000.0,
                 "{}: min {}",
@@ -179,5 +182,54 @@ mod tests {
             // У КАЖДОГО набора mmproj (правило юзера: edit обязателен) — 4 файла.
             assert_eq!(e.files.len(), 4, "{}: файлов {}", e.name, e.files.len());
         }
+    }
+
+    /// Замер бандла перекрывает константу (SSOT расчёта preflight): None —
+    /// COMPUTE_BUFFERS_MB, Some(x) — ровно x (правило «замер, а не подбор»).
+    #[test]
+    fn per_bundle_compute_buffers_used_by_estimate() {
+        let make_entry = |buffers: Option<f64>| ImageBundleEntry {
+            name: "synthetic".to_string(),
+            label: String::new(),
+            note: String::new(),
+            is_default: false,
+            files: vec![crate::engine::models_catalog::BundleFile {
+                role: "diffusion".to_string(),
+                filename: "synthetic-gb.gguf".to_string(),
+                download_url: String::new(),
+                // 1 Гиби = 1 073 741 824 байта = ровно 1024 МБ.
+                size_bytes: Some(1_073_741_824),
+            }],
+            model_args: None,
+            compute_buffers_mb: buffers,
+            preset: Default::default(),
+            size_gb: None,
+            vram_fast_gb: None,
+            vram_min_gb: None,
+            ram_min_gb: None,
+        };
+
+        // None → константа: min = diffusion 1024 МБ + 2048 + 1024 = 4096 МБ.
+        let none_entry = make_entry(None);
+        let est = estimate_image_memory_mb(&none_entry);
+        assert!(
+            (est.min_mb - 4096.0).abs() < 0.5,
+            "min без замера = 1024 + COMPUTE_BUFFERS_MB(2048) + SAFETY(1024), got {}",
+            est.min_mb
+        );
+
+        // Some(512) → замер важнее константы: min = 1024 + 512 + 1024 = 2560 МБ.
+        let measured_entry = make_entry(Some(512.0));
+        let est = estimate_image_memory_mb(&measured_entry);
+        assert!(
+            (est.min_mb - 2560.0).abs() < 0.5,
+            "min с замером 512: diffusion 1024 + 512 + 1024, got {}",
+            est.min_mb
+        );
+        assert!(
+            (est.full_mb - (1024.0 + 512.0 + 1024.0)).abs() < 0.5,
+            "full с замером: идёт та же величина буфера, got {}",
+            est.full_mb
+        );
     }
 }

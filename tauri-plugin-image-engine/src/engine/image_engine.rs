@@ -130,6 +130,19 @@ pub struct ImageEngine {
     client: reqwest::blocking::Client,
 }
 
+/// Политика preflight при spawn sd-server.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreflightPolicy {
+    /// Продуктовое поведение: при нехватке VRAM — понятная ошибка, движок не
+    /// запускается (пользователю лучше отказ, чем OOM в середине генерации).
+    Enforce,
+    /// Замерный режим (bench): оценка preflight пишется в лог, но запуск не
+    /// блокируется. Нужен ФИЗИЧЕСКИЙ ответ «влезает ли auto-fit в дефицит» —
+    /// калькулятор preflight отвечает на другой вопрос («достаточно ли по
+    /// оценке»).
+    Measure,
+}
+
 impl ImageEngine {
     /// Spawn sd-server с файлами бандла. Preflight — до spawn (понятная ошибка
     /// вместо падения сервера); вердикт Offload → стейджинг-флаги уже в cmd.
@@ -138,6 +151,28 @@ impl ImageEngine {
         bundle_dir: &Path,
         entry: &ImageBundleEntry,
         variant_pref: Option<&str>,
+        log_cb: L,
+    ) -> Result<Self, String>
+    where
+        L: Fn(String),
+    {
+        Self::new_with_policy(
+            engine_dir,
+            bundle_dir,
+            entry,
+            variant_pref,
+            PreflightPolicy::Enforce,
+            log_cb,
+        )
+    }
+
+    /// То же, но с явной политикой preflight (см. `PreflightPolicy`).
+    pub fn new_with_policy<L>(
+        engine_dir: &Path,
+        bundle_dir: &Path,
+        entry: &ImageBundleEntry,
+        variant_pref: Option<&str>,
+        policy: PreflightPolicy,
         log_cb: L,
     ) -> Result<Self, String>
     where
@@ -172,7 +207,13 @@ impl ImageEngine {
         match verdict {
             PreflightVerdict::Fast => log_cb(format!("✅ {}", msg)),
             PreflightVerdict::Offload => log_cb(format!("⚙️ {}", msg)),
-            PreflightVerdict::Insufficient => return Err(msg),
+            PreflightVerdict::Insufficient => match policy {
+                PreflightPolicy::Enforce => return Err(msg),
+                PreflightPolicy::Measure => log_cb(format!(
+                    "⚠️ {} (замерный режим: запуск не блокируется — меряем физический результат).",
+                    msg
+                )),
+            },
         }
 
         // ── Файлы бандла обязаны существовать ──
@@ -235,12 +276,19 @@ impl ImageEngine {
             // структурно проходимыми (sd-server --help: «--vae-tiling: process
             // vae in tiles to reduce memory usage»).
             "--vae-tiling",
-            // Prefix KV-кэш (текст + vision-токены референсов) в 8 бит: вдвое меньше
-            // VRAM, чем f16 (1.06 ГБ против 2 ГБ на префикс ~4096 токенов), при
-            // сохранении ускорения «посчитать кондиционирование один раз».
-            "--model-args",
-            "qwen_image_2_1_prefix_cache_type=q8_0",
         ]);
+        // Prefix KV-кэш (текст + vision-токены референсов) в 8 бит: вдвое меньше
+        // VRAM, чем f16, при сохранении ускорения «посчитать кондиционирование
+        // один раз». Ключ задаёт КАТАЛОГ бандла (per-bundle `model_args`): для
+        // стеков Krea2 qwen-ключ не посылается — у krea2 нет собственного
+        // парсера model-args, ключ молча игнорировался бы.
+        match entry.model_args.as_deref().map(str::trim).filter(|arg| !arg.is_empty()) {
+            Some(model_args) => {
+                log_cb(format!("⚙ model-args: {}", model_args));
+                cmd.args(["--model-args", model_args]);
+            }
+            None => log_cb("⚙ model-args: (бандл не задаёт)".to_string()),
+        }
         cmd.current_dir(engine_dir);
         #[cfg(windows)]
         {

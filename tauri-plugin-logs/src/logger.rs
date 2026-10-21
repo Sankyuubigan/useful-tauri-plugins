@@ -153,9 +153,24 @@ pub struct AppLogger;
 
 static LOGGER: AppLogger = AppLogger;
 
+/// Таргеты HTTP-стека, чьи DEBUG/TRACE не пишем в лог: их
+/// «starting new connection: …» сыпался в файл на каждом флаше aptabase
+/// (общий клиент убрал регулярные коннекты; одиночные — остаточная шуршня).
+/// WARN/ERROR от этих же таргетов проходят — сетевые сбои терять нельзя.
+const NOISY_HTTP_TARGET_PREFIXES: [&str; 4] = ["hyper", "hyper_util", "reqwest", "hyper_rustls"];
+
+fn is_noisy_http_debug(metadata: &Metadata) -> bool {
+    if !matches!(metadata.level(), Level::Debug | Level::Trace) {
+        return false;
+    }
+    NOISY_HTTP_TARGET_PREFIXES
+        .iter()
+        .any(|prefix| metadata.target().starts_with(prefix))
+}
+
 impl Log for AppLogger {
-    fn enabled(&self, _metadata: &Metadata) -> bool {
-        true
+    fn enabled(&self, metadata: &Metadata) -> bool {
+        !is_noisy_http_debug(metadata)
     }
 
     fn log(&self, record: &Record) {
@@ -269,8 +284,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn timestamp_format_is_local_yyyymmdd_hhmmss() {
-        let ts = timestamp();
+    fn timestamp_format_is_local_yyyymmdd_hhmmss() {        let ts = timestamp();
         assert!(ts.len() >= 19, "формат YYYY-MM-DD HH:MM:SS, получено: {}", ts);
         assert!(ts.chars().nth(4) == Some('-') && ts.chars().nth(7) == Some('-'), "дата YYYY-MM-DD");
         assert!(ts.chars().nth(10) == Some(' '), "пробел между датой и временем");
@@ -317,5 +331,27 @@ mod tests {
         let bounded = bounded_message(&message);
         assert_eq!(bounded.chars().count(), MAX_LOG_MESSAGE_CHARS);
         assert!(bounded.ends_with('…'));
+    }
+
+    #[test]
+    fn noisy_http_debug_is_filtered_but_errors_pass() {
+        // Функция с единым lifetime: Metadata<'_> держит ссылку target,
+        // замыкание здесь собьёт два независимых lifetime (E0521).
+        fn make(level: Level, target: &str) -> Metadata<'_> {
+            Metadata::builder().level(level).target(target).build()
+        }
+        let logger = AppLogger;
+        // Коннект-шум HTTP-стека на DEBUG/TRACE — заглушен.
+        assert!(!logger.enabled(&make(Level::Debug, "hyper_util::client::legacy::pool")));
+        assert!(!logger.enabled(&make(Level::Debug, "hyper::client::connect::http")));
+        assert!(!logger.enabled(&make(Level::Trace, "reqwest::connect")));
+        // Сетевые сбои на WARN/ERROR — проходят (диагностику не теряем).
+        assert!(logger.enabled(&make(Level::Error, "hyper_util::client::legacy::pool")));
+        assert!(logger.enabled(&make(Level::Warn, "hyper")));
+        // Собственные таргеты приложения не фильтруются вовсе.
+        assert!(logger.enabled(&make(Level::Debug, "app_core::media")));
+        assert!(logger.enabled(&make(Level::Trace, "tauri_plugin_image_engine")));
+        // Префикс должен совпасть С НАЧАЛА: «superhyper» — не шум.
+        assert!(logger.enabled(&make(Level::Debug, "superhyper")));
     }
 }

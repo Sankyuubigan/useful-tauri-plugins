@@ -21,6 +21,11 @@ use crate::engine::models_catalog::ImageBundleEntry;
 /// Грид денойза глазного A/B апскейла.
 pub const UPSCALE_AB_STRENGTHS: &[f32] = &[0.25, 0.35, 0.45];
 
+/// Нейтральный промпт апскейла: сцена не меняется — растёт разрешение и детали.
+/// Используется, когда у источника нет своего промпта (напр. чужие картинки
+/// из интернета). Один текст на все ноги — иначе сравнение нечестное.
+pub const UPSCALE_PROMPT_DEFAULT: &str = "Preserve the scene, increase resolution and fine detail";
+
 /// Тег denoise в имени файла: 0.25 → `d025` (проценты, 3 цифры).
 pub fn denoise_tag(strength: f32) -> String {
     format!("d{:03}", (strength * 100.0).round() as u32)
@@ -92,17 +97,24 @@ where
     }
 
     let load_start = std::time::Instant::now();
-    let engine = ImageEngine::new(engine_dir, bundle_dir, entry, None, log_cb.clone())?;
+    let engine = ImageEngine::new_with_policy(
+        engine_dir,
+        bundle_dir,
+        entry,
+        None,
+        crate::engine::image_engine::PreflightPolicy::Measure,
+        log_cb.clone(),
+    )?;
     log_cb(format!("⏱ Загрузка бандла: {:.1} сек.", load_start.elapsed().as_secs_f64()));
 
     let mut runs = Vec::new();
     let mut failed = Vec::new();
     let log = log_cb.clone();
     for &(idx, seed, ref src) in &jobs {
-        let prompt = t2i_prompts
-            .get(idx)
-            .cloned()
-            .unwrap_or_else(|| "Preserve the scene, increase resolution and fine detail".to_string());
+            let prompt = t2i_prompts
+                .get(idx)
+                .cloned()
+                .unwrap_or_else(|| UPSCALE_PROMPT_DEFAULT.to_string());
         let dims = crate::engine::ref_size::dimensions_from_path(src)
             .ok_or_else(|| format!("{}: не определить размеры {}", entry.name, src.display()))?;
         let (w, h) = upscale_target_dims(dims.0, dims.1);

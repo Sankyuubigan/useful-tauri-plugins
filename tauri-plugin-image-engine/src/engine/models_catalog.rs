@@ -86,6 +86,20 @@ pub struct ImageBundleEntry {
     pub is_default: bool,
     #[serde(default)]
     pub files: Vec<BundleFile>,
+    /// Доп. ключ `--model-args` сервера (строка «key=value»).
+    ///
+    /// None/пусто — флаг ВООБЩЕ не отправляется: у стеков без собственного
+    /// парсера model-args (Krea2, sd.cpp `krea2.hpp`) qwen-ключ
+    /// `qwen_image_2_1_prefix_cache_type` молча игнорируется, поэтому честнее
+    /// не посылать его вовсе (tasks/21.10.26 …md §3.2).
+    #[serde(default)]
+    pub model_args: Option<String>,
+    /// Compute-буфер (МБ) для ЭТОГО бандла — ЗАМЕРЕННОЕ значение
+    /// («compute buffer» из лога сервера, методика §4 docs/BUNDLES.md).
+    /// None — константа COMPUTE_BUFFERS_MB (preflight); поле заполняется
+    /// замером, а не подбором (замер Krea2 — следующий этап плана §3.3).
+    #[serde(default)]
+    pub compute_buffers_mb: Option<f64>,
     #[serde(default)]
     pub preset: ImagePreset,
     /// Суммарный размер файлов на диске, ГБ (строка для UI).
@@ -168,12 +182,17 @@ mod tests {
     #[test]
     fn catalog_parses_and_has_default_bundle() {
         let catalog = load_image_catalog();
-        assert_eq!(catalog.len(), 2, "после удаления q6k в каталоге 2 turbo-бандла, got {}", catalog.len());
+        assert_eq!(
+            catalog.len(),
+            4,
+            "после добавления стека Krea2 в каталоге 4 бандла, got {}",
+            catalog.len()
+        );
         let def = default_bundle_entry().expect("нет бандла по умолчанию");
         // Дефолт после 19.10.2026 — официальный Turbo unsloth (LPIPS 0.103/0.083).
         assert_eq!(def.name, "qwen-image-2.1-turbo-unsloth-q5_ks");
         // Полный функционал (правило юзера): у КАЖДОГО набора редактирование —
-        // значит в бандле роли помощью mmproj и llm обязаны присутствовать.
+        // значит в бандле роли mmproj и llm обязаны присутствовать.
         assert_eq!(def.files.len(), 4, "бандл = 4 файла, got {}", def.files.len());
         let roles: Vec<&str> = def.files.iter().map(|f| f.role.as_str()).collect();
         for r in ["diffusion", "vae", "llm", "mmproj"] {
@@ -207,6 +226,8 @@ mod tests {
         for name in [
             "qwen-image-2.1-turbo-unsloth-q5_ks",
             "qwen-image-2.1-turbo-viggle-q4km",
+            "krea2-turbo-q4km",
+            "krea2-turbo-q3km",
         ] {
             let e = find(name);
             let sigmas = e
@@ -229,7 +250,14 @@ mod tests {
             assert!(roles.contains(&"mmproj"), "edit-функция обязательна: mmproj в наборе {}", name);
             assert_eq!(e.files.len(), 4, "полный набор = 4 файла у {}", name);
             for f in &e.files {
-                let min = if f.role == "vae" { 100_000_000 } else { 1_000_000_000 };
+                // Роль-агностичный минимум: VAE ≥ 100 МБ, mmproj ≥ 300 МБ
+                // (Qwen3VL-4B F16 mmproj = 836 МБ < старого порога 1 ГБ),
+                // остальное ≥ 1 ГБ.
+                let min = match f.role.as_str() {
+                    "vae" => 100_000_000,
+                    "mmproj" => 300_000_000,
+                    _ => 1_000_000_000,
+                };
                 assert!(
                     f.size_bytes.unwrap_or(0) > min,
                     "странный размер {} файла {}",
@@ -245,5 +273,73 @@ mod tests {
         // Дефолт после удаления base (вердикт юзера 19.10.2026): unsloth Turbo.
         let def = default_bundle_entry().expect("дефолт");
         assert_eq!(def.name, "qwen-image-2.1-turbo-unsloth-q5_ks", "дефолт — unsloth Turbo");
+    }
+
+    /// Контракт стеков Krea2: TE/Vae/mmproj из Qwen3-VL-4B, официал-сигма 1.0
+    /// первой и 0.0 последней (Значения — krea_compare.rs, сверены с HF API).
+    #[test]
+    fn krea2_bundles_stack_and_model_args_contract() {
+        let catalog = load_image_catalog();
+        let find = |name: &str| {
+            catalog
+                .iter()
+                .find(|e| e.name == name)
+                .unwrap_or_else(|| panic!("нет бандла {}", name))
+                .clone()
+        };
+        let sigmas: [f32; 9] = [
+            1.0, 0.95672375, 0.90453076, 0.8403488, 0.75951093, 0.6545668, 0.5128441,
+            0.31090105, 0.0,
+        ];
+        for (name, diffusion_file) in [
+            ("krea2-turbo-q4km", "Krea-2-Turbo-Q4_K_M.gguf"),
+            ("krea2-turbo-q3km", "Krea-2-Turbo-Q3_K_M.gguf"),
+        ] {
+            let e = find(name);
+            let file = |role: &str| {
+                e.files
+                    .iter()
+                    .find(|f| f.role == role)
+                    .unwrap_or_else(|| panic!("{}: нет роли {}", name, role))
+                    .clone()
+            };
+            assert_eq!(file("diffusion").filename, diffusion_file);
+            assert_eq!(file("llm").filename, "Qwen3VL-4B-Instruct-Q4_K_M.gguf");
+            assert_eq!(file("mmproj").filename, "mmproj-Qwen3VL-4B-Instruct-F16.gguf");
+            assert_eq!(file("vae").filename, "wan_2.1_vae.safetensors");
+            // Компакт-контракт krea_compare.rs: mu=1.15, 9 сигм, last = 0.0.
+            assert_eq!(e.preset.steps, 8);
+            let preset_sigmas = e.preset.custom_sigmas.expect("Krea2 custom_sigmas");
+            assert_eq!(preset_sigmas.len(), 9);
+            assert!(
+                (preset_sigmas[0] - sigmas[0]).abs() < 1e-6,
+                "первая сигма Krea2 обязана быть 1.0"
+            );
+            for (preset_value, canon) in preset_sigmas.iter().zip(sigmas.iter()) {
+                assert!(
+                    (preset_value - canon).abs() < 1e-6,
+                    "сигма {} ≠ официал {}: {} vs {}",
+                    name,
+                    canon,
+                    preset_value,
+                    canon
+                );
+            }
+            // Krea2 НЕ получает qwen model-args (свой стек без парсера) —
+            // и пока замер compute-буфера не сделан, значение — None.
+            assert!(e.model_args.is_none(), "{}: qwen-ключ не посылается", name);
+            assert!(
+                e.compute_buffers_mb.is_none(),
+                "{}: compute_buffers задаётся только замером",
+                name
+            );
+            // Qwen-бандлы держат свой ключ в каталоге (SSOT спавна).
+            let unsloth = find("qwen-image-2.1-turbo-unsloth-q5_ks");
+            assert_eq!(
+                unsloth.model_args.as_deref(),
+                Some("qwen_image_2_1_prefix_cache_type=q8_0"),
+                "qwen-бандл обязан сохранить прежний ключ"
+            );
+        }
     }
 }

@@ -1,0 +1,15 @@
+/** Общие UI-примитивы панелей image-engine: стиль, эскейп, байты, тосты, прогресс. */
+export declare const STYLE = "\n  :host { display: block; color: var(--text, #eee); font-family: var(--font, system-ui, sans-serif); font-size: 13px; }\n  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }\n  .row + .row { margin-top: 8px; }\n  label { color: var(--text-muted, #999); min-width: 60px; }\n  button { padding: 6px 10px; cursor: pointer; border-radius: 6px; border: 1px solid var(--border, #333);\n           background: var(--session-hover, #eee); color: var(--text, #eee); font: inherit; font-size: 13px; }\n  button.primary { background: var(--primary, #4a90d9); color: #fff; border-color: var(--primary, #4a90d9); }\n  button.danger { background: var(--danger, #b54242); color: #fff; border-color: var(--danger, #b54242); }\n  button:disabled { opacity: .5; cursor: default; }\n  button.tab-btn[aria-pressed=\"true\"] { font-weight: 700; }\n  select, input[type=text] { padding: 6px; border-radius: 6px; border: 1px solid var(--border, #333);\n           background: var(--bg-elevated, #1c1c1c); color: var(--text, #eee); font: inherit; font-size: 13px; }\n  .progress-container { display: none; margin-top: 10px; }\n  .progress-status { color: var(--text-muted, #999); font-size: 12px; margin-bottom: 5px; word-break: break-all; }\n  .progress-track { height: 8px; border-radius: 6px; background: var(--border, #333); overflow: hidden; }\n  .progress-bar { height: 100%; width: 0%; background: var(--primary, #4a90d9); transition: width .1s linear; }\n  .hint { color: var(--text-muted, #999); font-size: 12px; white-space: pre-line; }\n  .files { margin: 6px 0 0 0; padding-left: 18px; }\n  .files li { margin: 2px 0; }\n  .ok { color: #6fbf73; }\n  .missing { color: var(--text-muted, #999); }\n  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: none; align-items: center;\n             justify-content: center; z-index: 2000; }\n  .overlay.open { display: flex; }\n  .update-badge { display: inline-block; width: 8px; height: 8px; border-radius: 50%;\n                  background: #4caf50; margin-left: 6px; box-shadow: 0 0 6px #4caf50; }\n  .box { background: var(--bg-elevated, #1c1c1c); border: 1px solid var(--border, #333); border-radius: 12px;\n         padding: 20px; max-width: 520px; width: 90%; }\n  .box h3 { margin: 0 0 12px; font-size: 16px; }\n  .box p { margin: 8px 0; color: var(--text-muted, #aaa); }\n  .overlay-buttons { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }\n";
+export declare function esc(s: string): string;
+export declare function formatBytes(n: number): string;
+/** Лёгкий всплывающий тост (без внешних зависимостей; использует CSS-переменные хоста). */
+export declare function toast(msg: string, kind?: 'success' | 'error'): void;
+/** Payload события downloader:progress плагина. */
+export interface ProgressPayload {
+    downloaded: number;
+    total: number;
+    kind?: string;
+    status?: string;
+}
+/** Текст прогресса по байтовому состоянию. */
+export declare function progressText(downloaded: number, total: number): string;

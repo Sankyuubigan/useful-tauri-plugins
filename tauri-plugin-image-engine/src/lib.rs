@@ -64,6 +64,14 @@ pub fn init() -> TauriPlugin<Wry> {
             commands::estimate_image_memory,
             commands::generate_image,
             commands::edit_image,
+            commands::get_video_bundles,
+            commands::get_video_bundle_info,
+            commands::set_selected_video_bundle,
+            commands::validate_video_bundle_dir,
+            commands::download_video_bundle,
+            commands::set_video_bundle_dir,
+            commands::remove_video_bundle_files,
+            commands::generate_video,
         ])
         .build()
 }

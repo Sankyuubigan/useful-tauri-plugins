@@ -164,9 +164,11 @@ custom_sigmas поле `scheduler` НЕ влияет на шаги (игнори
 
 - Все бандлы живут в одной папке `image_bundle_dir`; каждый entry каталога
   перечисляет свои файлы (роль ИМЯ файла — уникально глобально).
-- Панель настроек (`<image-bundle-panel>`) показывает список бандлов каталога с
+- Панель настроек — медиа-блок `<image-media-panel>` (вкладки «Картинки»/«Видео»,
+  каждая вкладка — `<image-bundle-tab>`): показывает список бандлов каталога с
   метками «скачан/не скачан» и переключает **активный** бандл
-  (`set_selected_image_bundle`); выбор сохраняется в конфиг плагина.
+  (`set_selected_image_bundle` / `set_selected_video_bundle`); выбор сохраняется
+  в конфиг плагина.
 - Выбор выравнивается правилом 19.10.2026: у КАЖДОГО набора полный функционал
   — генерация И редактирование (в том числе mmproj). Дефолт каталога —
   Turbo unsloth Q5_K_S; Viggle Q4_K_M — эконом-вариант. Viggle Q6_K удалён
@@ -226,6 +228,67 @@ steps/cfg, load_time_s, free/total/peak/free-after VRAM, число провал
 - финальное слово — ручной A/B юзера в `test/bench/ab_votes.json`
   (candidate/base/prompt/seed → verdict), см. Шаг 7.4 PRP.
 
+## 9. Видео-бандлы MiniMax H3 (PRP 21.10.26, Фаза 1)
+
+День-1 поддержка sd.cpp (2026/08/04, `docs/minimax_h3.md`). SSOT фактов —
+`video_models_catalog.json` рядом с `image_models_catalog.json`; здесь —
+
+### Стек и спавн
+
+Четыре компонента на ярус спавна: `--diffusion-model` (pruned GGUF) + `--vae`
+(video VAE fp16 `minimax_h3_video_vae_fp16.safetensors`) + `--audio-vae`
+(fp32, 605 МБ) + `--llm` `qwen3vl_32b_minimax_h3-Q2_K_M.gguf` (12.2 ГБ).
+Спавн-инварианты (`build_spawn_args`): **`--offload-to-cpu --rng cpu` всегда**
+(для video РАБОТАЕТ, в отличие от image-Qwen-стека — см. §4), запреты
+`--auto-fit/--max-vram/--fa` не обходить: каталог не задаёт этих полей по
+дизайну.
+
+### Режимы и ограничения vid_gen
+
+- T2VA / I2VA (`--init-img`) / **FL2VA** (init+end, последний кадр) /
+  **Ref2VA** (референсы). `ref_images` нельзя смешивать с
+  `init_image`/`end_image`; `control_frames` у H3 не работает — всегда пусто.
+- Дефолт вывода: 864×480, **24 fps**, CFG 1.0, euler, ≤15 сек.
+- **Кадры: сетка 17k+5; сервер сам нормализует `video_frames` к `4n+1`.**
+  Клиент кадры НЕ нормализует — отдаёт seconds×fps как есть (инвариант
+  `seconds_to_frames` — только арифметика, без сетки).
+- **`hires` в vid_gen НЕ поддерживается** (он только у img_gen): «draft →
+  final» = ДВА вызова vid_gen, а не один.
+- **Draft/final — один стек**: шаговый пресет (draft 3 при Turbo-LoRA,
+  fallback `steps_draft_nolora` 6; final 20), НЕ две разные модели.
+- **Turbo-LoRA — гипотеза до бенча**: поле `lora[]` в vid_gen есть, но LoRA
+  для H3 в docs/minimax_h3.md НЕ документированы (проверено). Пока каталог
+  использует 6-шаговый drift без lora (роль `lora_draft` отложена).
+- Русская речь — нативно: озвучка приходит из текстового промпта (модель
+  T2VAaudio-архитектура), отдельного audio-флага не нужно (see test `H3
+  прямо говорит` docs/minimax_h3.md, T2VA audio-guide).
+
+### Выбор бандла
+
+Каталог `video_models_catalog.json` (21.10.2026):
+
+| Бандл | Diffusion | Размер | VRAM (fast/min) | RAM | Кому |
+|---|---|---|---|---|---|
+| `minimax_h3_fl2va_pruned-q4km` (дефолт) | fl2va Q4_K_M | 30.3 ГБ | 28 / 12 ГБ | ≥30 ГБ | карты ≥12 ГБ |
+| `minimax_h3_fl2va_pruned-q3k` | fl2va Q3_K | 27.7 ГБ | 27 / 8.5 ГБ | ≥28 ГБ | карты ~8 ГБ |
+| `minimax_h3_ref2va_pruned-q3k` | ref2va Q3_K | 27.6 ГБ | 27 / 8.5 ГБ | ≥28 ГБ | референсы, ~8 ГБ |
+
+Q3_K квант мягче по качеству, чем Q4_K — предупреждение честное (частично
+снимется замером draft/final). Общие файлы (llm/VAE/audio-VAE) — одинаковые
+имена у всех трёх бандлов: в общей папке скачивания downloader пропускает
+существующее («Уже скачан»), новый бандл качает только свой diffusion-файл.
+Ref-режим: по субтитрам верифицировано — **>6 референсов ломает следование**;
+агент ограничит ≤3 (image) и аудио-референс тембра голоса; character sheet
+4-view сильно помогает; видео-референсы не советуют (медленно и плохо).
+
+### Preflight и память
+
+`preflight_video` — те же два гейта, что у image (§6): NVML недоступен →
+VRAM-проверка честно пропускается (`vram_txt: "N/A (NVML недоступен)"`), RAM
+и диск проверяются всегда. **Диск считается ТОЛЬКО по отсутствующим файлам**
+(предзаданная папка не пугает двойным размером). VRAM-числа каталога —
+эстимейты: подтвердит bench фазы 1; пороги не подгоняются.
+
 ## Источники
 
 - unsloth/Qwen-Image-2.1-GGUF и unsloth/Qwen-Image-2.1-Turbo-GGUF (таблицы LPIPS,
@@ -257,6 +320,9 @@ steps/cfg, load_time_s, free/total/peak/free-after VRAM, число провал
   вижу, а медленнее». Продуктовый путь апскейла — img2img ×2
   (`init_image` + `strength`, ~50 с, report.upscale_ab.json); hires
   остаётся только bench-инфраструктурой (test_bench.bat).
+- **MiniMax H3 (видео):** ветка по теме в отдельном документе
+  `docs/SOURCES_VIDEO.md` (PRP 21.10.26); бандлы — §9. Turbo-LoRA и
+  lora_draft / lora_swap — отложены до bench (role отложена).
 - **RGBA-прозрачность** — prompt-конвенция
   `This is an RGBA image with transparency. ...` (нативная фича модели).
 - **Krea 2 tiled-diffusion («хитрый апскейл» до ~40 МП):** в sd.cpp tiled

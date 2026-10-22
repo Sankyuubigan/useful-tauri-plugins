@@ -175,6 +175,203 @@ pub fn bundle_weights_files(
         .collect()
 }
 
+// ─────────────────────────── ВИДЕО-КАТАЛОГ ───────────────────────────
+
+/// Дефолтный пресет генерации видео-бандла (SSOT — тот же принцип, что у image).
+///
+/// steps_draft — шаги черновика с Turbo-LoRA (по воркфлоу ролика Ngc6vmyGOyU:
+/// черновик 3 шага); если `lora_draft`-файл отсутствует в бандле (LoRA ещё
+/// не подтверждена бенчем) — движок берёт steps_draft_nolora (6) и логирует
+/// факт. steps_final — качество-режим (20 шагов, замер ролика Ngc6vmyGOyU).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct VideoPreset {
+    /// Шаги черновика при наличии Turbo-LoRA (из каталога, не из кода).
+    #[serde(default = "v_steps_draft")]
+    pub steps_draft: u32,
+    /// Шаги черновика БЕЗ Turbo-LoRA (fallback), тоже из каталога.
+    #[serde(default = "v_steps_draft_nolora")]
+    pub steps_draft_nolora: u32,
+    /// Шаги финала (качество-режим).
+    #[serde(default = "v_steps_final")]
+    pub steps_final: u32,
+    /// fps потока.
+    #[serde(default = "v_fps")]
+    pub fps: u32,
+    /// Макс. длительность клипа (сек). Сетка кадров — ответственность движка.
+    #[serde(default = "v_max_seconds")]
+    pub max_seconds: u32,
+    #[serde(default = "v_cfg_scale")]
+    pub cfg_scale: f32,
+    #[serde(default = "v_sampler")]
+    pub sampler: String,
+    #[serde(default = "v_seed")]
+    pub seed: i64,
+    #[serde(default = "v_width")]
+    pub width: u32,
+    #[serde(default = "v_height")]
+    pub height: u32,
+}
+
+fn v_steps_draft() -> u32 { 3 }
+fn v_steps_draft_nolora() -> u32 { 6 }
+fn v_steps_final() -> u32 { 20 }
+fn v_fps() -> u32 { 24 }
+fn v_max_seconds() -> u32 { 15 }
+fn v_cfg_scale() -> f32 { 1.0 }
+fn v_sampler() -> String { "euler".to_string() }
+fn v_seed() -> i64 { -1 }
+fn v_width() -> u32 { 864 }
+fn v_height() -> u32 { 480 }
+
+impl Default for VideoPreset {
+    fn default() -> Self {
+        Self {
+            steps_draft: v_steps_draft(),
+            steps_draft_nolora: v_steps_draft_nolora(),
+            steps_final: v_steps_final(),
+            fps: v_fps(),
+            max_seconds: v_max_seconds(),
+            cfg_scale: v_cfg_scale(),
+            sampler: v_sampler(),
+            seed: v_seed(),
+            width: v_width(),
+            height: v_height(),
+        }
+    }
+}
+
+/// Один бандл видео-каталога. Роли файлов: "diffusion" | "llm" | "vae" |
+/// "audio_vae" (+ опционально "lora_draft" после бенча Turbo-LoRA).
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct VideoBundleEntry {
+    pub name: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub is_default: bool,
+    #[serde(default)]
+    pub files: Vec<BundleFile>,
+    /// CLI-флаги spawn (строкa, сплит по пробелам): `--offload-to-cpu --rng cpu`
+    /// — из docs/minimax_h3.md. SSOT каталога, не кода; image-специфичное
+    /// (`--auto-fit`/`--max-vram`/`--fa`) видео НЕ копирует.
+    #[serde(default)]
+    pub spawn_flags: Option<String>,
+    /// Задел под `--model-args` (у H3 пока не нужен — ключей model-args нет).
+    #[serde(default)]
+    pub model_args: Option<String>,
+    #[serde(default)]
+    pub preset: VideoPreset,
+    #[serde(default)]
+    pub size_gb: Option<String>,
+    #[serde(default)]
+    pub vram_fast_gb: Option<f32>,
+    #[serde(default)]
+    pub vram_min_gb: Option<f32>,
+    #[serde(default)]
+    pub ram_min_gb: Option<f32>,
+}
+
+const EMBEDDED_VIDEO_CATALOG: &str = include_str!("../../video_models_catalog.json");
+
+/// Роли, обязательные для КАЖДОГО видео-бандла (отказ-логика: бандл без
+/// audio_vae = «немое видео» — это дефект каталога, а не молчаливый допуск).
+const VIDEO_REQUIRED_ROLES: [&str; 4] = ["diffusion", "llm", "vae", "audio_vae"];
+
+/// Валидация одного видео-бандла. Границы — защита от опечаток в JSON,
+/// НЕ лимиты сервера: реальные ограничения проверяет preflight движка.
+pub fn validate_video_entry(entry: &VideoBundleEntry) -> Result<(), String> {
+    for role in VIDEO_REQUIRED_ROLES {
+        if !entry.files.iter().any(|f| f.role == role) {
+            return Err(format!("нет обязательной роли «{}»", role));
+        }
+    }
+    for f in &entry.files {
+        let count = entry.files.iter().filter(|g| g.role == f.role).count();
+        if count > 1 {
+            return Err(format!("роль «{}» задублирована ({} файла)", f.role, count));
+        }
+    }
+    if entry.preset.steps_draft == 0 {
+        return Err("steps_draft = 0".to_string());
+    }
+    if entry.preset.steps_draft_nolora < entry.preset.steps_draft {
+        return Err("steps_draft_nolora меньше steps_draft (fallback обязан быть не быстрее)".to_string());
+    }
+    if entry.preset.steps_final < entry.preset.steps_draft_nolora {
+        return Err("steps_final меньше steps_draft_nolora".to_string());
+    }
+    if entry.preset.fps == 0 {
+        return Err("fps = 0".to_string());
+    }
+    if entry.preset.max_seconds < 1 || entry.preset.max_seconds > 60 {
+        return Err(format!("max_seconds = {} вне диапазона 1..=60", entry.preset.max_seconds));
+    }
+    if entry.preset.cfg_scale <= 0.0 {
+        return Err("cfg_scale <= 0".to_string());
+    }
+    if entry.preset.width == 0 || entry.preset.height == 0 || entry.preset.width % 32 != 0 || entry.preset.height % 32 != 0 {
+        return Err(format!("размер {}x{} не кратен 32", entry.preset.width, entry.preset.height));
+    }
+    if entry.preset.sampler.trim().is_empty() {
+        return Err("пустой sampler".to_string());
+    }
+    Ok(())
+}
+
+/// Встроенный каталог видео-бандлов. Битая запись НЕ молчит: пропускается
+/// с log::error («сломанный граф не должен выглядеть рабочим»).
+pub fn load_video_catalog() -> Vec<VideoBundleEntry> {
+    let parsed: Vec<VideoBundleEntry> = serde_json::from_str(EMBEDDED_VIDEO_CATALOG).unwrap_or_default();
+    parsed
+        .into_iter()
+        .filter(|e| {
+            if let Err(msg) = validate_video_entry(e) {
+                log::error!("[VIDEO] Бандл «{}» в каталоге невалиден: {} — пропущен", e.name, msg);
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
+/// Бандл по умолчанию (первый с is_default).
+pub fn default_video_bundle_entry() -> Option<VideoBundleEntry> {
+    load_video_catalog().into_iter().find(|e| e.is_default)
+}
+
+/// Бандл по имени (для set_selected_video_bundle).
+pub fn video_bundle_by_name(name: &str) -> Option<VideoBundleEntry> {
+    load_video_catalog().into_iter().find(|e| e.name == name)
+}
+
+/// Суммарный размер файлов видео-бандла в байтах.
+pub fn video_bundle_disk_bytes(entry: &VideoBundleEntry) -> u64 {
+    video_entry_files(entry).iter().map(|f| f.size_bytes.unwrap_or(0)).sum()
+}
+
+fn video_entry_files(entry: &VideoBundleEntry) -> &[BundleFile] {
+    &entry.files
+}
+
+/// Пути файлов по ролям (общая версия — принимает срез файлов бандла).
+pub fn bundle_files_weights(
+    bundle_dir: &std::path::Path,
+    files: &[BundleFile],
+) -> std::collections::HashMap<String, String> {
+    files
+        .iter()
+        .map(|f| {
+            (
+                f.role.clone(),
+                bundle_dir.join(&f.filename).to_string_lossy().to_string(),
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -341,5 +538,116 @@ mod tests {
                 "qwen-бандл обязан сохранить прежний ключ"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod video_tests {
+    use super::*;
+
+    #[test]
+    fn video_catalog_parses_with_default_q4km() {
+        let catalog = load_video_catalog();
+        assert_eq!(
+            catalog.len(),
+            3,
+            "PRP 21.10.26: 3 стартовых видео-бандла (Q4_K + Q3_K + Ref2VA Q3_K), got {}",
+            catalog.len()
+        );
+        let def = default_video_bundle_entry().expect("нет видео-бандла по умолчанию");
+        assert_eq!(
+            def.name, "minimax_h3_fl2va_pruned-q4km",
+            "дефолт для VRAM ≥12 ГБ — Q4_K (юзер 16 ГБ), got {}",
+            def.name
+        );
+        // Правило из PRP: 4 обязательные роли, включая audio_vae (рус. речь).
+        for e in &catalog {
+            for r in VIDEO_REQUIRED_ROLES {
+                assert!(
+                    e.files.iter().any(|f| f.role == r),
+                    "бандл «{}» без роли «{}»",
+                    e.name,
+                    r
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn video_buttons_follow_prp_numbers() {
+        let catalog = load_video_catalog();
+        for e in &catalog {
+            assert_eq!(e.preset.steps_draft, 3, "draft с Turbo-LoRA = 3 шага (Ngc6vmyGOyU) у {}", e.name);
+            assert_eq!(e.preset.steps_draft_nolora, 6, "fallback без LoRA = 6 шагов у {}", e.name);
+            assert_eq!(e.preset.steps_final, 20, "final = 20 шагов у {}", e.name);
+            assert_eq!(e.preset.fps, 24);
+            assert_eq!(e.preset.max_seconds, 15, "ролики рекомендуют ≤15 сек у {}", e.name);
+            assert!((e.preset.cfg_scale - 1.0).abs() < f32::EPSILON, "H3 дефолт cfg 1.0 у {}", e.name);
+            assert_eq!(e.preset.sampler, "euler");
+            assert_eq!(e.preset.width % 32, 0);
+            assert_eq!(e.preset.height % 32, 0);
+            // SSOT: H3 без model-args (икс ключей нет) — и не должно быть.
+            assert!(e.model_args.is_none(), "{}: model_args не должен быть", e.name);
+        }
+    }
+
+    #[test]
+    fn video_defaults_size_and_class_ordering() {
+        let catalog = load_video_catalog();
+        let by = |name: &str| {
+            catalog
+                .iter()
+                .find(|e| e.name == name)
+                .cloned()
+                .unwrap_or_else(|| panic!("нет бандла {}", name))
+        };
+        let q4km = by("minimax_h3_fl2va_pruned-q4km");
+        let q3k = by("minimax_h3_fl2va_pruned-q3k");
+        let ref2va = by("minimax_h3_ref2va_pruned-q3k");
+        // Классы памяти: порог Q4 К выше порога Q3_K (авто-выбор по vram_min_gb).
+        assert!(
+            q4km.vram_min_gb.unwrap_or(0.0) > q3k.vram_min_gb.unwrap_or(0.0),
+            "Q4_K обязан требовать больше VRAM, чем Q3_K"
+        );
+        // Полный бандл — 4 файла; and_sizes точные из API unsloth (не «примерно»).
+        assert_eq!(q4km.files.len(), 4);
+        let diff = |e: &VideoBundleEntry, role: &str| {
+            e.files
+                .iter()
+                .find(|f| f.role == role)
+                .cloned()
+                .unwrap_or_else(|| panic!("нет роли {} у {}", role, e.name))
+        };
+        assert_eq!(diff(&q4km, "diffusion").size_bytes, Some(11420663904));
+        assert_eq!(diff(&q3k, "diffusion").size_bytes, Some(8759328864));
+        assert_eq!(diff(&ref2va, "diffusion").size_bytes, Some(8716105824));
+        for e in [&q4km, &q3k, &ref2va] {
+            assert_eq!(diff(e, "llm").size_bytes, Some(13102161024));
+            assert_eq!(diff(e, "vae").size_bytes, Some(5207808496));
+            assert_eq!(diff(e, "audio_vae").size_bytes, Some(605254808));
+        }
+        // Суммарный размер на диск — по тем же точным байтам.
+        assert!(video_bundle_disk_bytes(&q4km) > 30_000_000_000, "q4km ≈ 30.3 ГБ");
+    }
+
+    #[test]
+    fn video_invalid_entries_are_rejected_by_validator() {
+        // Опечатка без diffusion — отказ с именем роли.
+        let mut bad = video_bundle_by_name("minimax_h3_fl2va_pruned-q3k").expect("бандл");
+        bad.files.retain(|f| f.role != "diffusion");
+        let msg = validate_video_entry(&bad).unwrap_err().to_string();
+        assert!(msg.contains("diffusion"), "валидатор должен называть роль, got: {}", msg);
+        // steps_draft > steps_draft_nolora — логическое противоречие.
+        let mut bad2 = bad;
+        bad2.files.push(BundleFile {
+            role: "diffusion".to_string(),
+            filename: "minimax_h3_fl2va_pruned-Q3_K.gguf".to_string(),
+            download_url: "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/minimax_h3_fl2va_pruned-Q3_K.gguf?download=true".to_string(),
+            size_bytes: Some(8759328864),
+        });
+        bad2.preset.steps_draft = 10;
+        bad2.preset.steps_draft_nolora = 6;
+        let msg2 = validate_video_entry(&bad2).unwrap_err().to_string();
+        assert!(msg2.contains("fallback"), "fallback-инвариант должен проверяться, got: {}", msg2);
     }
 }

@@ -22,6 +22,12 @@ pub struct ImageEngineConfig {
     pub image_bundle_dir: Option<String>,
     #[serde(default)]
     pub selected_bundle: Option<String>,
+    /// Папка видео-бандлов (MiniMax H3). De factо жил РЯДОМ с image-бандлами.
+    #[serde(default)]
+    pub video_bundle_dir: Option<String>,
+    /// Активный каталог-Bar video-бандл (выбор юзера в UI).
+    #[serde(default)]
+    pub selected_video_bundle: Option<String>,
 }
 
 /// Путь к `app_config.json` хоста (runtime, через AppHandle).
@@ -81,6 +87,24 @@ pub fn bundle_dir_early() -> PathBuf {
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
     exe_dir.join("image_models").join(name)
+}
+
+/// Папка видео-бандла без AppHandle: явная из конфига, иначе `<exe>/video_models/<name>`.
+pub fn video_bundle_dir_early() -> PathBuf {
+    let cfg = load_image_config_early();
+    if let Some(p) = &cfg.video_bundle_dir {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    let name = crate::engine::models_catalog::default_video_bundle_entry()
+        .map(|e| e.name.clone())
+        .unwrap_or_else(|| "minimax_h3_fl2va_pruned-q4km".to_string());
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
+    exe_dir.join("video_models").join(name)
 }
 
 /// Читает ТОЛЬКО image-ключи (остальное игнорируется serde по умолчанию).

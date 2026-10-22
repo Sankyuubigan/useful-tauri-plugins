@@ -587,3 +587,406 @@ pub async fn edit_image(
     .await
     .map_err(|e| format!("Задача редактирования прервана: {}", e))?
 }
+
+// ─────────────────────────── Видео (Шаг 2: MiniMax H3) ──────────────────────────
+
+#[derive(Serialize, Clone)]
+pub struct VideoBundleInfo {
+    pub bundle_name: String,
+    pub label: String,
+    pub note: String,
+    /// Роли видео-бандла: diffusion / llm / vae / audio_vae (+lora_draft после бенча).
+    pub files: Vec<BundleFileInfo>,
+    pub total_bytes: u64,
+    pub size_gb: Option<String>,
+    pub vram_fast_gb: Option<f32>,
+    pub vram_min_gb: Option<f32>,
+    pub ram_min_gb: Option<f32>,
+    pub save_dir: String,
+    pub free_space_gb: u64,
+    pub fully_downloaded: bool,
+}
+
+#[derive(Serialize, Clone)]
+pub struct VideoBundleValidate {
+    pub valid: bool,
+    pub dir: String,
+    pub present: Vec<String>,
+    pub missing: Vec<String>,
+}
+
+/// Папка видео-бандла: явная из конфига, иначе `<exe>/video_models/<bundle_name>`
+/// (каждый бандл — своя подпапка: diffusion-файлы разных квантов имеют разные
+/// имена, но складывать вперемешку их нельзя).
+fn video_bundle_dir(app: &AppHandle, entry: &engine::VideoBundleEntry) -> PathBuf {
+    let cfg = engine::load_image_config(app);
+    if let Some(p) = &cfg.video_bundle_dir {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    exe_dir(app).join("video_models").join(&entry.name)
+}
+
+/// Взять запись: имя → каталог; без имени → selected_video_bundle → дефолт.
+fn video_entry(app: &AppHandle, name: Option<&str>) -> Result<engine::VideoBundleEntry, String> {
+    if let Some(n) = name.filter(|n| !n.is_empty()) {
+        return engine::video_bundle_by_name(n)
+            .ok_or_else(|| format!("Видео-бандл «{}» отсутствует в каталоге плагина.", n));
+    }
+    if let Some(ref sel) = engine::load_image_config(app).selected_video_bundle {
+        if !sel.is_empty() {
+            return engine::video_bundle_by_name(sel).ok_or_else(|| {
+                format!(
+                    "Выбранный видео-бандл «{}» отсутствует в каталоге — смените выбор в интерфейсе «Видео».",
+                    sel
+                )
+            });
+        }
+    }
+    engine::default_video_bundle_entry()
+        .ok_or_else(|| "В каталоге нет видео-бандла по умолчанию".to_string())
+}
+
+/// Бандл без AppHandle (валидация папки): имя → каталог, иначе дефолт.
+fn video_entry_from_name(name: Option<&str>) -> Result<engine::VideoBundleEntry, String> {
+    match name.filter(|n| !n.is_empty()) {
+        Some(n) => engine::video_bundle_by_name(n)
+            .ok_or_else(|| format!("Видео-бандл «{}» отсутствует в каталоге плагина.", n)),
+        None => engine::default_video_bundle_entry()
+            .ok_or_else(|| "В каталоге нет видео-бандла по умолчанию".to_string()),
+    }
+}
+
+fn video_bundle_info_for(app: &AppHandle, entry: &engine::VideoBundleEntry) -> VideoBundleInfo {
+    let save_dir = video_bundle_dir(app, entry);
+    let mut files = Vec::with_capacity(entry.files.len());
+    let mut fully = true;
+    for f in &entry.files {
+        let save_path = save_dir.join(&f.filename);
+        let exists = save_path.exists();
+        if !exists {
+            fully = false;
+        }
+        files.push(BundleFileInfo {
+            role: f.role.clone(),
+            filename: f.filename.clone(),
+            size_bytes: f.size_bytes,
+            save_path: save_path.to_string_lossy().to_string(),
+            exists,
+        });
+    }
+    let total_bytes: u64 = entry.files.iter().map(|f| f.size_bytes.unwrap_or(0)).sum();
+    VideoBundleInfo {
+        bundle_name: entry.name.clone(),
+        label: entry.label.clone(),
+        note: entry.note.clone(),
+        files,
+        total_bytes,
+        size_gb: entry.size_gb.clone(),
+        vram_fast_gb: entry.vram_fast_gb,
+        vram_min_gb: entry.vram_min_gb,
+        ram_min_gb: entry.ram_min_gb,
+        save_dir: save_dir.to_string_lossy().to_string(),
+        free_space_gb: free_space_gb_for(&save_dir),
+        fully_downloaded: fully,
+    }
+}
+
+fn validate_video_dir(entry: &engine::VideoBundleEntry, dir: &Path) -> VideoBundleValidate {
+    let mut present = Vec::new();
+    let mut missing = Vec::new();
+    for f in &entry.files {
+        if dir.join(&f.filename).exists() {
+            present.push(f.filename.clone());
+        } else {
+            missing.push(f.filename.clone());
+        }
+    }
+    VideoBundleValidate {
+        valid: missing.is_empty(),
+        dir: dir.to_string_lossy().to_string(),
+        present,
+        missing,
+    }
+}
+
+#[tauri::command]
+pub fn get_video_bundles() -> Result<Vec<engine::VideoBundleEntry>, String> {
+    Ok(engine::load_video_catalog())
+}
+
+#[tauri::command]
+pub fn get_video_bundle_info(
+    app: AppHandle,
+    bundle_name: Option<String>,
+) -> Result<VideoBundleInfo, String> {
+    let entry = video_entry(&app, bundle_name.as_deref())?;
+    Ok(video_bundle_info_for(&app, &entry))
+}
+
+#[tauri::command]
+pub fn set_selected_video_bundle(
+    app: AppHandle,
+    bundle_name: String,
+) -> Result<VideoBundleInfo, String> {
+    if bundle_name.trim().is_empty() {
+        let mut cfg = engine::load_image_config(&app);
+        cfg.selected_video_bundle = None;
+        engine::save_image_config(&app, &cfg)?;
+        return get_video_bundle_info(app, None);
+    }
+    let entry = engine::video_bundle_by_name(&bundle_name).ok_or_else(|| {
+        format!("Видео-бандл «{}» отсутствует в каталоге плагина.", bundle_name)
+    })?;
+    let mut cfg = engine::load_image_config(&app);
+    cfg.selected_video_bundle = Some(bundle_name.clone());
+    engine::save_image_config(&app, &cfg)?;
+    log::info!("[VIDEO] Активный видео-бандл: {}", entry.name);
+    Ok(video_bundle_info_for(&app, &entry))
+}
+
+#[tauri::command]
+pub fn validate_video_bundle_dir(
+    path: String,
+    bundle_name: Option<String>,
+) -> Result<VideoBundleValidate, String> {
+    let entry = video_entry_from_name(bundle_name.as_deref())?;
+    Ok(validate_video_dir(&entry, Path::new(&path)))
+}
+
+/// Custom-папка видео-бандла (зеркало `set_image_bundle_dir`): назначить папку
+/// текущего видео-бандла (add) или сбросить на дефолт (пустая строкa → None).
+#[tauri::command]
+pub fn set_video_bundle_dir(app: AppHandle, path: Option<String>) -> Result<VideoBundleInfo, String> {
+    let mut cfg = engine::load_image_config(&app);
+    match path.filter(|p| !p.trim().is_empty()) {
+        Some(p) => {
+            if !Path::new(&p).exists() {
+                return Err(format!("Папка «{}» не существует.", p));
+            }
+            cfg.video_bundle_dir = Some(p);
+        }
+        None => cfg.video_bundle_dir = None,
+    }
+    engine::save_image_config(&app, &cfg)?;
+    video_entry(&app, None).map(|e| video_bundle_info_for(&app, &e))
+}
+
+/// Удалить файлы видео-бандла на диске (зеркало `remove_image_bundle`):
+/// решает бандл как `video_entry` (selected → дефолт), удаляет файлы, снимает
+/// выбор, если удаляли активный; custom-папку НЕ трогает (путь остаётся).
+#[tauri::command]
+pub fn remove_video_bundle_files(app: AppHandle, bundle_name: Option<String>) -> Result<VideoBundleInfo, String> {
+    let entry = video_entry(&app, bundle_name.as_deref())?;
+    let dir = video_bundle_dir(&app, &entry);
+    for f in &entry.files {
+        let p = dir.join(&f.filename);
+        if p.exists() {
+            std::fs::remove_file(&p)
+                .map_err(|e| format!("Не удалось удалить {}: {}", p.display(), e))?;
+        }
+    }
+    if engine::load_image_config(&app)
+        .selected_video_bundle
+        .as_deref()
+        == Some(entry.name.as_str())
+    {
+        let mut cfg = engine::load_image_config(&app);
+        cfg.selected_video_bundle = None;
+        engine::save_image_config(&app, &cfg)?;
+    }
+    let fresh = video_entry(&app, None)?;
+    Ok(video_bundle_info_for(&app, &fresh))
+}
+
+/// Скачивание видео-бандла — переиспользование загрузчика image-бандлов
+/// (per-file по каталогу: `download_url` + `size_bytes` + progress-метка
+/// с ролью; загрузчик агностичен к ролям, обязательность `audio_vae`
+/// держит `validate_video_entry`/`VIDEO_REQUIRED_ROLES`).
+#[tauri::command]
+pub async fn download_video_bundle(
+    app: AppHandle,
+    save_dir: String,
+    bundle_name: Option<String>,
+) -> Result<VideoBundleInfo, String> {
+    let entry = video_entry(&app, bundle_name.as_deref())?;
+    let dir = PathBuf::from(&save_dir);
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Не удалось создать папку {}: {}", dir.display(), e))?;
+    let on_log = |msg: String| log::info!("[VIDEO-DL] {}", msg);
+    for f in &entry.files {
+        let dest = dir.join(&f.filename);
+        if dest.exists() {
+            if let Some(expected) = f.size_bytes {
+                if let Ok(meta) = std::fs::metadata(&dest) {
+                    if meta.len() == expected {
+                        on_log(format!("Уже скачан, пропуск: {}", f.filename));
+                        continue;
+                    }
+                }
+            } else {
+                on_log(format!("Уже скачан, пропуск: {}", f.filename));
+                continue;
+            }
+        }
+        tauri_plugin_downloader::download(
+            &f.download_url,
+            &dest,
+            tauri_plugin_downloader::DownloadOptions {
+                label: format!("{} ({})", f.filename, f.role),
+                kind: "video-model".into(),
+                expected_size: f.size_bytes,
+                ..Default::default()
+            },
+            Some(&on_log),
+        )
+        .await
+        .map_err(|e| format!("Не удалось скачать {}: {}", f.filename, e))?;
+    }
+    let mut cfg = engine::load_image_config(&app);
+    cfg.video_bundle_dir = Some(save_dir);
+    engine::save_image_config(&app, &cfg)?;
+    on_log("Видео-бандл скачан целиком.".to_string());
+    get_video_bundle_info(app, bundle_name)
+}
+
+// ─────────────────────────── Генерация видео ──────────────────────────
+
+fn file_to_b64(path_or_data_url: &str) -> Result<String, String> {
+    use base64::Engine as _;
+    let path_or_data_url = path_or_data_url.trim();
+    if path_or_data_url.is_empty() {
+        return Err("Пустая строка вместо пути/данных кадра.".to_string());
+    }
+    // Уже кодированный data-URL пропускаем как есть.
+    if let Some(rest) = path_or_data_url.strip_prefix("data:") {
+        let b64 = rest.split_once(',').map(|(_, b)| b).unwrap_or(rest);
+        return Ok(b64.to_string());
+    }
+    let bytes = std::fs::read(path_or_data_url).map_err(|e| {
+        format!("Не удалось прочитать кадр {}: {}", path_or_data_url, e)
+    })?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+}
+
+fn default_video_out_path(bundle_dir: &Path) -> PathBuf {
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    bundle_dir.join("outputs").join(format!("vid_{}.webm", ts))
+}
+
+/// vid_gen-запрос из GUI: промпт + опциональные кадры (локальные пути или
+/// data-URL') + параметры. Дефолты размеров/качества/seed/fps — ИЗ ПРЕСЕТА
+/// каталога; draft/final решает steps_for_quality по наличию файла lora_draft.
+#[tauri::command]
+pub async fn generate_video(
+    app: AppHandle,
+    prompt: String,
+    negative_prompt: Option<String>,
+    init_path: Option<String>,
+    end_path: Option<String>,
+    ref_paths: Vec<String>,
+    // seconds: длительность клипа (кадры = seconds × fps; сетку держит сервер).
+    seconds: Option<u32>,
+    width: Option<u32>,
+    height: Option<u32>,
+    // steps: явные шаги — приоритетнее final_quality.
+    steps: Option<u32>,
+    cfg_scale: Option<f32>,
+    seed: Option<i64>,
+    // final_quality: false/None = draft (steps_draft/_nolora), true = steps_final.
+    final_quality: Option<bool>,
+    // strength: image-to-video сила (init/end кадры); дефолт 0.75.
+    strength: Option<f32>,
+    vae_tiling: Option<bool>,
+    out_path: Option<String>,
+    bundle_name: Option<String>,
+) -> Result<engine::VideoGenResult, String> {
+    let entry = video_entry(&app, bundle_name.as_deref())?;
+    let bdir = video_bundle_dir(&app, &entry);
+    let edir = engine_dir(&app);
+    let variant = preferred_variant(&app);
+
+    // Дефолты ИЗ ПРЕСЕТА КАТАЛОГА; явные аргументы переопределяют.
+    let preset = &entry.preset;
+    let fps = preset.fps;
+    let w = width.unwrap_or(preset.width);
+    let h = height.unwrap_or(preset.height);
+    let cfgs = cfg_scale.unwrap_or(preset.cfg_scale);
+    let sd = seed.unwrap_or(preset.seed);
+    let st = match steps {
+        Some(s) => s,
+        None => engine::steps_for_quality(&entry, &bdir, final_quality.unwrap_or(false)),
+    };
+    // Лимит каталога — честный clamp с warn (сетку кадров всё равно держит сервер).
+    let mut secs = seconds.unwrap_or(5);
+    if secs == 0 {
+        return Err("seconds = 0 — нужен хотя бы 1 секунда клипа.".to_string());
+    }
+    if secs > preset.max_seconds {
+        log::warn!(
+            "[VID] seconds={} выше лимита каталога {} — клампим.",
+            secs, preset.max_seconds
+        );
+        secs = preset.max_seconds;
+    }
+
+    // Кадры по локальным путям (или data-URL) — зашиваем в запрос.
+    let init_b64 = match init_path.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(p) => Some(file_to_b64(p)?),
+        None => None,
+    };
+    let end_b64 = match end_path.as_deref().filter(|s| !s.trim().is_empty()) {
+        Some(p) => Some(file_to_b64(p)?),
+        None => None,
+    };
+    if ref_paths.len() > 8 {
+        return Err(format!(
+            "ref_paths = {} — H3 Ref2VA ограничен разумным числом референсов (≤8).",
+            ref_paths.len()
+        ));
+    }
+    let mut ref_b64 = Vec::with_capacity(ref_paths.len());
+    for p in &ref_paths {
+        ref_b64.push(file_to_b64(p)?);
+    }
+
+    let req = engine::VideoRequest {
+        prompt: prompt.clone(),
+        negative_prompt: negative_prompt.clone(),
+        init_b64,
+        end_b64,
+        ref_images_b64: ref_b64,
+        width: w,
+        height: h,
+        steps: st,
+        cfg_scale: cfgs,
+        seed: sd,
+        video_frames: engine::seconds_to_frames(secs, fps),
+        fps,
+        vae_tiling: vae_tiling.unwrap_or(true),
+        strength: strength.unwrap_or(0.75),
+    };
+
+    let out = out_path.map(PathBuf::from).unwrap_or_else(|| default_video_out_path(&bdir));
+    let log_cb = |msg: String| log::info!("[VID] {}", msg);
+    log::info!(
+        "[VID] generate_video «{}»: {}x{}, steps {}, {} сек @ {} fps (final={})",
+        prompt.chars().take(60).collect::<String>(),
+        w,
+        h,
+        st,
+        secs,
+        fps,
+        final_quality.unwrap_or(false)
+    );
+    tokio::task::spawn_blocking(move || {
+        let eng = engine::VideoEngine::new(&edir, &bdir, &entry, variant.as_deref(), log_cb)?;
+        eng.generate(&req, &out, None, log_cb)
+    })
+    .await
+    .map_err(|e| format!("Задача видео-генерации прервана: {}", e))?
+}

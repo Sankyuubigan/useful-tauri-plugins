@@ -1,0 +1,149 @@
+[
+  {
+    "name": "minimax_h3_fl2va_pruned-q4km",
+    "label": "MiniMax H3 FL2VA pruned (Q4_K) — видео+речь; для карт ≥12 ГБ",
+    "spawn_flags": "--offload-to-cpu --rng cpu",
+    "note": "Дефолт для VRAM ≥12 ГБ (16 ГБ юзера): diffusion Q4_K целиком живёт в VRAM (offload почти не нужен). Режимы motorista: text→video, image→video (init), первый+последний кадр. Русская речь — нативно (prompt). Шаги: draft 3 (Turbo-LoRA; если не подтверждена бенчем — 6 fallback-поля steps_draft_nolora), final 20 (замеры ролика Ngc6vmyGOyU). Euler, cfg 1.0, 864×480, 24 fps, ≤15 сек. Preflight VRAM/RAM/диск — ОЦЕНКИ (бенч фазы 1 зафиксирует факты). Турбо-LoRA добавится отдельной ролью lora_draft после подтверждения загрузки LoRA в vid_gen (гипотеза, docs/minimax_h3.md LoRA для H3 не документирует).",
+    "is_default": true,
+    "files": [
+      {
+        "role": "diffusion",
+        "filename": "minimax_h3_fl2va_pruned-Q4_K.gguf",
+        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/minimax_h3_fl2va_pruned-Q4_K.gguf?download=true",
+        "size_bytes": 11420663904
+      },
+      {
+        "role": "llm",
+        "filename": "qwen3vl_32b_minimax_h3-Q2_K_M.gguf",
+        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/qwen3vl_32b_minimax_h3-Q2_K_M.gguf?download=true",
+        "size_bytes": 13102161024
+      },
+      {
+        "role": "vae",
+        "filename": "minimax_h3_video_vae_fp16.safetensors",
+        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors?download=true",
+        "size_bytes": 5207808496
+      },
+      {
+        "role": "audio_vae",
+        "filename": "minimax_h3_audio_vae_fp32.safetensors",
+        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors?download=true",
+        "size_bytes": 605254808
+      }
+    ],
+    "preset": {
+      "steps_draft": 3,
+      "steps_draft_nolora": 6,
+      "steps_final": 20,
+      "fps": 24,
+      "max_seconds": 15,
+      "cfg_scale": 1.0,
+      "sampler": "euler",
+      "seed": -1,
+      "width": 864,
+      "height": 480
+    },
+    "size_gb": "30.3",
+    "vram_fast_gb": 28.0,
+    "vram_min_gb": 12.0,
+    "ram_min_gb": 30.0
+  },
+  {
+    "name": "minimax_h3_fl2va_pruned-q3k",
+    "label": "MiniMax H3 FL2VA pruned (Q3_K) — видео+речь; для карт ~8 ГБ",
+    "spawn_flags": "--offload-to-cpu --rng cpu",
+    "note": "Класс 8 ГБ: diffusion Q3_K (8.16 ГиБ) + vae_tiling + offload. Тот же стек, что у Q4_K: TE qwen3vl_32b Q2_K_M (12.2 ГиБ), video VAE fp16 (4.85 ГиБ), audio VAE fp32 (605 МБ). Предупреждение честно: Q3_K квант мягче по качеству, чем Q4_K; точную дельту покажет бенч Draft/final. Preflight VRAM/RAM — ОЦЕНКИ.",
+    "is_default": false,
+    "files": [
+      {
+        "role": "diffusion",
+        "filename": "minimax_h3_fl2va_pruned-Q3_K.gguf",
+        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/minimax_h3_fl2va_pruned-Q3_K.gguf?download=true",
+        "size_bytes": 8759328864
+      },
+      {
+        "role": "llm",
+        "filename": "qwen3vl_32b_minimax_h3-Q2_K_M.gguf",
+        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/qwen3vl_32b_minimax_h3-Q2_K_M.gguf?download=true",
+        "size_bytes": 13102161024
+      },
+      {
+        "role": "vae",
+        "filename": "minimax_h3_video_vae_fp16.safetensors",
+        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors?download=true",
+        "size_bytes": 5207808496
+      },
+      {
+        "role": "audio_vae",
+        "filename": "minimax_h3_audio_vae_fp32.safetensors",
+        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors?download=true",
+        "size_bytes": 605254808
+      }
+    ],
+    "preset": {
+      "steps_draft": 3,
+      "steps_draft_nolora": 6,
+      "steps_final": 20,
+      "fps": 24,
+      "max_seconds": 15,
+      "cfg_scale": 1.0,
+      "sampler": "euler",
+      "seed": -1,
+      "width": 864,
+      "height": 480
+    },
+    "size_gb": "27.7",
+    "vram_fast_gb": 27.0,
+    "vram_min_gb": 8.5,
+    "ram_min_gb": 28.0
+  },
+  {
+    "name": "minimax_h3_ref2va_pruned-q3k",
+    "label": "MiniMax H3 Ref2VA pruned (Q3_K) — мультимодальные референсы; карты ~8 ГБ",
+    "spawn_flags": "--offload-to-cpu --rng cpu",
+    "note": "Тот же стек, но diffusion ref2va_pruned: референс-режим (до 3–9 картинок, аудио-референс тембра голоса; консистентное лицо по character sheet). По субтитрам роликов: референсов >6 модель ломает следование — правила агента ограничат ≤3. Русская речь всегда доступна. Реф-советы: character sheet 4-view сильно помогает; видео-референсы авторы роликов не советуют (медленно, плохо). Preflight VRAM/RAM — ОЦЕНКИ.",
+    "is_default": false,
+    "files": [
+      {
+        "role": "diffusion",
+        "filename": "minimax_h3_ref2va_pruned-Q3_K.gguf",
+        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/minimax_h3_ref2va_pruned-Q3_K.gguf?download=true",
+        "size_bytes": 8716105824
+      },
+      {
+        "role": "llm",
+        "filename": "qwen3vl_32b_minimax_h3-Q2_K_M.gguf",
+        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/qwen3vl_32b_minimax_h3-Q2_K_M.gguf?download=true",
+        "size_bytes": 13102161024
+      },
+      {
+        "role": "vae",
+        "filename": "minimax_h3_video_vae_fp16.safetensors",
+        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors?download=true",
+        "size_bytes": 5207808496
+      },
+      {
+        "role": "audio_vae",
+        "filename": "minimax_h3_audio_vae_fp32.safetensors",
+        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors?download=true",
+        "size_bytes": 605254808
+      }
+    ],
+    "preset": {
+      "steps_draft": 3,
+      "steps_draft_nolora": 6,
+      "steps_final": 20,
+      "fps": 24,
+      "max_seconds": 15,
+      "cfg_scale": 1.0,
+      "sampler": "euler",
+      "seed": -1,
+      "width": 864,
+      "height": 480
+    },
+    "size_gb": "27.6",
+    "vram_fast_gb": 27.0,
+    "vram_min_gb": 8.5,
+    "ram_min_gb": 28.0
+  }
+]

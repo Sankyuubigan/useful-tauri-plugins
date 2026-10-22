@@ -14,47 +14,7 @@
     return coreInvoke(cmd, args ?? {});
   }
 
-  // guest-js/updates.ts
-  var state = { hasUpdate: false };
-  var subs = /* @__PURE__ */ new Set();
-  function getUpdateState() {
-    return state;
-  }
-  function onUpdateState(fn) {
-    subs.add(fn);
-    fn(state);
-    return () => {
-      subs.delete(fn);
-    };
-  }
-  function setUpdateState(next) {
-    state = next;
-    subs.forEach((fn) => fn(state));
-  }
-  async function checkUpdate() {
-    const tag = await checkImageEngineUpdate();
-    const next = tag ? { hasUpdate: true, tag } : { hasUpdate: false };
-    setUpdateState(next);
-    return next;
-  }
-
-  // guest-js/shims/dialog.ts
-  var g2 = window;
-  async function open(opts) {
-    const dialog = g2.__TAURI__?.dialog;
-    if (!dialog?.open) throw new Error("window.__TAURI__.dialog.open \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D");
-    return dialog.open(opts);
-  }
-
-  // guest-js/shims/event.ts
-  var g3 = window;
-  async function listen(name, cb) {
-    const event = g3.__TAURI__?.event ?? g3.__TAURI_INTERNALS__?.event;
-    if (!event?.listen) throw new Error("window.__TAURI__.event.listen \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D");
-    return event.listen(name, (e) => cb(e));
-  }
-
-  // guest-js/web-components.ts
+  // guest-js/components/ui-shared.ts
   var STYLE = `
   :host { display: block; color: var(--text, #eee); font-family: var(--font, system-ui, sans-serif); font-size: 13px; }
   .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
@@ -65,6 +25,7 @@
   button.primary { background: var(--primary, #4a90d9); color: #fff; border-color: var(--primary, #4a90d9); }
   button.danger { background: var(--danger, #b54242); color: #fff; border-color: var(--danger, #b54242); }
   button:disabled { opacity: .5; cursor: default; }
+  button.tab-btn[aria-pressed="true"] { font-weight: 700; }
   select, input[type=text] { padding: 6px; border-radius: 6px; border: 1px solid var(--border, #333);
            background: var(--bg-elevated, #1c1c1c); color: var(--text, #eee); font: inherit; font-size: 13px; }
   .progress-container { display: none; margin-top: 10px; }
@@ -107,6 +68,52 @@
     document.body.appendChild(el);
     setTimeout(() => el.remove(), 4200);
   }
+  function progressText(downloaded, total) {
+    const pct = total > 0 ? downloaded / total * 100 : 0;
+    return `${formatBytes(downloaded)} / ${total > 0 ? formatBytes(total) : "?"}${total > 0 ? ` (${pct.toFixed(0)}%)` : ""}`;
+  }
+
+  // guest-js/updates.ts
+  var state = { hasUpdate: false };
+  var subs = /* @__PURE__ */ new Set();
+  function getUpdateState() {
+    return state;
+  }
+  function onUpdateState(fn) {
+    subs.add(fn);
+    fn(state);
+    return () => {
+      subs.delete(fn);
+    };
+  }
+  function setUpdateState(next) {
+    state = next;
+    subs.forEach((fn) => fn(state));
+  }
+  async function checkUpdate() {
+    const tag = await checkImageEngineUpdate();
+    const next = tag ? { hasUpdate: true, tag } : { hasUpdate: false };
+    setUpdateState(next);
+    return next;
+  }
+
+  // guest-js/shims/dialog.ts
+  var g2 = window;
+  async function open(opts) {
+    const dialog = g2.__TAURI__?.dialog;
+    if (!dialog?.open) throw new Error("window.__TAURI__.dialog.open \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D");
+    return dialog.open(opts);
+  }
+
+  // guest-js/shims/event.ts
+  var g3 = window;
+  async function listen(name, cb) {
+    const event = g3.__TAURI__?.event ?? g3.__TAURI_INTERNALS__?.event;
+    if (!event?.listen) throw new Error("window.__TAURI__.event.listen \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D");
+    return event.listen(name, (e) => cb(e));
+  }
+
+  // guest-js/components/engine-panel.ts
   var ImageEnginePanel = class extends HTMLElement {
     constructor() {
       super(...arguments);
@@ -189,11 +196,10 @@
       if (el) el.textContent = s;
     }
     setProgress(downloaded, total) {
-      const pct = total > 0 ? downloaded / total * 100 : 0;
       const bar = this.root.getElementById("progressBar");
-      bar.style.width = `${pct}%`;
+      bar.style.width = `${total > 0 ? downloaded / total * 100 : 0}%`;
       const st = this.root.getElementById("progressStatus");
-      st.textContent = `${formatBytes(downloaded)} / ${total > 0 ? formatBytes(total) : "?"}${total > 0 ? ` (${pct.toFixed(0)}%)` : ""}`;
+      st.textContent = progressText(downloaded, total);
     }
     showProgress(on) {
       this.root.getElementById("progress").style.display = on ? "block" : "none";
@@ -377,7 +383,59 @@
       }
     }
   };
-  var ImageBundlePanel = class extends HTMLElement {
+  if (!customElements.get("image-engine-panel")) {
+    customElements.define("image-engine-panel", ImageEnginePanel);
+  }
+
+  // guest-js/components/services.ts
+  var imageService = {
+    kind: "image",
+    kindLabel: "\u0411\u0430\u043D\u0434\u043B",
+    progressKind: "image-model",
+    info: (name) => getImageBundleInfo(name).then((i) => i),
+    entries: () => getImageModelsCatalog().then(
+      (list) => list.map((e) => ({ name: e.name, label: e.label, is_default: e.is_default }))
+    ),
+    activate: (name) => setSelectedImageBundle(name).then((i) => i),
+    validateDir: (path, name) => validateImageBundleDir(path, name),
+    setCustomDir: (path) => setImageBundleDir(path).then((i) => i),
+    clearCustomDir: () => removeImageBundleFromList().then((i) => i),
+    download: (saveDir, name) => downloadImageBundle(saveDir, name).then((i) => i),
+    removeFiles: () => removeImageBundle().then((i) => i),
+    memoryProbe: async (name) => {
+      const cur = await getImageBundleInfo(name);
+      const info = await imageSizeInfo(cur.bundle_name);
+      const mem = await estimateImageMemory(cur.bundle_name);
+      const gb = (mb) => `${(mb / 1024).toFixed(1)} \u0413\u0411`;
+      return `GPU: ${info.vram_fast_gb ?? "?"} \u0413\u0411 (\u0431\u044B\u0441\u0442\u0440\u043E) / ${info.vram_min_gb ?? "?"} \u0413\u0411 (\u043C\u0438\u043D.) \xB7 \u0441\u0435\u0439\u0447\u0430\u0441 \u0441\u0432\u043E\u0431\u043E\u0434\u043D\u043E ${gb(mem.estimate.vram_free_mb)} VRAM / ${gb(mem.estimate.ram_free_mb)} RAM \u2014 ${mem.message}`;
+    }
+  };
+  async function imageSizeInfo(bundleName) {
+    return getImageBundleInfo(bundleName);
+  }
+  var videoService = {
+    kind: "video",
+    kindLabel: "\u0412\u0438\u0434\u0435\u043E-\u0431\u0430\u043D\u0434\u043B",
+    progressKind: "video-model",
+    info: (name) => getVideoBundleInfo(name).then((i) => i),
+    entries: () => getVideoBundles().then(
+      (list) => list.map((e) => ({ name: e.name, label: e.label, is_default: e.is_default }))
+    ),
+    activate: (name) => setSelectedVideoBundle(name).then((i) => i),
+    validateDir: (path, name) => validateVideoBundleDir(path, name),
+    setCustomDir: (path) => setVideoBundleDir(path).then((i) => i),
+    clearCustomDir: () => setVideoBundleDir(null).then((i) => i),
+    download: (saveDir, name) => downloadVideoBundle(saveDir, name).then((i) => i),
+    removeFiles: () => removeVideoBundleFiles().then((i) => i)
+  };
+  function serviceFor(kind) {
+    if (kind === "video") return videoService;
+    if (kind === "image") return imageService;
+    return void 0;
+  }
+
+  // guest-js/components/bundle-tab.ts
+  var BundleTabElement = class extends HTMLElement {
     constructor() {
       super(...arguments);
       this.busy = false;
@@ -385,12 +443,19 @@
     }
     connectedCallback() {
       if (this.root) return;
+      const kind = this.getAttribute("service") ?? "image";
+      const svc = serviceFor(kind);
+      if (!svc) {
+        this.textContent = `\u041D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u043D\u044B\u0439 \u0441\u0435\u0440\u0432\u0438\u0441 \u0432\u043A\u043B\u0430\u0434\u043A\u0438: \xAB${kind}\xBB (\u043E\u0436\u0438\u0434\u0430\u0435\u0442\u0441\u044F image|video)`;
+        return;
+      }
+      this.service = svc;
       this.root = this.attachShadow({ mode: "open" });
       this.root.innerHTML = `
       <style>${STYLE}</style>
       <div>
         <div class="row">
-          <label>\u0411\u0430\u043D\u0434\u043B:</label>
+          <label>${esc(svc.kindLabel)}:</label>
           <select id="bundle" style="flex:1; min-width:220px;"><option value="">\u2026</option></select>
           <button id="activate" class="primary" style="display:none;">\u0410\u043A\u0442\u0438\u0432\u0438\u0440\u043E\u0432\u0430\u0442\u044C</button>
         </div>
@@ -402,21 +467,39 @@
         <div class="row"><label>\u041F\u0430\u043F\u043A\u0430:</label><span id="dir" class="hint" style="word-break:break-all; flex:1;"></span></div>
         <div class="row" style="margin-top:10px;">
           <button id="download" class="primary">\u0421\u043A\u0430\u0447\u0430\u0442\u044C \u043D\u0430\u0431\u043E\u0440</button>
-          <button id="remove" class="danger" style="display:none;">\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0444\u0430\u0439\u043B\u044B</button>
+          <button id="add" class="secondary">+ \u0414\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u043D\u0430\u0431\u043E\u0440</button>
+          <button id="resume" class="primary" style="display:none;">\u0414\u043E\u043A\u0430\u0447\u0430\u0442\u044C \u0444\u0430\u0439\u043B\u044B</button>
+          <button id="removeFromList" class="secondary" style="display:none;">\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0438\u0437 \u0441\u043F\u0438\u0441\u043A\u0430</button>
+          <button id="deleteFiles" class="danger" style="display:none;">\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0444\u0430\u0439\u043B\u044B</button>
         </div>
         <div id="progress" class="progress-container">
           <div class="progress-status" id="progressStatus">0 MB / 0 MB</div>
           <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
         </div>
+      </div>
+      <div id="overlay" class="overlay">
+        <div class="box">
+          <h3 id="overlayTitle">\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0444\u0430\u0439\u043B\u044B \u043D\u0430\u0431\u043E\u0440\u0430?</h3>
+          <p id="overlayMsg">\u0424\u0430\u0439\u043B\u044B \u0441 \u0434\u0438\u0441\u043A\u0430 \u0431\u0443\u0434\u0443\u0442 \u0443\u0434\u0430\u043B\u0435\u043D\u044B \u0411\u0415\u0417\u0412\u041E\u0417\u0412\u0420\u0410\u0422\u041D\u041E. \u0417\u0430\u043F\u0438\u0441\u044C \u0442\u043E\u0436\u0435 \u0438\u0441\u0447\u0435\u0437\u043D\u0435\u0442 \u0438\u0437 \u0441\u043F\u0438\u0441\u043A\u0430.</p>
+          <div class="overlay-buttons">
+            <button id="modalCancel" class="secondary">\u041E\u0442\u043C\u0435\u043D\u0430</button>
+            <button id="modalOk" class="danger">\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0444\u0430\u0439\u043B\u044B</button>
+          </div>
+        </div>
       </div>`;
       this.root.getElementById("bundle").addEventListener("change", () => this.onBundleChange());
       this.root.getElementById("activate").addEventListener("click", () => this.onActivate());
       this.root.getElementById("download").addEventListener("click", () => this.onDownload());
-      this.root.getElementById("remove").addEventListener("click", () => this.onRemove());
+      this.root.getElementById("add").addEventListener("click", () => this.onAddCustomDir());
+      this.root.getElementById("resume").addEventListener("click", () => this.onResume());
+      this.root.getElementById("removeFromList").addEventListener("click", () => this.onRemoveFromList());
+      this.root.getElementById("deleteFiles").addEventListener("click", () => this.confirmDelete());
+      this.root.getElementById("modalCancel").addEventListener("click", () => this.closeModal());
+      this.root.getElementById("modalOk").addEventListener("click", () => void this.doDeleteFiles());
       void this.refresh();
       void listen("downloader:progress", (e) => {
         const p = e.payload;
-        if (p.kind && p.kind !== "image-model") return;
+        if (p.kind && p.kind !== svc.progressKind) return;
         this.setProgress(p.downloaded, p.total);
         if (p.status === "done" || p.status === "error") {
           setTimeout(() => {
@@ -433,48 +516,50 @@
       this.unlisten?.();
     }
     setProgress(downloaded, total) {
-      const pct = total > 0 ? downloaded / total * 100 : 0;
       const bar = this.root.getElementById("progressBar");
-      bar.style.width = `${pct}%`;
+      bar.style.width = `${total > 0 ? downloaded / total * 100 : 0}%`;
       const st = this.root.getElementById("progressStatus");
-      st.textContent = `${formatBytes(downloaded)} / ${total > 0 ? formatBytes(total) : "?"}${total > 0 ? ` (${pct.toFixed(0)}%)` : ""}`;
+      st.textContent = progressText(downloaded, total);
     }
     showProgress(on) {
       this.root.getElementById("progress").style.display = on ? "block" : "none";
     }
     async refresh() {
+      const svc = this.service;
+      if (!svc) return;
       let info;
       try {
-        info = await getImageBundleInfo();
+        info = await svc.info(null);
       } catch (e) {
-        this.root.getElementById("label").textContent = `\u041E\u0448\u0438\u0431\u043A\u0430: ${e}`;
+        const label = this.root.getElementById("label");
+        if (label) label.textContent = `\u041E\u0448\u0438\u0431\u043A\u0430: ${e}`;
         return;
       }
       this.appliedBundle = info.bundle_name;
       const sel = this.root.getElementById("bundle");
-      let catalog = [];
+      let entries = [];
       try {
-        catalog = await getImageModelsCatalog();
+        entries = await svc.entries();
       } catch {
       }
       sel.innerHTML = "";
-      const statusMap = /* @__PURE__ */ new Map();
-      statusMap.set(info.bundle_name, info);
-      for (const entry of catalog) {
-        if (statusMap.has(entry.name)) continue;
+      const statuses = /* @__PURE__ */ new Map();
+      statuses.set(info.bundle_name, info);
+      for (const entry of entries) {
+        if (statuses.has(entry.name)) continue;
         try {
-          statusMap.set(entry.name, await getImageBundleInfo(entry.name));
+          statuses.set(entry.name, await svc.info(entry.name));
         } catch {
         }
       }
-      if (catalog.length === 0) {
+      if (entries.length === 0) {
         const o = document.createElement("option");
         o.value = info.bundle_name;
         o.textContent = info.label;
         sel.appendChild(o);
       } else {
-        for (const entry of catalog) {
-          const st = statusMap.get(entry.name);
+        for (const entry of entries) {
+          const st = statuses.get(entry.name);
           const o = document.createElement("option");
           o.value = entry.name;
           if (!st) {
@@ -504,17 +589,22 @@
       }
       const totalGb = (info.total_bytes / 1024 / 1024 / 1024).toFixed(1);
       this.root.getElementById("disk").textContent = `~${totalGb} \u0413\u0411 \u043D\u0430 \u0434\u0438\u0441\u043A\u0435 \xB7 \u0441\u0432\u043E\u0431\u043E\u0434\u043D\u043E ${info.free_space_gb} \u0413\u0411`;
-      this.root.getElementById("mem").textContent = `GPU: ${info.vram_fast_gb ?? "?"} \u0413\u0411 (\u0431\u044B\u0441\u0442\u0440\u043E) / ${info.vram_min_gb ?? "?"} \u0413\u0411 (\u043C\u0438\u043D.) \xB7 RAM \u2265${info.ram_min_gb ?? "?"} \u0413\u0411`;
+      const memLine = `GPU: ${info.vram_fast_gb ?? "?"} \u0413\u0411 (\u0431\u044B\u0441\u0442\u0440\u043E) / ${info.vram_min_gb ?? "?"} \u0413\u0411 (\u043C\u0438\u043D.) \xB7 RAM \u2265${info.ram_min_gb ?? "?"} \u0413\u0411`;
+      this.root.getElementById("mem").textContent = memLine;
       this.root.getElementById("dir").textContent = info.save_dir;
       const dlBtn = this.root.getElementById("download");
       dlBtn.style.display = info.fully_downloaded ? "none" : "inline-block";
       dlBtn.textContent = anyExists ? "\u0414\u043E\u043A\u0430\u0447\u0430\u0442\u044C \u0444\u0430\u0439\u043B\u044B" : "\u0421\u043A\u0430\u0447\u0430\u0442\u044C \u043D\u0430\u0431\u043E\u0440";
-      this.root.getElementById("remove").style.display = info.fully_downloaded ? "inline-block" : "none";
-      try {
-        const mem = await estimateImageMemory(info.bundle_name);
-        const gb = (mb) => `${(mb / 1024).toFixed(1)} \u0413\u0411`;
-        this.root.getElementById("mem").textContent = `GPU: ${info.vram_fast_gb ?? "?"} \u0413\u0411 (\u0431\u044B\u0441\u0442\u0440\u043E) / ${info.vram_min_gb ?? "?"} \u0413\u0411 (\u043C\u0438\u043D.) \xB7 \u0441\u0435\u0439\u0447\u0430\u0441 \u0441\u0432\u043E\u0431\u043E\u0434\u043D\u043E ${gb(mem.estimate.vram_free_mb)} VRAM / ${gb(mem.estimate.ram_free_mb)} RAM \u2014 ${mem.message}`;
-      } catch {
+      const resumeBtn = this.root.getElementById("resume");
+      resumeBtn.style.display = info.fully_downloaded ? "none" : "inline-block";
+      resumeBtn.disabled = !anyExists;
+      this.root.getElementById("removeFromList").style.display = info.save_dir ? "inline-block" : "none";
+      this.root.getElementById("deleteFiles").style.display = info.fully_downloaded ? "inline-block" : "none";
+      if (svc.memoryProbe) {
+        try {
+          this.root.getElementById("mem").textContent = await svc.memoryProbe(info.bundle_name);
+        } catch {
+        }
       }
     }
     onBundleChange() {
@@ -522,29 +612,34 @@
       this.root.getElementById("activate").style.display = sel.value !== this.appliedBundle ? "inline-block" : "none";
     }
     async onActivate() {
+      const svc = this.service;
+      if (!svc || this.busy) return;
       const sel = this.root.getElementById("bundle");
-      if (this.busy || !sel.value) return;
+      if (!sel.value) return;
       this.busy = true;
       try {
-        await setSelectedImageBundle(sel.value);
+        await svc.activate(sel.value);
         notifyBundleChanged();
-        toast(`\u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0439 \u0431\u0430\u043D\u0434\u043B: ${sel.value}`);
+        toast(`\u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0439 ${svc.kindLabel.toLowerCase()}: ${sel.value}`);
       } catch (e) {
-        toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u0430\u043A\u0442\u0438\u0432\u0430\u0446\u0438\u0438 \u0431\u0430\u043D\u0434\u043B\u0430: ${e}`, "error");
+        toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u0430\u043A\u0442\u0438\u0432\u0430\u0446\u0438\u0438: ${e}`, "error");
       } finally {
         this.busy = false;
         await this.refresh();
       }
     }
+    /** Сборка целевой папки скачивания (логика ImageBundlePanel): если хоть один
+     * файл уже на диске — продолжаем в текущей папке; иначе диалог. */
     async onDownload() {
-      if (this.busy) return;
+      const svc = this.service;
+      if (!svc || this.busy) return;
       this.busy = true;
       const btn = this.root.getElementById("download");
       btn.disabled = true;
       this.showProgress(true);
       this.setProgress(0, 0);
       try {
-        const cur = await getImageBundleInfo();
+        const cur = await svc.info(null);
         let target = cur.save_dir;
         const anyExists = cur.files.some((f) => f.exists);
         if (!anyExists || !target) {
@@ -556,9 +651,9 @@
           const tail = base.split(/[\\/]/).pop() ?? "";
           target = tail === cur.bundle_name ? base : base.endsWith(sep) ? `${base}${cur.bundle_name}` : `${base}${sep}${cur.bundle_name}`;
         }
-        await downloadImageBundle(target, cur.bundle_name);
+        await svc.download(target, cur.bundle_name);
         notifyBundleChanged();
-        toast("\u041D\u0430\u0431\u043E\u0440 \u0438\u0437\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u0439 \u0441\u043A\u0430\u0447\u0430\u043D!");
+        toast(`\u041D\u0430\u0431\u043E\u0440 ${svc.kind === "video" ? "\u0432\u0438\u0434\u0435\u043E" : "\u0438\u0437\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u0439"} \u0441\u043A\u0430\u0447\u0430\u043D!`);
       } catch (e) {
         toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u0441\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u044F \u043D\u0430\u0431\u043E\u0440\u0430: ${e}`, "error");
       } finally {
@@ -568,185 +663,52 @@
         await this.refresh();
       }
     }
-    async onRemove() {
-      if (this.busy) return;
+    /** Custom-папка (add): диалог → validate → set → честный тост о нехватке. */
+    async onAddCustomDir() {
+      const svc = this.service;
+      if (!svc || this.busy) return;
       this.busy = true;
+      const btn = this.root.getElementById("add");
+      btn.disabled = true;
       try {
-        const cur = await getImageBundleInfo();
-        await removeImageBundle(cur.bundle_name);
-        notifyBundleChanged();
-        toast("\u0424\u0430\u0439\u043B\u044B \u043D\u0430\u0431\u043E\u0440\u0430 \u0443\u0434\u0430\u043B\u0435\u043D\u044B.");
-      } catch (e) {
-        toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u044F: ${e}`, "error");
-      } finally {
-        this.busy = false;
-        await this.refresh();
-      }
-    }
-  };
-  var ImageModelsPanel = class extends HTMLElement {
-    constructor() {
-      super(...arguments);
-      this.busy = false;
-      this.pendingAction = null;
-      this.onChangedBound = () => {
-        void this.refresh();
-      };
-    }
-    connectedCallback() {
-      if (this.root) return;
-      this.root = this.attachShadow({ mode: "open" });
-      this.root.innerHTML = `
-      <style>${STYLE}</style>
-      <div>
-        <div class="row"><label>\u041F\u0430\u043F\u043A\u0430:</label><span id="dir" class="hint" style="word-break:break-all; flex:1;">\u2026</span></div>
-        <div id="status" class="hint"></div>
-        <ul class="files" id="files"></ul>
-        <div class="row" style="margin-top:10px;">
-          <button id="add" class="secondary">+ \u0414\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u043D\u0430\u0431\u043E\u0440</button>
-          <button id="resume" class="primary" style="display:none;">\u0414\u043E\u043A\u0430\u0447\u0430\u0442\u044C \u0444\u0430\u0439\u043B\u044B</button>
-          <button id="removeFromList" class="secondary" style="display:none;">\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0438\u0437 \u0441\u043F\u0438\u0441\u043A\u0430</button>
-          <button id="deleteFiles" class="danger" style="display:none;">\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0444\u0430\u0439\u043B\u044B</button>
-        </div>
-        <div id="progress" class="progress-container">
-          <div class="progress-status" id="progressStatus">0 MB / 0 MB</div>
-          <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
-        </div>
-      </div>
-      <div id="overlay" class="overlay">
-        <div class="box">
-          <h3 id="overlayTitle">\u0423\u0434\u0430\u043B\u0438\u0442\u044C</h3>
-          <p id="overlayMsg"></p>
-          <div class="overlay-buttons">
-            <button id="modalCancel" class="secondary">\u041E\u0442\u043C\u0435\u043D\u0430</button>
-            <button id="modalOk" class="danger">\u0423\u0434\u0430\u043B\u0438\u0442\u044C</button>
-          </div>
-        </div>
-      </div>`;
-      this.root.getElementById("add").addEventListener("click", () => this.onAdd());
-      this.root.getElementById("resume").addEventListener("click", () => this.onResume());
-      this.root.getElementById("removeFromList").addEventListener("click", () => this.confirm("remove"));
-      this.root.getElementById("deleteFiles").addEventListener("click", () => this.confirm("delete"));
-      this.root.getElementById("modalCancel").addEventListener("click", () => this.cancel());
-      this.root.getElementById("modalOk").addEventListener("click", () => void this.doAction());
-      document.addEventListener("image:bundle-changed", this.onChangedBound);
-      void this.refresh();
-      void listen("downloader:progress", (e) => {
-        const p = e.payload;
-        if (p.kind && p.kind !== "image-model") return;
-        this.setProgress(p.downloaded, p.total);
-        if (p.status === "done" || p.status === "error") {
-          setTimeout(() => {
-            this.showProgress(false);
-            void this.refresh();
-          }, 400);
+        const sel = await open({ directory: true, title: `\u041F\u0430\u043F\u043A\u0430 \u043D\u0430\u0431\u043E\u0440\u0430 ${svc.kind === "video" ? "VideoGEN" : "ImageGEN"}` });
+        if (!sel) return;
+        const path = Array.isArray(sel) ? sel[0] : sel;
+        if (!path) return;
+        let valid;
+        try {
+          valid = await svc.validateDir(path, null);
+        } catch (e) {
+          toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0438 \u043D\u0430\u0431\u043E\u0440\u0430: ${e}`, "error");
+          return;
         }
-      }).then((u) => {
-        this.unlisten = u;
-      }).catch(() => {
-      });
-    }
-    disconnectedCallback() {
-      document.removeEventListener("image:bundle-changed", this.onChangedBound);
-      this.unlisten?.();
-    }
-    setProgress(downloaded, total) {
-      const pct = total > 0 ? downloaded / total * 100 : 0;
-      const bar = this.root.getElementById("progressBar");
-      if (bar) bar.style.width = `${pct}%`;
-      const st = this.root.getElementById("progressStatus");
-      if (st) st.textContent = `${formatBytes(downloaded)} / ${total > 0 ? formatBytes(total) : "?"}${total > 0 ? ` (${pct.toFixed(0)}%)` : ""}`;
-    }
-    showProgress(on) {
-      const prg = this.root.getElementById("progress");
-      if (prg) prg.style.display = on ? "block" : "none";
-    }
-    async refresh() {
-      let info;
-      try {
-        info = await getImageBundleInfo();
-      } catch (e) {
-        this.root.getElementById("status").textContent = `\u041E\u0448\u0438\u0431\u043A\u0430: ${e}`;
-        return;
-      }
-      this.root.getElementById("dir").textContent = info.save_dir;
-      const ul = this.root.getElementById("files");
-      ul.innerHTML = "";
-      for (const f of info.files) {
-        const li = document.createElement("li");
-        li.className = f.exists ? "ok" : "missing";
-        const size = f.size_bytes ? ` \u2014 ${formatBytes(f.size_bytes)}` : "";
-        li.textContent = `${f.exists ? "\u2713" : "\u25CB"} ${esc(f.filename)} (${f.role})${size}`;
-        ul.appendChild(li);
-      }
-      const missing = info.files.filter((f) => !f.exists).length;
-      this.root.getElementById("status").textContent = info.fully_downloaded ? `\u041D\u0430\u0431\u043E\u0440 \u0432\u0430\u043B\u0438\u0434\u0435\u043D: ${info.files.length}/${info.files.length} \u0444\u0430\u0439\u043B\u0430 \u043D\u0430 \u043C\u0435\u0441\u0442\u0435.` : `\u041D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0444\u0430\u0439\u043B\u043E\u0432: ${missing} \u0438\u0437 ${info.files.length}.`;
-      const resumeBtn = this.root.getElementById("resume");
-      if (resumeBtn) {
-        resumeBtn.style.display = info.fully_downloaded ? "none" : "inline-block";
-      }
-      const removeBtn = this.root.getElementById("removeFromList");
-      if (removeBtn) {
-        removeBtn.style.display = info.save_dir ? "inline-block" : "none";
-      }
-      const deleteBtn = this.root.getElementById("deleteFiles");
-      if (deleteBtn) {
-        deleteBtn.style.display = info.save_dir ? "inline-block" : "none";
-      }
-    }
-    confirm(action) {
-      this.pendingAction = action;
-      const title = this.root.getElementById("overlayTitle");
-      const msg = this.root.getElementById("overlayMsg");
-      const ok = this.root.getElementById("modalOk");
-      if (action === "remove") {
-        title.textContent = "\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u043D\u0430\u0431\u043E\u0440 \u0438\u0437 \u0441\u043F\u0438\u0441\u043A\u0430?";
-        msg.textContent = "\u0424\u0430\u0439\u043B\u044B \u043D\u0430 \u0434\u0438\u0441\u043A\u0435 \u043D\u0435 \u0431\u0443\u0434\u0443\u0442 \u0443\u0434\u0430\u043B\u0435\u043D\u044B.";
-        ok.className = "secondary";
-        ok.textContent = "\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0438\u0437 \u0441\u043F\u0438\u0441\u043A\u0430";
-      } else {
-        title.textContent = "\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0444\u0430\u0439\u043B\u044B \u043D\u0430\u0431\u043E\u0440\u0430?";
-        msg.textContent = "\u0424\u0430\u0439\u043B\u044B \u0441 \u0434\u0438\u0441\u043A\u0430 \u0431\u0443\u0434\u0443\u0442 \u0443\u0434\u0430\u043B\u0435\u043D\u044B \u0411\u0415\u0417\u0412\u041E\u0417\u0412\u0420\u0410\u0422\u041D\u041E. \u0417\u0430\u043F\u0438\u0441\u044C \u0442\u043E\u0436\u0435 \u0438\u0441\u0447\u0435\u0437\u043D\u0435\u0442 \u0438\u0437 \u0441\u043F\u0438\u0441\u043A\u0430.";
-        ok.className = "danger";
-        ok.textContent = "\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0444\u0430\u0439\u043B\u044B";
-      }
-      this.root.getElementById("overlay").classList.add("open");
-    }
-    cancel() {
-      this.pendingAction = null;
-      this.root.getElementById("overlay").classList.remove("open");
-    }
-    async doAction() {
-      if (this.busy || !this.pendingAction) return;
-      this.busy = true;
-      const action = this.pendingAction;
-      this.cancel();
-      try {
-        if (action === "remove") {
-          await removeImageBundleFromList();
-          toast("\u041D\u0430\u0431\u043E\u0440 \u0443\u0434\u0430\u043B\u0451\u043D \u0438\u0437 \u0441\u043F\u0438\u0441\u043A\u0430.");
+        await svc.setCustomDir(path);
+        notifyBundleChanged();
+        if (valid.valid) {
+          toast("\u041D\u0430\u0431\u043E\u0440 \u0434\u043E\u0431\u0430\u0432\u043B\u0435\u043D: \u0432\u0441\u0435 \u0444\u0430\u0439\u043B\u044B \u043D\u0430 \u043C\u0435\u0441\u0442\u0435.");
         } else {
-          await removeImageBundle();
-          toast("\u0424\u0430\u0439\u043B\u044B \u043D\u0430\u0431\u043E\u0440\u0430 \u0443\u0434\u0430\u043B\u0435\u043D\u044B.");
+          toast(`\u041F\u0430\u043F\u043A\u0430 \u0432\u044B\u0431\u0440\u0430\u043D\u0430. \u041D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0444\u0430\u0439\u043B\u043E\u0432: ${valid.missing.length}. \u041D\u0430\u0436\u043C\u0438\u0442\u0435 \xAB\u0414\u043E\u043A\u0430\u0447\u0430\u0442\u044C \u0444\u0430\u0439\u043B\u044B\xBB.`);
         }
-        notifyBundleChanged();
         await this.refresh();
       } catch (e) {
-        toast(`\u041E\u0448\u0438\u0431\u043A\u0430: ${e}`, "error");
+        toast(`\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0434\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u043D\u0430\u0431\u043E\u0440: ${e}`, "error");
       } finally {
+        btn.disabled = false;
         this.busy = false;
       }
     }
+    /** Custom-папка (resume): докачать недостающие в текущую папку. */
     async onResume() {
-      if (this.busy) return;
+      const svc = this.service;
+      if (!svc || this.busy) return;
       this.busy = true;
       const btn = this.root.getElementById("resume");
-      if (btn) btn.disabled = true;
+      btn.disabled = true;
       this.showProgress(true);
       this.setProgress(0, 0);
       try {
-        const cur = await getImageBundleInfo();
-        await downloadImageBundle(cur.save_dir, cur.bundle_name);
+        const cur = await svc.info(null);
+        await svc.download(cur.save_dir, cur.bundle_name);
         notifyBundleChanged();
         toast("\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u044E\u0449\u0438\u0435 \u0444\u0430\u0439\u043B\u044B \u043D\u0430\u0431\u043E\u0440\u0430 \u0441\u043A\u0430\u0447\u0430\u043D\u044B!");
       } catch (e) {
@@ -758,47 +720,84 @@
         await this.refresh();
       }
     }
-    async onAdd() {
-      if (this.busy) return;
+    async onRemoveFromList() {
+      const svc = this.service;
+      if (!svc || this.busy) return;
       this.busy = true;
-      const btn = this.root.getElementById("add");
-      btn.disabled = true;
       try {
-        const sel = await open({ directory: true, title: "\u041F\u0430\u043F\u043A\u0430 \u043D\u0430\u0431\u043E\u0440\u0430 ImageGEN" });
-        if (!sel) return;
-        const path = Array.isArray(sel) ? sel[0] : sel;
-        if (!path) return;
-        let v;
-        try {
-          v = await validateImageBundleDir(path);
-        } catch (e) {
-          toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0438 \u043D\u0430\u0431\u043E\u0440\u0430: ${e}`, "error");
-          return;
-        }
-        await setImageBundleDir(path);
+        await svc.clearCustomDir();
         notifyBundleChanged();
-        if (v.valid) {
-          toast("\u041D\u0430\u0431\u043E\u0440 \u0434\u043E\u0431\u0430\u0432\u043B\u0435\u043D: \u0432\u0441\u0435 \u0444\u0430\u0439\u043B\u044B \u043D\u0430 \u043C\u0435\u0441\u0442\u0435.");
-        } else {
-          toast(`\u041F\u0430\u043F\u043A\u0430 \u0432\u044B\u0431\u0440\u0430\u043D\u0430. \u041D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0444\u0430\u0439\u043B\u043E\u0432: ${v.missing.length}. \u041D\u0430\u0436\u043C\u0438\u0442\u0435 \xAB\u0414\u043E\u043A\u0430\u0447\u0430\u0442\u044C \u0444\u0430\u0439\u043B\u044B\xBB.`);
-        }
-        await this.refresh();
+        toast("Custom-\u043F\u0430\u043F\u043A\u0430 \u0441\u043D\u044F\u0442\u0430: \u0432\u0435\u0440\u043D\u0443\u043B\u0438\u0441\u044C \u043A \u0441\u0442\u0430\u043D\u0434\u0430\u0440\u0442\u043D\u043E\u0439.");
       } catch (e) {
-        toast(`\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0434\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u043D\u0430\u0431\u043E\u0440: ${e}`, "error");
+        toast(`\u041E\u0448\u0438\u0431\u043A\u0430: ${e}`, "error");
       } finally {
-        btn.disabled = false;
         this.busy = false;
+        await this.refresh();
+      }
+    }
+    confirmDelete() {
+      this.root.getElementById("overlay").classList.add("open");
+    }
+    closeModal() {
+      this.root.getElementById("overlay").classList.remove("open");
+    }
+    async doDeleteFiles() {
+      const svc = this.service;
+      if (!svc || this.busy) return;
+      this.busy = true;
+      this.closeModal();
+      try {
+        await svc.removeFiles();
+        notifyBundleChanged();
+        toast("\u0424\u0430\u0439\u043B\u044B \u043D\u0430\u0431\u043E\u0440\u0430 \u0443\u0434\u0430\u043B\u0435\u043D\u044B.");
+      } catch (e) {
+        toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u044F: ${e}`, "error");
+      } finally {
+        this.busy = false;
+        await this.refresh();
       }
     }
   };
-  if (!customElements.get("image-engine-panel")) {
-    customElements.define("image-engine-panel", ImageEnginePanel);
+  if (!customElements.get("image-bundle-tab")) {
+    customElements.define("image-bundle-tab", BundleTabElement);
   }
-  if (!customElements.get("image-bundle-panel")) {
-    customElements.define("image-bundle-panel", ImageBundlePanel);
-  }
-  if (!customElements.get("image-models-panel")) {
-    customElements.define("image-models-panel", ImageModelsPanel);
+
+  // guest-js/components/media-panel.ts
+  var MediaEnginePanel = class extends HTMLElement {
+    connectedCallback() {
+      if (this.root) return;
+      this.root = this.attachShadow({ mode: "open" });
+      this.root.innerHTML = `
+      <style>${STYLE}
+        .tabs-row { margin: 0 0 10px; }
+        .tab-panel { margin-top: 10px; }
+      </style>
+      <div>
+        <div class="row tabs-row">
+          <button id="tabImages" class="tab-btn primary" aria-pressed="true">\u041A\u0430\u0440\u0442\u0438\u043D\u043A\u0438</button>
+          <button id="tabVideo" class="tab-btn" aria-pressed="false">\u0412\u0438\u0434\u0435\u043E</button>
+        </div>
+        <div class="tab-panel" id="panelImages"><image-bundle-tab service="image"></image-bundle-tab></div>
+        <div class="tab-panel" id="panelVideo" style="display:none;"><image-bundle-tab service="video"></image-bundle-tab></div>
+      </div>`;
+      const btnImages = this.root.getElementById("tabImages");
+      const btnVideo = this.root.getElementById("tabVideo");
+      const panelImages = this.root.getElementById("panelImages");
+      const panelVideo = this.root.getElementById("panelVideo");
+      const activate = (showVideo) => {
+        btnImages.setAttribute("aria-pressed", showVideo ? "false" : "true");
+        btnVideo.setAttribute("aria-pressed", showVideo ? "true" : "false");
+        btnImages.classList.toggle("primary", !showVideo);
+        btnVideo.classList.toggle("primary", showVideo);
+        panelImages.style.display = showVideo ? "none" : "block";
+        panelVideo.style.display = showVideo ? "block" : "none";
+      };
+      btnImages.addEventListener("click", () => activate(false));
+      btnVideo.addEventListener("click", () => activate(true));
+    }
+  };
+  if (!customElements.get("image-media-panel")) {
+    customElements.define("image-media-panel", MediaEnginePanel);
   }
 
   // guest-js/index.ts
@@ -879,6 +878,47 @@
       bundleName: opts.bundleName ?? null
     });
   }
+  function getVideoBundles() {
+    return invoke("plugin:image-engine|get_video_bundles");
+  }
+  function getVideoBundleInfo(bundleName) {
+    return invoke("plugin:image-engine|get_video_bundle_info", { bundleName: bundleName ?? null });
+  }
+  function setSelectedVideoBundle(bundleName) {
+    return invoke("plugin:image-engine|set_selected_video_bundle", { bundleName });
+  }
+  function downloadVideoBundle(saveDir, bundleName) {
+    return invoke("plugin:image-engine|download_video_bundle", { saveDir, bundleName: bundleName ?? null });
+  }
+  function validateVideoBundleDir(path, bundleName) {
+    return invoke("plugin:image-engine|validate_video_bundle_dir", { path, bundleName: bundleName ?? null });
+  }
+  function setVideoBundleDir(path) {
+    return invoke("plugin:image-engine|set_video_bundle_dir", { path: path ?? null });
+  }
+  function removeVideoBundleFiles(bundleName) {
+    return invoke("plugin:image-engine|remove_video_bundle_files", { bundleName: bundleName ?? null });
+  }
+  function generateVideo(opts) {
+    return invoke("plugin:image-engine|generate_video", {
+      prompt: opts.prompt,
+      negativePrompt: opts.negativePrompt ?? null,
+      initPath: opts.initPath ?? null,
+      endPath: opts.endPath ?? null,
+      refPaths: opts.refPaths ?? [],
+      seconds: opts.seconds ?? null,
+      width: opts.width ?? null,
+      height: opts.height ?? null,
+      steps: opts.steps ?? null,
+      cfgScale: opts.cfgScale ?? null,
+      seed: opts.seed ?? null,
+      finalQuality: opts.finalQuality ?? null,
+      strength: opts.strength ?? null,
+      vaeTiling: opts.vaeTiling ?? null,
+      outPath: opts.outPath ?? null,
+      bundleName: opts.bundleName ?? null
+    });
+  }
 
   // guest-js/iife-entry.ts
   var g4 = window;
@@ -890,22 +930,31 @@
         value: {
           checkImageEngineUpdate,
           downloadImageBundle,
+          downloadVideoBundle,
           editImage,
           estimateImageMemory,
           generateImage,
+          generateVideo,
           getImageBundleInfo,
           getImageEngineStatus,
           getImageModelsCatalog,
+          getVideoBundleInfo,
+          getVideoBundles,
           installImageEngine,
           installImageEngineUpdate,
           notifyBundleChanged,
           removeImageBundle,
           removeImageBundleFromList,
+          removeVideoBundleFiles,
           removeImageEngine,
           setImageBundleDir,
+          setVideoBundleDir,
           setImageEngineDir,
           setImageEngineVariant,
-          validateImageBundleDir
+          setSelectedImageBundle,
+          setSelectedVideoBundle,
+          validateImageBundleDir,
+          validateVideoBundleDir
         }
       });
     }

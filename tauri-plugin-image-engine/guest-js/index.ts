@@ -233,6 +233,128 @@ export function editImage(opts: EditOptions): Promise<ImageGenResult> {
   })
 }
 
+// ─────────────────────────── Видео (MiniMax H3, PRP 21.10.26) ───────────────────────────
+
+export interface VideoFileEntry {
+  role: string
+  filename: string
+  download_url: string
+  size_bytes?: number | null
+}
+
+export interface VideoPreset {
+  steps_draft: number
+  steps_draft_nolora: number
+  steps_final: number
+  fps: number
+  max_seconds: number
+  cfg_scale: number
+  sampler: string
+  seed: number
+  width: number
+  height: number
+}
+
+export interface VideoBundleEntry {
+  name: string
+  label: string
+  note: string
+  is_default: boolean
+  files: VideoFileEntry[]
+  spawn_flags?: string | null
+  model_args?: string | null
+  preset: VideoPreset
+  size_gb?: string | null
+  vram_fast_gb?: number | null
+  vram_min_gb?: number | null
+  ram_min_gb?: number | null
+}
+
+export function getVideoBundles(): Promise<VideoBundleEntry[]> {
+  return invoke<VideoBundleEntry[]>('plugin:image-engine|get_video_bundles')
+}
+
+export function getVideoBundleInfo(bundleName?: string | null): Promise<ImageBundleInfo> {
+  return invoke<ImageBundleInfo>('plugin:image-engine|get_video_bundle_info', { bundleName: bundleName ?? null })
+}
+
+/** Выбрать активный видео-бандл (пустая строка => сброс на дефолт). */
+export function setSelectedVideoBundle(bundleName: string): Promise<ImageBundleInfo> {
+  return invoke<ImageBundleInfo>('plugin:image-engine|set_selected_video_bundle', { bundleName })
+}
+
+export function downloadVideoBundle(saveDir: string, bundleName?: string | null): Promise<ImageBundleInfo> {
+  return invoke<ImageBundleInfo>('plugin:image-engine|download_video_bundle', { saveDir, bundleName: bundleName ?? null })
+}
+
+export function validateVideoBundleDir(path: string, bundleName?: string | null): Promise<ImageBundleValidate> {
+  return invoke<ImageBundleValidate>('plugin:image-engine|validate_video_bundle_dir', { path, bundleName: bundleName ?? null })
+}
+
+/** Custom-папка видео-бандла (пустая строка/null => сброс на дефолт). */
+export function setVideoBundleDir(path?: string | null): Promise<ImageBundleInfo> {
+  return invoke<ImageBundleInfo>('plugin:image-engine|set_video_bundle_dir', { path: path ?? null })
+}
+
+export function removeVideoBundleFiles(bundleName?: string | null): Promise<ImageBundleInfo> {
+  return invoke<ImageBundleInfo>('plugin:image-engine|remove_video_bundle_files', { bundleName: bundleName ?? null })
+}
+
+export interface VideoGenResult {
+  path: string
+  fps: number
+  frame_count: number
+  mime_type: string
+  time_sec: number
+}
+
+export interface GenerateVideoOptions {
+  prompt: string
+  negativePrompt?: string | null
+  /** Первый кадр (i2va/fl2va): локальный путь или data-URL. */
+  initPath?: string | null
+  /** Последний кадр (fl2va): локальный путь или data-URL. */
+  endPath?: string | null
+  /** Референсы (ref2va): локальные пути или data-URL. НЕ смешивать с init/end. */
+  refPaths?: string[]
+  /** Длительность клипа, сек (frames = seconds × fps; сервер нормализует сеткой). */
+  seconds?: number | null
+  width?: number | null
+  height?: number | null
+  /** Явные шаги — приоритетнее finalQuality. */
+  steps?: number | null
+  cfgScale?: number | null
+  seed?: number | null
+  /** false/по умолчанию = draft; true = steps_final. */
+  finalQuality?: boolean | null
+  /** image-to-video сила; по умолчанию 0.75. */
+  strength?: number | null
+  vaeTiling?: boolean | null
+  outPath?: string | null
+  bundleName?: string | null
+}
+
+export function generateVideo(opts: GenerateVideoOptions): Promise<VideoGenResult> {
+  return invoke<VideoGenResult>('plugin:image-engine|generate_video', {
+    prompt: opts.prompt,
+    negativePrompt: opts.negativePrompt ?? null,
+    initPath: opts.initPath ?? null,
+    endPath: opts.endPath ?? null,
+    refPaths: opts.refPaths ?? [],
+    seconds: opts.seconds ?? null,
+    width: opts.width ?? null,
+    height: opts.height ?? null,
+    steps: opts.steps ?? null,
+    cfgScale: opts.cfgScale ?? null,
+    seed: opts.seed ?? null,
+    finalQuality: opts.finalQuality ?? null,
+    strength: opts.strength ?? null,
+    vaeTiling: opts.vaeTiling ?? null,
+    outPath: opts.outPath ?? null,
+    bundleName: opts.bundleName ?? null,
+  })
+}
+
 // Регистрируем Web Components при импорте пакета.
 import './web-components'
 

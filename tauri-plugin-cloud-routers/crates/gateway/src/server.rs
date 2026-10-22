@@ -193,6 +193,195 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Регрессия 17.10.2026: фон модалки объявлялся сокращением
+    /// `inset: 0`, которое движок, не поддерживающий сокращение, отбрасывает
+    /// целиком — подложка модалки оставалась `position: fixed` без отступов и
+    /// «прилипала» к углу: вёрстка летит, модалок не видно. Теперь оверлей
+    /// задан четырьмя явными отступами; запрет сокращения здесь — инвариант
+    /// домена (отказ невозможен конструктивно), а не стилистика.
+    #[test]
+    fn dashboard_css_positions_modal_backdrop_with_explicit_offsets() {
+        assert!(
+            !DASHBOARD_CSS.contains("inset:"),
+            "CSS дашборда использует сокращение `inset:` — движки, которые его не понимают, молча отбрасывают правило целиком"
+        );
+        assert!(
+            DASHBOARD_CSS.contains(".gw-modal-backdrop"),
+            "подложка модалки (gw-modal-backdrop) обязана объявляться в CSS дашборда"
+        );
+        for prop in ["top:", "right:", "bottom:", "left:"] {
+            assert!(
+                DASHBOARD_CSS.contains(prop),
+                "в CSS дашборда отсутствует offset-свойство `{prop}`"
+            );
+        }
+    }
+
+    /// Правило «Namespace CSS» (crates/gateway/docs/README.md): КАЖДЫЙ класс
+    /// в разметке дашборда обязан начинаться с префикса `gw-`. Причина —
+    /// реальный кейс 22.10.2026: расширение браузера (XTranslate) на лету
+    /// вставляет свой CSS, стилизующий свои всплывашки по голому `.modal`,
+    /// и накрывает дашборд (окно сплющивается в 1px и уезжает в угол).
+    /// Голые имена (`modal`, `card`, `toast`, `btn`…) — это чужая территория:
+    /// любое совпадение класс-имён — это гонка с произвольным CSS окружения.
+    /// Решение по правилу 00.2: отказ становится невозможен структурно —
+    /// свои классы не пересекаются с чужими, тест не даёт регрессию.
+    ///
+    /// Сканер покрывает все три носителя имён: статический HTML, JS-шаблоны
+    /// (`class="..."` генерируются кодом карточек), JS-селекторы/тогглы
+    /// (`$$('.x')`, `classList.toggle('x')`) и селекторы CSS.
+    #[test]
+    fn dashboard_classes_live_in_gw_namespace() {
+        fn dotted_tokens(source: &str) -> (usize, Vec<String>) {
+            // Собирает ВСЕ `class="..."`-литералы токенами; возвращает
+            // (количество собранных классов, список токенов-нарушителей).
+            let mut count = 0usize;
+            let mut offenders = Vec::new();
+            let mut rest = source;
+            while let Some(open) = rest.find("class=\"") {
+                let after = &rest[open + 7..];
+                match after.find('"') {
+                    None => break,
+                    Some(close) => {
+                        for tok in after[..close].split_whitespace() {
+                            // Имя CSS-класса — всегда начинается буквой/`_`/`-`.
+                            // Всё прочее (`?`, `:`, фрагменты интерполяций
+                            // `${...}` и хвосты тернарников типа `'gw-off'}`) —
+                            // вычисляемые части шаблонов, а не имена классов;
+                            // сюда идут только статические идентификаторы.
+                            let mut cs = tok.chars();
+                            let first = cs.next().map(|c| {
+                                c.is_ascii_alphabetic() || c == '_'
+                            });
+                            if first != Some(true) {
+                                continue;
+                            }
+                            count += 1;
+                            if !tok.starts_with("gw-") {
+                                offenders.push(tok.to_string());
+                            }
+                        }
+                        rest = &after[close + 1..];
+                    }
+                }
+            }
+            (count, offenders)
+        }
+
+        let (html_n, html_bad) = dotted_tokens(DASHBOARD_HTML);
+        assert!(
+            html_bad.is_empty() && html_n >= 30,
+            "в index.html классы вне пространства gw-: {html_bad:?} (собрано {html_n}) — правило «Namespace CSS» (docs/README.md)"
+        );
+
+        let (js_n, js_bad) = dotted_tokens(DASHBOARD_JS);
+        assert!(
+            js_bad.is_empty() && js_n >= 40,
+            "в app.js сгенерированные шаблонами классы вне gw-: {js_bad:?} (собрано {js_n})"
+        );
+
+        // JS-селекторы: `$$('.x')` / `$('.x')` обязаны тоже жить в gw-.
+        // Сканим только расширенные селекторы точкой; `$('#id')` — не классы.
+        let mut sel_rest = DASHBOARD_JS;
+        while let Some(open) = sel_rest.find("$('") {
+            let after = &sel_rest[open + 3..];
+            sel_rest = match after.find('\'') {
+                None => break,
+                Some(close) => {
+                    let sel = &after[..close];
+                    if let Some(tok) = sel.strip_prefix('.') {
+                        let tok: String = tok
+                            .chars()
+                            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                            .collect();
+                        assert!(
+                            tok.starts_with("gw-"),
+                            "JS-селектор `.{tok}` вне пространства gw- (app.js)"
+                        );
+                    }
+                    &after[close + 1..]
+                }
+            };
+        }
+
+        // classList.toggle('x') — динамические класс-имёна (busy/active).
+        let mut tog_rest = DASHBOARD_JS;
+        while let Some(open) = tog_rest.find("classList.toggle('") {
+            let after = &tog_rest[open + "classList.toggle('".len()..];
+            tog_rest = match after.find('\'') {
+                None => break,
+                Some(close) => {
+                    let tok = &after[..close];
+                    assert!(
+                        tok.starts_with("gw-"),
+                        "classList.toggle('{tok}') вне пространства gw- (app.js)"
+                    );
+                    &after[close + 1..]
+                }
+            };
+        }
+
+        // CSS: комментарии выброшены, дальше скан ВСЕГО файла слева направо.
+        // Токен — `.` + буква/`_`/`-` + [alnum-_]; `rgba(0,0,0,.6)` отсекается
+        // guard'ом: '.6' начинается с цифры и токеном не считается. Структура
+        // (селектор vs тело) здесь не разыгрывается: точки в НУЛЕВЫХ значениях
+        // никогда не начинают токен с буквы — вызовов «.word» вне селекторов
+        // в этом CSS нет.
+        let (css_n, css_bad) = {
+            fn strip_css_comments(src: &str) -> String {
+                let mut out = String::with_capacity(src.len());
+                let mut rest = src;
+                while let Some(open) = rest.find("/*") {
+                    if open > 0 {
+                        out.push_str(&rest[..open]);
+                    }
+                    match rest[open..].find("*/") {
+                        None => return out,
+                        Some(end) => rest = &rest[open + end + 2..],
+                    }
+                }
+                out.push_str(rest);
+                out
+            }
+            let css = strip_css_comments(DASHBOARD_CSS);
+            let mut offenders = Vec::new();
+            let mut count = 0usize;
+            let chars: Vec<char> = css.chars().collect();
+            let mut i = 0;
+            while i < chars.len() {
+                if chars[i] == '.'
+                    && i + 1 < chars.len()
+                    && (chars[i + 1].is_ascii_alphabetic()
+                        || chars[i + 1] == '_'
+                        || chars[i + 1] == '-')
+                {
+                    let start = i + 1;
+                    let mut j = start;
+                    while j < chars.len()
+                        && (chars[j].is_ascii_alphanumeric()
+                            || chars[j] == '_'
+                            || chars[j] == '-')
+                    {
+                        j += 1;
+                    }
+                    count += 1;
+                    let tok: String = chars[start..j].iter().collect();
+                    if !tok.starts_with("gw-") {
+                        offenders.push(tok);
+                    }
+                    i = j;
+                } else {
+                    i += 1;
+                }
+            }
+            (count, offenders)
+        };
+        assert!(
+            css_bad.is_empty() && css_n >= 25,
+            "в style.css классы вне gw-: {css_bad:?} (собрано {css_n})"
+        );
+    }
+
     #[tokio::test]
     async fn v1_models_uses_owned_by_combo_for_host_compatibility() {
         let dir = tmp("models");

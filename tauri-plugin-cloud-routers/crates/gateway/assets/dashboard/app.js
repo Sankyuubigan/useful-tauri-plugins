@@ -41,7 +41,7 @@ async function api(path, options = {}) {
 function toast(message, kind = 'ok') {
   const el = $('#toast');
   el.textContent = message;
-  el.className = `toast ${kind === 'err' ? 'err' : 'ok'}`;
+  el.className = `gw-toast ${kind === 'err' ? 'gw-err' : 'gw-ok'}`;
   el.hidden = false;
   clearTimeout(el._t);
   el._t = setTimeout(() => { el.hidden = true; }, 4200);
@@ -56,7 +56,7 @@ function busy(selector, on) {
   const el = typeof selector === 'string' ? $(selector) : selector;
   if (!el) return;
   el.disabled = on;
-  el.classList.toggle('busy', on);
+  el.classList.toggle('gw-busy', on);
 }
 
 function esc(s) {
@@ -124,7 +124,8 @@ function renderHeader() {
 // в `renderProviders`.
 //
 // Отдельный `renderProblems` тут был не нужен: он искал карточку по классу
-// `.problems-card`, которого в разметке не бывает (`class="card problems"`), —
+// gw-problems, которого в разметке не бывает (карточки проблем рисует
+// `renderProviders` отдельным блоком с `class="gw-problems"`), —
 // поэтому селектор всегда возвращал null, функция на каждом обновлении
 // вставляла ВТОРУЮ копию карточки, а первая оставалась от `renderProviders`.
 // Два рендерера одного контейнера — и есть корень дублей, поэтому удалён
@@ -141,8 +142,8 @@ function renderPresetsHint() {
 // ───────────────────────────── провайдеры ─────────────────────────────
 
 function protocolBadge(p) {
-  if (p.protocol === 'kiro') return '<span class="badge info">Kiro</span>';
-  return '<span class="badge">OpenAI</span>';
+  if (p.protocol === 'kiro') return '<span class="gw-badge gw-info">Kiro</span>';
+  return '<span class="gw-badge">OpenAI</span>';
 }
 
 function authBlock(p) {
@@ -151,26 +152,26 @@ function authBlock(p) {
   if (p.auth && p.auth.kind === 'o_auth') {
     const a = p.auth;
     const state = !a.session_present
-      ? '<span class="badge err">сессия потеряна — войдите заново</span>'
-      : (a.email ? `<span class="hint">${esc(a.email)}</span>` : '<span class="badge ok">привязан</span>');
+      ? '<span class="gw-badge gw-err">сессия потеряна — войдите заново</span>'
+      : (a.email ? `<span class="gw-hint">${esc(a.email)}</span>` : '<span class="gw-badge gw-ok">привязан</span>');
     const exp = a.expires_at_unix
-      ? `<span class="hint">токен до ${new Date(a.expires_at_unix * 1000).toLocaleString()}</span>`
+      ? `<span class="gw-hint">токен до ${new Date(a.expires_at_unix * 1000).toLocaleString()}</span>`
       : '';
     return (
-      `<div class="kv"><span>Вход</span><b>Kiro OAuth${a.method ? ` (${esc(String(a.method))})` : ''}</b></div>` +
-      `<div class="row">${state} ${exp}` +
-      `<span class="spacer"></span>` +
-      `<button class="primary btn-oauth-start" data-provider="${esc(p.id)}">Войти заново</button>` +
-      `<button class="ghost btn-oauth-drop" data-provider="${esc(p.id)}">Отвязать</button>` +
+      `<div class="gw-kv"><span>Вход</span><b>Kiro OAuth${a.method ? ` (${esc(String(a.method))})` : ''}</b></div>` +
+      `<div class="gw-row">${state} ${exp}` +
+      `<span class="gw-spacer"></span>` +
+      `<button class="gw-primary gw-btn-oauth-start" data-provider="${esc(p.id)}">Войти заново</button>` +
+      `<button class="gw-ghost gw-btn-oauth-drop" data-provider="${esc(p.id)}">Отвязать</button>` +
       `</div>` +
-      `<div class="hint">Не вставляйте токен из 9Router: пройдите свой вход — иначе сломаете обе сессии.</div>`
+      `<div class="gw-hint">Не вставляйте токен из 9Router: пройдите свой вход — иначе сломаете обе сессии.</div>`
     );
   }
   if (p.protocol === 'kiro') {
     return (
-      `<div class="row"><span class="badge warn">не привязан</span><span class="spacer"></span>` +
-      `<button class="primary btn-oauth-start" data-provider="${esc(p.id)}">Подключить Kiro (OAuth)</button></div>` +
-      `<div class="hint">Свой вход через AWS Builder ID: дашборд покажет код, подтвердите в браузере.</div>`
+      `<div class="gw-row"><span class="gw-badge gw-warn">не привязан</span><span class="gw-spacer"></span>` +
+      `<button class="gw-primary gw-btn-oauth-start" data-provider="${esc(p.id)}">Подключить Kiro (OAuth)</button></div>` +
+      `<div class="gw-hint">Свой вход через AWS Builder ID: дашборд покажет код, подтвердите в браузере.</div>`
     );
   }
   return '';
@@ -178,67 +179,67 @@ function authBlock(p) {
 
 function providerCard(p) {
   const status = p.routable
-    ? '<span class="badge ok">используется</span>'
+    ? '<span class="gw-badge gw-ok">используется</span>'
     : (!p.is_enabled
-        ? '<span class="badge">выключен</span>'
+        ? '<span class="gw-badge">выключен</span>'
         : ((p.auth && p.auth.kind === 'o_auth')
-            ? '<span class="badge warn">войдите через OAuth</span>'
+            ? '<span class="gw-badge gw-warn">войдите через OAuth</span>'
             : (!p.keys.length
-                ? '<span class="badge warn">нужен ключ</span>'
+                ? '<span class="gw-badge gw-warn">нужен ключ</span>'
                 : (p.keys.some(k => k.is_active)
-                    ? '<span class="badge warn">нажмите «Обновить модели»</span>'
-                    : '<span class="badge err">все ключи выключены</span>'))));
+                    ? '<span class="gw-badge gw-warn">нажмите «Обновить модели»</span>'
+                    : '<span class="gw-badge gw-err">все ключи выключены</span>'))));
   const cooldownByKey = new Map(p.cooldowns.map(c => [c.key_id, c.remaining_sec]));
 
   const keys = p.keys.map((k) => {
     const cd = cooldownByKey.get(k.id);
     const badges = [
-      k.is_active ? '' : '<span class="badge err">выключен</span>',
-      cd ? `<span class="badge warn">пауза ${cd} с</span>` : '',
+      k.is_active ? '' : '<span class="gw-badge gw-err">выключен</span>',
+      cd ? `<span class="gw-badge gw-warn">пауза ${cd} с</span>` : '',
     ].join(' ');
     return (
-      `<div class="key ${k.is_active ? '' : 'off'}">` +
-      `<span class="val">${esc(k.masked)}</span>` +
+      `<div class="gw-key ${k.is_active ? '' : 'gw-off'}">` +
+      `<span class="gw-val">${esc(k.masked)}</span>` +
       badges +
-      `<span class="spacer"></span>` +
-      `<button class="ghost btn-key-reset" data-provider="${esc(p.id)}" data-key="${esc(k.id)}"` +
+      `<span class="gw-spacer"></span>` +
+      `<button class="gw-ghost gw-btn-key-reset" data-provider="${esc(p.id)}" data-key="${esc(k.id)}"` +
       `${k.is_active && cd ? '' : ' hidden'}>Снять паузу</button>` +
-      `<button class="danger btn-key-del" data-provider="${esc(p.id)}" data-key="${esc(k.id)}">Удалить</button>` +
+      `<button class="gw-danger gw-btn-key-del" data-provider="${esc(p.id)}" data-key="${esc(k.id)}">Удалить</button>` +
       `</div>`
     );
   }).join('');
 
   const models = p.models.length
-    ? `<div class="models-list">${p.models.slice(0, 40).map(m => `<span>${esc(m)}</span>`).join('')}` +
+    ? `<div class="gw-models-list">${p.models.slice(0, 40).map(m => `<span>${esc(m)}</span>`).join('')}` +
       (p.models.length > 40 ? `<span>…и ещё ${p.models.length - 40}</span>` : '') + `</div>`
     : '';
 
   return (
-    `<div class="card ${p.is_enabled ? '' : 'off'}">` +
-    `<div class="card-head">` +
-    `<span class="name">${esc(p.name)}</span>` +
-    `<span class="id">${esc(p.id)}</span>` +
+    `<div class="gw-card ${p.is_enabled ? '' : 'gw-off'}">` +
+    `<div class="gw-card-head">` +
+    `<span class="gw-name">${esc(p.name)}</span>` +
+    `<span class="gw-id">${esc(p.id)}</span>` +
     protocolBadge(p) +
     status +
-    `<span class="spacer"></span>` +
-    `<label class="inline"><input type="checkbox" class="prov-toggle" data-provider="${esc(p.id)}"` +
+    `<span class="gw-spacer"></span>` +
+    `<label class="gw-inline"><input type="checkbox" class="gw-prov-toggle" data-provider="${esc(p.id)}"` +
     `${p.is_enabled ? ' checked' : ''}> включён</label>` +
-    `<label class="inline"><input type="checkbox" class="prov-relay" data-provider="${esc(p.id)}"` +
+    `<label class="gw-inline"><input type="checkbox" class="gw-prov-relay" data-provider="${esc(p.id)}"` +
     `${p.use_relay ? ' checked' : ''}> через релей</label>` +
     `</div>` +
 
-    `<div class="kv"><span>Адрес</span><b class="break">${esc(p.base_url)}</b></div>` +
+    `<div class="gw-kv"><span>Адрес</span><b class="gw-break">${esc(p.base_url)}</b></div>` +
     authBlock(p) +
-    `<div class="kv"><span>Моделей</span><b>${p.models_count}</b></div>` +
-    `<div class="kv"><span>Ключей</span><b>${p.keys.length} (активных ${p.keys.filter(k => k.is_active).length})</b></div>` +
+    `<div class="gw-kv"><span>Моделей</span><b>${p.models_count}</b></div>` +
+    `<div class="gw-kv"><span>Ключей</span><b>${p.keys.length} (активных ${p.keys.filter(k => k.is_active).length})</b></div>` +
     models +
-    `<div class="row">` +
-    `<button class="primary btn-models" data-provider="${esc(p.id)}">Обновить модели</button>` +
-    `<button class="ghost btn-test" data-provider="${esc(p.id)}">Проверить связь</button>` +
-    `<button class="ghost btn-keys-add" data-provider="${esc(p.id)}">Добавить ключ</button>` +
-    `<button class="danger btn-prov-del" data-provider="${esc(p.id)}">Удалить провайдера</button>` +
+    `<div class="gw-row">` +
+    `<button class="gw-primary gw-btn-models" data-provider="${esc(p.id)}">Обновить модели</button>` +
+    `<button class="gw-ghost gw-btn-test" data-provider="${esc(p.id)}">Проверить связь</button>` +
+    `<button class="gw-ghost gw-btn-keys-add" data-provider="${esc(p.id)}">Добавить ключ</button>` +
+    `<button class="gw-danger gw-btn-prov-del" data-provider="${esc(p.id)}">Удалить провайдера</button>` +
     `</div>` +
-    `<div class="keys">${keys || '<div class="hint">Ключей нет — добавьте хотя бы один.</div>'}</div>` +
+    `<div class="gw-keys">${keys || '<div class="gw-hint">Ключей нет — добавьте хотя бы один.</div>'}</div>` +
     `</div>`
   );
 }
@@ -246,12 +247,12 @@ function providerCard(p) {
 function renderProviders() {
   const list = $('#providers-list');
   const problems = (state.config.problems || []).length
-    ? `<div class="card problems"><h3>Проблемы конфигурации</h3>` +
-      state.config.problems.map(p => `<div class="hint">• ${esc(p)}</div>`).join('') + `</div>`
+    ? `<div class="gw-card gw-problems"><h3>Проблемы конфигурации</h3>` +
+      state.config.problems.map(p => `<div class="gw-hint">• ${esc(p)}</div>`).join('') + `</div>`
     : '';
   const body = state.config.providers.length
     ? state.config.providers.map(providerCard).join('')
-    : `<div class="empty">Провайдеров пока нет.<br>` +
+    : `<div class="gw-empty">Провайдеров пока нет.<br>` +
       `Нажмите «Добавить провайдера», выберите сервис из каталога, вставьте API-ключ ` +
       `и нажмите «Обновить модели».</div>`;
   list.innerHTML = problems + body;
@@ -259,20 +260,20 @@ function renderProviders() {
 }
 
 function bindProviderButtons() {
-  $$('.prov-toggle').forEach(el => el.addEventListener('change', () =>
+  $$('.gw-prov-toggle').forEach(el => el.addEventListener('change', () =>
     patchProvider(el.dataset.provider, { is_enabled: el.checked })));
-  $$('.prov-relay').forEach(el => el.addEventListener('change', () =>
+  $$('.gw-prov-relay').forEach(el => el.addEventListener('change', () =>
     patchProvider(el.dataset.provider, { use_relay: el.checked })));
 
-  $$('.btn-models').forEach(el => el.addEventListener('click', () => refreshModels(el)));
-  $$('.btn-test').forEach(el => el.addEventListener('click', () => testProvider(el)));
-  $$('.btn-prov-del').forEach(el => el.addEventListener('click', () => deleteProvider(el)));
-  $$('.btn-key-del').forEach(el => el.addEventListener('click', () => deleteKey(el)));
-  $$('.btn-key-reset').forEach(el => el.addEventListener('click', () => resetKey(el)));
-  $$('.btn-oauth-start').forEach(el => el.addEventListener('click', () => startOAuth(el)));
-  $$('.btn-oauth-drop').forEach(el => el.addEventListener('click', () => dropOAuth(el)));
+  $$('.gw-btn-models').forEach(el => el.addEventListener('click', () => refreshModels(el)));
+  $$('.gw-btn-test').forEach(el => el.addEventListener('click', () => testProvider(el)));
+  $$('.gw-btn-prov-del').forEach(el => el.addEventListener('click', () => deleteProvider(el)));
+  $$('.gw-btn-key-del').forEach(el => el.addEventListener('click', () => deleteKey(el)));
+  $$('.gw-btn-key-reset').forEach(el => el.addEventListener('click', () => resetKey(el)));
+  $$('.gw-btn-oauth-start').forEach(el => el.addEventListener('click', () => startOAuth(el)));
+  $$('.gw-btn-oauth-drop').forEach(el => el.addEventListener('click', () => dropOAuth(el)));
 
-  $$('.btn-keys-add').forEach(el => el.addEventListener('click', async () => {
+  $$('.gw-btn-keys-add').forEach(el => el.addEventListener('click', async () => {
     const id = el.dataset.provider;
     const key = window.prompt('API-ключ провайдера:');
     if (!key || !key.trim()) return;
@@ -430,17 +431,17 @@ function renderModels() {
   const list = $('#models-list');
   const ready = state.config.providers.filter(p => p.models_count > 0);
   if (!ready.length) {
-    list.innerHTML = `<div class="empty">Моделей пока нет.<br>` +
+    list.innerHTML = `<div class="gw-empty">Моделей пока нет.<br>` +
       `Добавьте провайдера и нажмите «Обновить модели» — список опрашивается у провайдера, а не берётся из каталога.</div>`;
     return;
   }
   list.innerHTML = ready.map(p =>
-    `<div class="card">` +
-    `<div class="card-head"><span class="name">${esc(p.name)}</span>` +
-    `<span class="id">${esc(p.id)}</span>` +
-    `<span class="badge">${p.models_count} ${plural(p.models_count, 'модель', 'модели', 'моделей')}</span></div>` +
-    `<div class="kv"><span>В чате как</span><b class="mono">${esc(p.id)}/&lt;модель&gt;</b></div>` +
-    `<div class="models-list">${p.models.map(m => `<span>${esc(m)}</span>`).join('')}</div>` +
+    `<div class="gw-card">` +
+    `<div class="gw-card-head"><span class="gw-name">${esc(p.name)}</span>` +
+    `<span class="gw-id">${esc(p.id)}</span>` +
+    `<span class="gw-badge">${p.models_count} ${plural(p.models_count, 'модель', 'модели', 'моделей')}</span></div>` +
+    `<div class="gw-kv"><span>В чате как</span><b class="gw-mono">${esc(p.id)}/&lt;модель&gt;</b></div>` +
+    `<div class="gw-models-list">${p.models.map(m => `<span>${esc(m)}</span>`).join('')}</div>` +
     `</div>`).join('');
 }
 
@@ -659,8 +660,11 @@ function renderLog() {
     const hh = String(t.getHours()).padStart(2, '0');
     const mm = String(t.getMinutes()).padStart(2, '0');
     const ss = String(t.getSeconds()).padStart(2, '0');
-    return `<div class="line ${esc(e.level)}"><span class="time">${hh}:${mm}:${ss}</span>${esc(e.message)}</div>`;
-  }).join('') || '<div class="hint">Журнал пуст.</div>';
+    // Level префиксуется той же конвенцией gw-: чужой CSS не должен ни на
+    // один класс нашей страницы нацеливаться — в том числе на «warn»/«error».
+    const lvl = e.level === 'warn' || e.level === 'error' ? `gw-${esc(e.level)}` : '';
+    return `<div class="gw-line ${lvl}"><span class="gw-time">${hh}:${mm}:${ss}</span>${esc(e.message)}</div>`;
+  }).join('') || '<div class="gw-hint">Журнал пуст.</div>';
   if ($('#log-autoscroll').checked) box.scrollTop = box.scrollHeight;
 }
 
@@ -675,8 +679,8 @@ function startLogPolling() {
 
 function initTabs() {
   $$('#tabs button').forEach(btn => btn.addEventListener('click', () => {
-    $$('#tabs button').forEach(b => b.classList.toggle('active', b === btn));
-    $$('.page').forEach(p => { p.hidden = p.id !== `page-${btn.dataset.tab}`; });
+    $$('#tabs button').forEach(b => b.classList.toggle('gw-active', b === btn));
+    $$('.gw-page').forEach(p => { p.hidden = p.id !== `page-${btn.dataset.tab}`; });
     if (btn.dataset.tab === 'log') void loadEvents(false);
   }));
 }

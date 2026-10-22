@@ -58,6 +58,10 @@ export declare class CloudRoutersPanel extends HTMLElement {
     private onShowCombos;
     private onSetDir;
     private onCheckUpdate;
+    /** Скопировать адрес Web UI: юзер открывает дашборд в обычном браузере, а не
+     * только вкладкой приложения. Адрес — из статуса роутера
+     * (`RouterStatus.base_url`), доп. источников нет (SSOT). */
+    private onCopyUrl;
     private onInstallUpdate;
     /**
      * Снять «armed»-состояние кнопки «Переустановить» (таймер отката).

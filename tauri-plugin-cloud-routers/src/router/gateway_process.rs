@@ -37,6 +37,41 @@ use crate::router::process::{kill_pid_tree, pid_alive, port_open, wait_port, Gat
 /// Сколько ждём готовности порта после запуска бинаря.
 const START_TIMEOUT: Duration = Duration::from_secs(25);
 
+/// Сколько ждём самозавершения шлюза после HTTP-остановки (`try_http_shutdown`).
+const HTTP_STOP_WAIT: Duration = Duration::from_secs(3);
+
+/// HTTP-самозавершение: просим шлюз завершить **сам себя**.
+///
+/// Задача «убить чужой процесс» на Windows упирается в политику
+/// TerminateProcess: процесс, созданный повышенным (админским) хостом, нельзя
+/// остановить из не-повышенного — реальный кейс 22.10.26 (pid старой копии,
+/// taskkill «Отказано в доступе» ×3, журналы dev-сессии). Задача «процесс сам
+/// себя закрывает» этих прав не требует, поэтому HTTP-остановка — первый шаг,
+/// а `taskkill` остаётся запасом на зависший процесс.
+fn try_http_shutdown(port: u16) -> bool {
+    let url = format!("http://127.0.0.1:{port}/api/shutdown");
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_millis(1500))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("🛑 шлюз: HTTP-клиент остановки не собрался ({}), дальше taskkill", e);
+            return false;
+        }
+    };
+    match client.post(&url).send() {
+        Ok(resp) => {
+            log::info!("🛑 шлюз: команда самозавершения доставлена ({})", resp.status());
+            true
+        }
+        Err(e) => {
+            log::warn!("🛑 шлюз: самозавершение не принято/не доставлено ({}), дальше taskkill", e);
+            false
+        }
+    }
+}
+
 
 /// Флаги `CreateProcess` для Windows.
 ///
@@ -270,6 +305,26 @@ pub fn stop_server(dir: &Path, port: u16, data_dir: &Path) -> Result<(), String>
         ));
     }
     log::info!("🛑 Остановка шлюза (pid {})", rec.pid);
+
+    // Порт уже свободен (умер сам) — фиксируем успех без kill.
+    if !port_open(port, Duration::from_millis(200)) {
+        config::clear_server_record(data_dir);
+        log::info!("✅ шлюз остановлен (порт {} уже свободен)", port);
+        return Ok(());
+    }
+
+    // Первый шаг — самозавершение по HTTP: elevated-процесс всегда может
+    // закрыть сам себя, политика TerminateProcess на этот путь не влияет.
+    // taskkill ниже остаётся запасом на зависший/неответивший процесс.
+    if try_http_shutdown(port)
+        && crate::router::process::wait_port_closed(port, HTTP_STOP_WAIT)
+    {
+        config::clear_server_record(data_dir);
+        log::info!("✅ шлюз сам завершился по HTTP-остановке (порт {} закрыт)", port);
+        return Ok(());
+    }
+    log::warn!("шлюз не завершился сам (pid {}), принудительное завершение", rec.pid);
+
     let report = kill_pid_tree(rec.pid);
     if !report.succeeded {
         log::warn!("шлюз: kill pid {} не удался: {}", rec.pid, report.detail);

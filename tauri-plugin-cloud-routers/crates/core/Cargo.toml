@@ -1,6 +1,6 @@
 [package]
 name = "cloud-routers-core"
-version = "0.1.1"
+version = "0.1.4"
 edition = "2021"
 description = "Shared domain layer for the cloud-routers gateway: persisted config, multi-key rotation with cooldowns, combo-id resolution and the remote provider-preset catalog. No HTTP server, no Tauri, no network - so a Tauri plugin can depend on it without dragging axum into the host binary."
 license = "MIT"

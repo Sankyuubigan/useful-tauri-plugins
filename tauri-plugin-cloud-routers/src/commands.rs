@@ -511,32 +511,21 @@ pub async fn check_router_update(app: AppHandle, router: String) -> Result<Optio
             let source_ver = crate::router::gateway_installer::probe_version(&source)?;
             let cfg = config::load_config(&app, router_id);
             
-            // Проверяем версию, а также mtime / размер файла для локальных сборок
-            let mut update_available = false;
-            if let Some(installed_ver) = &cfg.installed_version {
-                if installed_ver != &source_ver {
-                    update_available = true;
-                }
-            } else {
-                update_available = true;
-            }
-
+            // Проверяем версию, а также mtime / размер файла для локальных сборок.
+            // Формула — единственная и общая с `install`
+            // (`gateway_installer::binary_differs`), чтобы бейдж и установка
+            // не расходились во мнении о «актуальности».
             let dir = config::router_dir(&app, router_id);
             let dest = dir.join(crate::router::gateway_installer::gateway_binary_name(exe_file));
-            if dest.exists() {
-                if let (Ok(src_meta), Ok(dest_meta)) = (std::fs::metadata(&source), std::fs::metadata(&dest)) {
-                    if let (Ok(src_time), Ok(dest_time)) = (src_meta.modified(), dest_meta.modified()) {
-                        if src_time > dest_time {
-                            update_available = true;
-                        }
-                    }
-                    if src_meta.len() != dest_meta.len() {
-                        update_available = true;
-                    }
-                }
-            } else {
-                update_available = true;
-            }
+            let src_meta = std::fs::metadata(&source).ok();
+            let dst_meta = std::fs::metadata(&dest).ok();
+            let update_available = !dest.exists()
+                || crate::router::gateway_installer::binary_differs(
+                    &source_ver,
+                    cfg.installed_version.as_deref(),
+                    src_meta.as_ref(),
+                    dst_meta.as_ref(),
+                );
 
             if update_available {
                 Ok(Some(source_ver))

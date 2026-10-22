@@ -23,6 +23,10 @@ cloud-routers-core = { path = "crates/core" }
 # Единый движок скачивания (SSOT): Node.js zip + npm tgz + бинарь шлюза + фоллбэки без окон.
 tauri-plugin-downloader = { path = "../tauri-plugin-downloader" }
 
+# Декод консольного вывода Windows-утилит (taskkill/powershell): OEM-CP866 ->
+# UTF-8. Уже в дереве Cargo.lock (reqwest), новых пакетов не добавляет.
+encoding_rs = "0.8"
+
 # Атомарные записи JSON (app_config.json, server.json): tmp->rename + sidecar lock.
 ko-json-store = { path = "../ko-json-store" }
 

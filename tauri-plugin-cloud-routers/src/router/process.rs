@@ -78,6 +78,26 @@ fn truncate_detail(s: &str, max_chars: usize) -> String {
     format!("…{}", t.chars().skip(skip).collect::<String>())
 }
 
+/// Декодировать stdout/stderr **внешней консольной программы** (SSOT для всех
+/// мест вставки такого вывода в журналы).
+///
+/// Windows-консольные утилиты (`taskkill`, `powershell`) пишут локализованные
+/// сообщения в OEM-кодировке (для ru-RU — CP866). Прежний
+/// `String::from_utf8_lossy` оставлял CP866-байты как есть: лог (UTF-8)
+/// превращался в кракозябры, и «причина отказа» становилась нечитаемой
+/// (proof 22.10.26: строки «taskkill pid …: отказ …: �訡�� …» в last_logs.txt).
+/// Для не-Windows обычный UTF-8-lossy остаётся.
+fn console_lossy(bytes: &[u8]) -> String {
+    #[cfg(windows)]
+    {
+        encoding_rs::IBM866.decode(bytes).0.into_owned()
+    }
+    #[cfg(not(windows))]
+    {
+        String::from_utf8_lossy(bytes).into_owned()
+    }
+}
+
 #[cfg(windows)]
 pub fn kill_pid_tree(pid: u32) -> KillReport {
     let mut kill = std::process::Command::new("taskkill");
@@ -91,8 +111,8 @@ pub fn kill_pid_tree(pid: u32) -> KillReport {
                 detail: truncate_detail(
                     &format!(
                         "{} {}",
-                        String::from_utf8_lossy(&out.stdout),
-                        String::from_utf8_lossy(&out.stderr)
+                        console_lossy(&out.stdout),
+                        console_lossy(&out.stderr)
                     ),
                     500,
                 ),
@@ -122,8 +142,8 @@ pub fn kill_pid_tree(pid: u32) -> KillReport {
                 detail: truncate_detail(
                     &format!(
                         "{} {}",
-                        String::from_utf8_lossy(&out.stdout),
-                        String::from_utf8_lossy(&out.stderr)
+                        console_lossy(&out.stdout),
+                        console_lossy(&out.stderr)
                     ),
                     500,
                 ),
@@ -291,7 +311,7 @@ fn node_pids(target: &Path) -> Vec<u32> {
             cmd.creation_flags(0x08000000);
         }
         match cmd.output() {
-            Ok(out) => String::from_utf8_lossy(&out.stdout)
+            Ok(out) => console_lossy(&out.stdout)
                 .lines()
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
@@ -681,7 +701,7 @@ pub fn kill_node_processes(target: &Path) {
                 "sweep node.exe ({}): powershell вернул {}: {}",
                 target.display(),
                 out.status,
-                truncate_detail(&String::from_utf8_lossy(&out.stderr), 300)
+                truncate_detail(&console_lossy(&out.stderr), 300)
             ),
             Err(e) => log::warn!("sweep node.exe ({}): не запустился powershell: {}", target.display(), e),
             _ => {}
@@ -833,6 +853,27 @@ mod tests {
     fn windows_local_port_decodes_network_byte_order() {
         assert_eq!(decode_local_port(20_128), 0xA04E);
         assert_ne!(decode_local_port(20_128), 20_128);
+    }
+
+    /// CP866-байты «Ошибка: Отказано в доступе.» (вывод taskkill по-русски)
+    /// декодируются читаемо, а не остаются кракозябрами UTF-8-lossy.
+    /// Proof 22.10.26: старый `from_utf8_lossy` давал «�訡��: ...» в last_logs.txt.
+    #[test]
+    fn console_lossy_decodes_cp866_taskkill_error_readably() {
+        // «Ошибка: Не удалось завершить процесс ... Причина: Отказано в доступе.»
+        // «Ошибка: » (О=0x8E, ш=0xE8, и=0xA8, б=0xA1, к=0xAA, а=0xA0)
+        let cp866: &[u8] = &[
+            0x8E, 0xE8, 0xA8, 0xA1, 0xAA, 0xA0, 0x3A, 0x20,
+        ];
+        let decoded = console_lossy(cp866);
+        assert!(decoded.starts_with("Ошибка:"), "получено: {:?}", decoded);
+        // На Windows байты всегда трактуются как CP866 (консольная OEM-страница),
+        // поэтому сквозной UTF-8 там не ожидается; проверяем его только для
+        // не-Windows ветки (там функция — from_utf8_lossy).
+        if !cfg!(windows) {
+            let utf8 = "шлюз остановлен ✔";
+            assert_eq!(console_lossy(utf8.as_bytes()), utf8);
+        }
     }
 
     /// Свободный порт для тестов: занимаем эфемерный, отпускаем, проверяем что закрыт.

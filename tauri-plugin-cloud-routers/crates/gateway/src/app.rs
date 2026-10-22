@@ -175,7 +175,18 @@ impl AppState {
 /// таймаут соединения и таймаут между чтениями. Инвариант проверяется
 /// поведением в интеграционных тестах (`long_stream_survives_without_total_timeout`).
 fn build_http_client() -> Result<reqwest::Client, String> {
+    // `.no_proxy()` — не косметика, а защита от класса отказа «builder error».
+    //
+    // Без него reqwest при `.build()` читает системный/env-прокси, и при
+    // невалидном значении клиент вообще не собирается: КАЖДЫЙ запрос —
+    // включая sync каталога — падает одновременно («builder error» на всех
+    // четырёх источниках, живой кейс 22.10.2026, ошибка reqwest(kind=Builder) —
+    // до сети дело не доходит). Прокси окружения в этом клиенте не контракт:
+    // каталог/модели — глобальный доступ, и неподходящее системное прокси-
+    // поле не должно переламывать sync. Явная прокси-настройка (если
+    // понадобится) — отдельное поле конфига, а не молчаливый env.
     reqwest::Client::builder()
+        .no_proxy()
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
         .pool_idle_timeout(Duration::from_secs(90))
@@ -211,6 +222,29 @@ mod tests {
         core_store::save(&d, &cfg).expect("save");
         let st = AppState::new(&d).expect("state");
         (st, d)
+    }
+
+    /// «builder error» невозможен: клиент собирается **без системного/env-
+    /// прокси**. История 22.10.2026: reqwest при `build()` читает системный/
+    /// env-прокси, и невалидное значение (реестровая строка Windows или
+    /// дурацкая `HTTP_PROXY`) роняет всю сборку клиента — тогда sync каталога
+    /// отдаёт «builder error» по всем источникам, до сети дело не доходит.
+    /// Зафиксировано двумя тестами:
+    /// (1) клиент собирается в текущем окружении;
+    /// (2) source-контракт: в builder'е есть `.no_proxy()` — без него reqwest
+    ///     опять начнёт примерять системный прокси, тест не даст регрессию.
+    #[test]
+    fn build_http_client_succeeds_in_any_environment_proxy_env() {
+        build_http_client().expect("HTTP-клиент обязан собираться без сетевых условий");
+    }
+
+    #[test]
+    fn http_client_source_includes_no_proxy_guard() {
+        let src = include_str!("app.rs");
+        assert!(
+            src.contains(".no_proxy()"),
+            "build_http_client потерял `no_proxy()` — reqwest снова начнёт читать системный/env-прокси при сборке, и невалидный прокси окружения даст «builder error» на каждом запросе"
+        );
     }
 
     #[test]

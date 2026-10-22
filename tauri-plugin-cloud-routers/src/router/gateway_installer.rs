@@ -129,6 +129,42 @@ pub fn probe_version(exe: &Path) -> Result<String, String> {
         })
 }
 
+/// Единая формула «установленному бинарю нужен свежий»: версия источника
+/// отличается (включая «установленная версия вообще не записана»), источник
+/// новее по времени или файлы различаются размером.
+///
+/// Одна формула для двух точек, которые решают одно и то же:
+/// `commands::check_router_update` (бейдж «Доступно обновление») и
+/// `install` (нужна ли перезапись при force=false). Раньше правило было
+/// скопировано в обоих местах и могло разъехаться: проверка говорила бы
+/// «актуально», а установка при следующем запуске молча перезаписывала
+/// бинарь (или наоборот).
+///
+/// Нечитаемые метаданные (`None` для source или dest) признак НЕ дают:
+/// отсутствие данных — не «обновление есть». «Dest отсутствует» — отдельное
+/// условие вызывающего (у check это плюс-критерий, у install файл к этому
+/// моменту уже существует).
+pub fn binary_differs(
+    source_version: &str,
+    installed_version: Option<&str>,
+    source_meta: Option<&fs::Metadata>,
+    dest_meta: Option<&fs::Metadata>,
+) -> bool {
+    if installed_version != Some(source_version) {
+        return true;
+    }
+    let (Some(src), Some(dst)) = (source_meta, dest_meta) else {
+        return false;
+    };
+    let (Ok(src_time), Ok(dst_time)) = (src.modified(), dst.modified()) else {
+        return false;
+    };
+    if src_time > dst_time {
+        return true;
+    }
+    src.len() != dst.len()
+}
+
 /// Установить / обновить бинарь шлюза (блокирующая; вызывать из spawn_blocking).
 pub fn install(
     app: &AppHandle,
@@ -148,21 +184,19 @@ pub fn install(
     if !force && dest.exists() {
         match probe_version(&dest) {
             Ok(version) => {
-                // Проверяем, не новее ли кандидат-источник (для локальной разработки и апдейтов без бампа версии)
+                // Нужна ли перезапись: ниже-уровня формула с check_router_update
+                // (`binary_differs`): версия источника != установленной, источник
+                // свежее или размер различается. Для локальной разработки и апдейтов
+                // без бампа версии.
                 let mut need_update = false;
                 if let Ok(source) = find_source(exe_file) {
                     if let Ok(source_ver) = probe_version(&source) {
-                        if source_ver != version {
-                            need_update = true;
-                        }
-                    }
-                    if let (Ok(src_meta), Ok(dest_meta)) = (fs::metadata(&source), fs::metadata(&dest)) {
-                        if let (Ok(src_time), Ok(dest_time)) = (src_meta.modified(), dest_meta.modified()) {
-                            if src_time > dest_time {
-                                need_update = true;
-                            }
-                        }
-                        if src_meta.len() != dest_meta.len() {
+                        if binary_differs(
+                            &source_ver,
+                            Some(&version),
+                            fs::metadata(&source).ok().as_ref(),
+                            fs::metadata(&dest).ok().as_ref(),
+                        ) {
                             need_update = true;
                         }
                     }
@@ -359,6 +393,70 @@ mod tests {
         fs::write(&fake, b"not a pe file").unwrap();
         let err = probe_version(&fake).expect_err("запуск обязан провалиться");
         assert!(!err.is_empty());
+    }
+
+    /// Три признака формулы `binary_differs`: различие версий, источник новее
+    /// и различие размеров. Не читаемые метаданные признак НЕ дают (22.10.26).
+    #[test]
+    fn binary_differs_flags_version_change() {
+        let tmp = TempDir::new("diffver");
+        let file = tmp.path().join("same.meta");
+        fs::write(&file, b"identical content").unwrap();
+        let meta = fs::metadata(&file).expect("meta");
+
+        // Установленная версия не записана (нет запись в конфиге) — обновление предлагаем.
+        assert!(binary_differs("0.1.2", None, Some(&meta), Some(&meta)));
+        // Версии различаются — простейший признак (бамп Cargo-версии гейтвея).
+        assert!(binary_differs("0.1.2", Some("0.1.1"), Some(&meta), Some(&meta)));
+        // Полное совпадение — актуально, включать «обновление» было бы ложью.
+        assert!(!binary_differs("0.1.1", Some("0.1.1"), Some(&meta), Some(&meta)));
+    }
+
+    #[test]
+    fn binary_differs_flags_newer_source_mtime() {
+        let tmp = TempDir::new("diffmtime");
+        let dst = tmp.path().join("dest.bin");
+        let src = tmp.path().join("src.bin");
+        fs::write(&dst, b"AAAABBBB").unwrap();
+        // Гарантированный интервал между записями файлов: mtime-разрешение
+        // NTFS (~100 нс), но под нагрузкой планировщика sleep всё же надёжней.
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        fs::write(&src, b"AAAABBBB").unwrap();
+
+        let dst_meta = fs::metadata(&dst).expect("dst meta");
+        let src_meta = fs::metadata(&src).expect("src meta");
+        let version = "0.1.2";
+
+        // Источник свежее установленного файла — обновление обязано светиться.
+        assert!(binary_differs(version, Some(version), Some(&src_meta), Some(&dst_meta)));
+        // Обратный порядок (установленный новее источника) — не признак:
+        // так бьётся кейс «свежий бинарь скопировали, источник заменяли позже».
+        assert!(!binary_differs(version, Some(version), Some(&dst_meta), Some(&src_meta)));
+    }
+
+    #[test]
+    fn binary_differs_flags_size_mismatch() {
+        let tmp = TempDir::new("diffsize");
+        let src = tmp.path().join("src.bin");
+        let dst = tmp.path().join("dst.bin");
+        fs::write(&src, b"x").unwrap();
+        fs::write(&dst, b"yy").unwrap();
+        let src_meta = fs::metadata(&src).expect("src meta");
+        let dst_meta = fs::metadata(&dst).expect("dst meta");
+        assert!(binary_differs("0.1.2", Some("0.1.2"), Some(&src_meta), Some(&dst_meta)));
+        // Прерванное копирование (артефакт `.part` тупикового размера) ловится
+        // тем же признаком — иначе «установлено» и падение при старте.
+        assert!(binary_differs("0.1.2", Some("0.1.2"), Some(&dst_meta), Some(&src_meta)));
+        // Равные размеры и версии — актуально.
+        assert!(!binary_differs("0.1.2", Some("0.1.2"), Some(&src_meta), Some(&src_meta)));
+    }
+
+    #[test]
+    fn binary_differs_none_metadata_means_no_signal() {
+        // Нечитаемые метаданные НЕ признак: отсутствие данных ≠ «обновление есть»
+        // (запрет ложных срабатываний — иначе бинарь перезаписывали бы заново
+        // при каждом запуске, когда файл занят и мету прочесть нельзя).
+        assert!(!binary_differs("0.1.1", Some("0.1.1"), None, None));
     }
 
     /// Настоящий разбор вывода настоящего бинаря.

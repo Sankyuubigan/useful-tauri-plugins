@@ -270,6 +270,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* \u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D\u0438\u0435 \u0430\u0434\u0440\u0435\u0441\u0430 Web UI: \u0430\u0434\u0440\u0435\u0441 \u0436\u0438\u0432\u0451\u0442 \u0432 \u043E\u0431\u044B\u0447\u043D\u043E\u043C \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435, \u043D\u0435 \u0442\u043E\u043B\u044C\u043A\u043E \u0432\u043E
+     \u0432\u043A\u043B\u0430\u0434\u043A\u0435 \u043F\u0440\u0438\u043B\u043E\u0436\u0435\u043D\u0438\u044F (\u0432 \u0447\u0443\u0436\u043E\u0439 \u043F\u0440\u043E\u0433\u0440\u0430\u043C\u043C\u0435 \u0432\u043A\u043B\u0430\u0434\u043E\u043A \u043C\u043E\u0436\u0435\u0442 \u043D\u0435 \u0431\u044B\u0442\u044C). */
+  .copy-url {
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 11.5px;
+    flex-shrink: 0;
+  }
 
   /* \u2500\u2500 \u042D\u043A\u0448\u0435\u043D\u044B \u0438 \u041A\u043D\u043E\u043F\u043A\u0438 \u2500\u2500 */
   .actions-bar {
@@ -832,6 +840,22 @@
         if (btn) btn.disabled = false;
       }
     }
+    /** Скопировать адрес Web UI: юзер открывает дашборд в обычном браузере, а не
+     * только вкладкой приложения. Адрес — из статуса роутера
+     * (`RouterStatus.base_url`), доп. источников нет (SSOT). */
+    async onCopyUrl() {
+      const url = this.status?.base_url;
+      if (!url) return;
+      try {
+        await navigator.clipboard.writeText(url);
+        toast("\u0410\u0434\u0440\u0435\u0441 Web UI \u0441\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D \u0432 \u0431\u0443\u0444\u0435\u0440", "success");
+        logPlugin(`[cloud-routers] \u0430\u0434\u0440\u0435\u0441 \u0441\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u043D: ${url}`);
+      } catch (e) {
+        const msg = `\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0430\u0434\u0440\u0435\u0441: ${String(e)}`;
+        logPlugin(`[cloud-routers] ${msg}`);
+        toast(msg, "error");
+      }
+    }
     async onInstallUpdate() {
       const router = this.router;
       try {
@@ -1009,6 +1033,18 @@
           <span class="spec-label">\u041F\u043E\u0440\u0442</span>
           <span class="spec-value" style="color: #38bdf8;">${port}</span>
         </div>
+        ${s?.base_url ? `
+          <!-- \u0410\u0434\u0440\u0435\u0441 Web UI: \u044E\u0437\u0435\u0440 \u043E\u0442\u043A\u0440\u044B\u0432\u0430\u0435\u0442 \u0434\u0430\u0448\u0431\u043E\u0440\u0434 \u0432 \u043E\u0431\u044B\u0447\u043D\u043E\u043C \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435, \u043A\u043E\u043F\u0438\u0440\u0443\u044F
+               \u0435\u0433\u043E \u043E\u0442\u0441\u044E\u0434\u0430 (\u043F\u0440\u0430\u0432\u0438\u043B\u043E SSOT: \u0430\u0434\u0440\u0435\u0441 \u2014 \u0442\u043E\u043B\u044C\u043A\u043E \u0438\u0437 RouterStatus.base_url,
+               \u043D\u0438\u043A\u0430\u043A\u0438\u0445 \u0432\u0442\u043E\u0440\u044B\u0445 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A\u043E\u0432). -->
+          <div class="spec-item" style="grid-column: span 2;">
+            <span class="spec-label">\u0410\u0434\u0440\u0435\u0441</span>
+            <span class="spec-value" style="display:flex; align-items:center; gap:8px; min-width:0;">
+              <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${esc(s.base_url)}">${esc(s.base_url)}</span>
+              <button class="copy-url" title="\u0421\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u0430\u0434\u0440\u0435\u0441, \u0447\u0442\u043E\u0431\u044B \u043E\u0442\u043A\u0440\u044B\u0442\u044C \u0434\u0430\u0448\u0431\u043E\u0440\u0434 \u0432 \u043E\u0431\u044B\u0447\u043D\u043E\u043C \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0435">\u0421\u043A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C</button>
+            </span>
+          </div>
+        ` : ""}
         ${s?.has_npm_runtime ? `
           <div class="spec-item">
             <span class="spec-label">Runtime</span>
@@ -1086,6 +1122,7 @@
       });
       this.root.querySelector(".check-update")?.addEventListener("click", () => void this.onCheckUpdate());
       this.root.querySelector(".install-update")?.addEventListener("click", () => void this.onInstallUpdate());
+      this.root.querySelector(".copy-url")?.addEventListener("click", () => void this.onCopyUrl());
       this.root.querySelector(".start")?.addEventListener("click", () => void this.onStart());
       this.root.querySelector(".stop")?.addEventListener("click", () => void this.onStop());
       this.root.querySelector(".refresh")?.addEventListener("click", () => void this.onShowCombos());

@@ -3,6 +3,13 @@
  * Тема задаётся CSS-переменными хоста с fallback'ами (PLUGIN_STANDARD §5.5):
  * страница одинаково читается и в iframe внутри приложения, и в отдельной
  * вкладке браузера, где переменных хоста нет.
+ *
+ * ── Правило пространства имён ──────────────────────────────────────────
+ * КАЖДЫЙ класс на этой странице обязан начинаться с `gw-` (документация,
+ * раздел «Namespace CSS»). Причина — реальный кейс 22.10.2026: расширение
+ * браузера стилизует свои всплывашки по голому `.modal` и накрывает дашборд.
+ * Голые имена (`modal`, `card`, `toast`, `btn`…) в разметке запрещены —
+ * тест `dashboard_classes_live_in_gw_namespace` не пропустит регрессию.
  */
 
 :root {
@@ -21,8 +28,7 @@
 }
 
 [hidden] { display: none !important; }
-.modal-backdrop[hidden] { display: none !important; }
-.page[hidden] { display: none !important; }
+.gw-page[hidden] { display: none !important; }
 
 * { box-sizing: border-box; }
 
@@ -41,7 +47,7 @@ code { font-family: var(--mono); font-size: 12px; color: var(--muted); }
 
 /* ── Шапка ───────────────────────────────────────────────────────────── */
 
-.top {
+.gw-top {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -49,12 +55,12 @@ code { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   padding: 14px 0 10px;
   flex-wrap: wrap;
 }
-.sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
+.gw-sub { color: var(--muted); font-size: 12px; margin-top: 3px; }
 
 /* ── Вкладки ─────────────────────────────────────────────────────────── */
 
-.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
-.tabs button {
+.gw-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
+.gw-tabs button {
   padding: 7px 14px;
   border: 1px solid transparent;
   border-bottom: none;
@@ -65,19 +71,19 @@ code { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   cursor: pointer;
   margin-bottom: -1px;
 }
-.tabs button:hover { color: var(--text); background: var(--bg-hover); }
-.tabs button.active {
+.gw-tabs button:hover { color: var(--text); background: var(--bg-hover); }
+.gw-tabs button.gw-active {
   color: var(--text);
   background: var(--bg-panel);
   border-color: var(--border);
   border-bottom: 1px solid var(--bg-panel);
 }
 
-.page { display: block; }
+.gw-page { display: block; }
 
 /* ── Кнопки и поля ───────────────────────────────────────────────────── */
 
-button, .btn {
+button, .gw-btn {
   padding: 6px 12px;
   border-radius: 6px;
   border: 1px solid var(--border);
@@ -88,15 +94,15 @@ button, .btn {
   text-decoration: none;
   display: inline-block;
 }
-button:hover:not(:disabled), .btn:hover { border-color: var(--primary); }
+button:hover:not(:disabled), .gw-btn:hover { border-color: var(--primary); }
 button:disabled { opacity: .5; cursor: default; }
-button.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
-button.ghost { background: transparent; }
-button.danger { border-color: var(--danger); color: var(--danger); background: transparent; }
-button.danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
+button.gw-primary { background: var(--primary); border-color: var(--primary); color: #fff; }
+button.gw-ghost { background: transparent; }
+button.gw-danger { border-color: var(--danger); color: var(--danger); background: transparent; }
+button.gw-danger:hover:not(:disabled) { background: var(--danger); color: #fff; }
 
-button.busy { position: relative; pointer-events: none; color: transparent !important; }
-button.busy::after {
+button.gw-busy { position: relative; pointer-events: none; color: transparent !important; }
+button.gw-busy::after {
   content: '';
   position: absolute; top: 50%; left: 50%;
   width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px;
@@ -107,10 +113,10 @@ button.busy::after {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
+.gw-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
 
 label { display: block; margin: 10px 0; color: var(--muted); font-size: 12px; }
-label.inline { display: inline-flex; align-items: center; gap: 5px; margin: 0; }
+label.gw-inline { display: inline-flex; align-items: center; gap: 5px; margin: 0; }
 input, select, textarea {
   display: block;
   width: 100%;
@@ -125,8 +131,8 @@ input, select, textarea {
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--primary); }
 textarea { font-family: var(--mono); resize: vertical; }
 
-.hint { color: var(--muted); font-size: 12px; }
-.note {
+.gw-hint { color: var(--muted); font-size: 12px; }
+.gw-note {
   padding: 9px 12px;
   border-left: 3px solid var(--primary);
   background: var(--bg-panel);
@@ -134,25 +140,25 @@ textarea { font-family: var(--mono); resize: vertical; }
   color: var(--muted);
   margin-bottom: 12px;
 }
-.note b, .note code { color: var(--text); }
+.gw-note b, .gw-note code { color: var(--text); }
 
 /* ── Карточки ────────────────────────────────────────────────────────── */
 
-.cards { display: flex; flex-direction: column; gap: 10px; }
-.card {
+.gw-cards { display: flex; flex-direction: column; gap: 10px; }
+.gw-card {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-panel);
   padding: 12px 14px;
 }
-.card.off { opacity: .62; }
+.gw-card.gw-off { opacity: .62; }
 
-.card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.card-head .name { font-weight: 600; font-size: 14px; }
-.card-head .id { color: var(--muted); font-family: var(--mono); font-size: 12px; }
-.card-head .spacer { flex: 1; }
+.gw-card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.gw-card-head .gw-name { font-weight: 600; font-size: 14px; }
+.gw-card-head .gw-id { color: var(--muted); font-family: var(--mono); font-size: 12px; }
+.gw-card-head .gw-spacer { flex: 1; }
 
-.badge {
+.gw-badge {
   display: inline-block;
   padding: 1px 7px;
   border-radius: 10px;
@@ -160,34 +166,34 @@ textarea { font-family: var(--mono); resize: vertical; }
   border: 1px solid var(--border);
   color: var(--muted);
 }
-.badge.ok { color: var(--success); border-color: var(--success); }
-.badge.warn { color: var(--warning); border-color: var(--warning); }
-.badge.err { color: var(--danger); border-color: var(--danger); }
-.badge.info { color: var(--primary); border-color: var(--primary); }
+.gw-badge.gw-ok { color: var(--success); border-color: var(--success); }
+.gw-badge.gw-warn { color: var(--warning); border-color: var(--warning); }
+.gw-badge.gw-err { color: var(--danger); border-color: var(--danger); }
+.gw-badge.gw-info { color: var(--primary); border-color: var(--primary); }
 
-.kv { display: flex; gap: 10px; padding: 3px 0; font-size: 12px; }
-.kv span { color: var(--muted); min-width: 120px; }
-.kv b { font-weight: 500; word-break: break-all; }
+.gw-kv { display: flex; gap: 10px; padding: 3px 0; font-size: 12px; }
+.gw-kv span { color: var(--muted); min-width: 120px; }
+.gw-kv b { font-weight: 500; word-break: break-all; }
 
-.mono { font-family: var(--mono); }
-.break { word-break: break-all; }
+.gw-mono { font-family: var(--mono); }
+.gw-break { word-break: break-all; }
 
 /* ── Ключи ───────────────────────────────────────────────────────────── */
 
-.keys { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
-.key {
+.gw-keys { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 8px; }
+.gw-key {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 4px 0;
   flex-wrap: wrap;
 }
-.key .val { font-family: var(--mono); font-size: 12px; }
-.key .spacer { flex: 1; }
-.key.off .val { text-decoration: line-through; color: var(--muted); }
+.gw-key .gw-val { font-family: var(--mono); font-size: 12px; }
+.gw-key .gw-spacer { flex: 1; }
+.gw-key.gw-off .gw-val { text-decoration: line-through; color: var(--muted); }
 
-.models-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
-.models-list span {
+.gw-models-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+.gw-models-list span {
   padding: 2px 7px;
   border-radius: 4px;
   background: var(--bg-hover);
@@ -197,7 +203,7 @@ textarea { font-family: var(--mono); resize: vertical; }
 
 /* ── Журнал ──────────────────────────────────────────────────────────── */
 
-.log {
+.gw-log {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-panel);
@@ -207,14 +213,14 @@ textarea { font-family: var(--mono); resize: vertical; }
   font-family: var(--mono);
   font-size: 12px;
 }
-.log .line { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,.04); }
-.log .line.warn { color: var(--warning); }
-.log .line.error { color: var(--danger); }
-.log .time { color: var(--muted); margin-right: 6px; }
+.gw-log .gw-line { padding: 2px 0; border-bottom: 1px solid rgba(255,255,255,.04); }
+.gw-log .gw-line.gw-warn { color: var(--warning); }
+.gw-log .gw-line.gw-error { color: var(--danger); }
+.gw-log .gw-time { color: var(--muted); margin-right: 6px; }
 
 /* ── Тост ────────────────────────────────────────────────────────────── */
 
-.toast {
+.gw-toast {
   position: fixed;
   right: 16px;
   bottom: 16px;
@@ -226,21 +232,20 @@ textarea { font-family: var(--mono); resize: vertical; }
   color: #fff;
   font: 13px var(--font);
 }
-.toast.ok { background: var(--primary); }
-.toast.err { background: var(--danger); }
+.gw-toast.gw-ok { background: var(--primary); }
+.gw-toast.gw-err { background: var(--danger); }
 
-/* ── Модалка ─────────────────────────────────────────────────────────── */
+/* ── Окно (gw-modal) ─────────────────────────────────────────────────── */
 
-/* Оверлей задаётся четырьмя явными отступами, а не сокращением `inset: 0`.
- *
- * Почему так: `inset` — не универсально поддерживаемая сокращённая запись, и в
- * движке, который её не понимает, правило молча отбрасывается целиком. Тогда
- * `.modal-backdrop` остаётся с `position: fixed` и без единого отступа: браузер
- * рисует блок нулевого размера в статической позиции — окно «прилипает» к
- * левому верхнему углу и его не видно. Четыре отдельных свойства такого класса
- * ошибок не имеют, поэтому отказ становится невозможен конструктивно, а не
- * «реже». */
-.modal-backdrop {
+/* Реальный кейс 22.10.2026: расширение браузера (XTranslate) на лету
+ * вставляет свой CSS, стилизующий СВОИ всплывашки по классу «modal» без
+ * префикса (position: fixed; display: flex; z-index: 9999) — и накрывает
+ * дашборд: окно модалки сплющивается и уезжает в угол. Решение по правилу
+ * 00.2 — не ужинать конфликт, а исключить его существование: все модальные
+ * классы под собственным префиксом gw-, и правила чужих расширений на
+ * gw-классы не действуют. */
+
+.gw-modal-backdrop {
   position: fixed;
   top: 0;
   right: 0;
@@ -253,7 +258,8 @@ textarea { font-family: var(--mono); resize: vertical; }
   z-index: 40;
   padding: 16px;
 }
-.modal {
+
+.gw-modal {
   width: 100%;
   max-width: 520px;
   /* `min-height: 0` обязателен для `overflow: auto` во flex-родителе: без него
@@ -267,9 +273,9 @@ textarea { font-family: var(--mono); resize: vertical; }
   border-radius: 10px;
   padding: 16px 18px;
 }
-.modal-actions { justify-content: flex-end; margin-top: 14px; }
+.gw-modal-actions { justify-content: flex-end; margin-top: 14px; }
 
-.empty {
+.gw-empty {
   padding: 24px 12px;
   text-align: center;
   color: var(--muted);
@@ -277,5 +283,5 @@ textarea { font-family: var(--mono); resize: vertical; }
   border-radius: 8px;
 }
 
-.problems { border-color: var(--danger); }
-.problems h3 { color: var(--danger); }
+.gw-problems { border-color: var(--danger); }
+.gw-problems h3 { color: var(--danger); }

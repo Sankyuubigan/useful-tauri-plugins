@@ -7,68 +7,73 @@
 <link rel="stylesheet" href="/dashboard/style.css">
 </head>
 <body>
-<header class="top">
-  <div class="title">
+<!-- Все классы дашборда — только в пространстве имён gw-* (правило
+     «Namespace CSS» в crates/gateway/docs/README.md): чужой CSS расширений
+     браузера стилизует голые имена (.modal, .card, .toast — кейс XTranslate
+     22.10.2026), а на gw-* классы он не нацелен по определению.
+     id-атрибуты пространства имён не требуют — по ним селекторы JS уникальны. -->
+<header class="gw-top">
+  <div class="gw-title">
     <h1>Локальный LLM-шлюз</h1>
-    <div class="sub" id="subtitle">загрузка…</div>
+    <div class="gw-sub" id="subtitle">загрузка…</div>
   </div>
-  <div class="top-actions">
-    <button id="btn-restart" class="ghost" title="Перезапустить процесс шлюза (нужно после смены порта)">Перезапустить шлюз</button>
+  <div class="gw-top-actions">
+    <button id="btn-restart" class="gw-ghost" title="Перезапустить процесс шлюза (нужно после смены порта)">Перезапустить шлюз</button>
   </div>
 </header>
 
-<nav class="tabs" id="tabs">
-  <button data-tab="providers" class="active">Провайдеры</button>
+<nav class="gw-tabs" id="tabs">
+  <button data-tab="providers" class="gw-active">Провайдеры</button>
   <button data-tab="models">Модели</button>
   <button data-tab="relay">Релей</button>
   <button data-tab="log">Журнал</button>
 </nav>
 
-<div id="toast" class="toast" hidden></div>
+<div id="toast" class="gw-toast" hidden></div>
 
 <!-- ─────────────────────────── Провайдеры ─────────────────────────── -->
-<section class="page" id="page-providers">
-  <div class="row">
-    <button id="btn-add-provider" class="primary">+ Добавить провайдера</button>
-    <button id="btn-sync-presets" class="ghost">Обновить каталог провайдеров</button>
-    <span class="hint" id="presets-hint"></span>
+<section class="gw-page" id="page-providers">
+  <div class="gw-row">
+    <button id="btn-add-provider" class="gw-primary">+ Добавить провайдера</button>
+    <button id="btn-sync-presets" class="gw-ghost">Обновить каталог провайдеров</button>
+    <span class="gw-hint" id="presets-hint"></span>
   </div>
 
-  <div id="providers-list" class="cards"></div>
+  <div id="providers-list" class="gw-cards"></div>
 </section>
 
 <!-- ───────────────────────────── Модели ───────────────────────────── -->
-<section class="page" id="page-models" hidden>
-  <div class="note">
+<section class="gw-page" id="page-models" hidden>
+  <div class="gw-note">
     Модели ниже получены <b>реальным запросом</b> <code>GET /models</code> к провайдеру.
     Они и есть список, который видят IDE: пустой список означает, что провайдер
     не будет использоваться в чате.
   </div>
-  <div id="models-list" class="cards"></div>
+  <div id="models-list" class="gw-cards"></div>
 </section>
 
 <!-- ────────────────────────────── Релей ────────────────────────────── -->
-<section class="page" id="page-relay" hidden>
-  <div class="note">
+<section class="gw-page" id="page-relay" hidden>
+  <div class="gw-note">
     Релей — Edge-функция на Vercel. Она нужна, когда провайдер недоступен из вашей сети
     (региональная блокировка или фильтрация трафика). Запросы выходят с территории Vercel.
   </div>
 
-  <div class="card">
+  <div class="gw-card">
     <h3>Статус релея</h3>
-    <div class="kv"><span>URL</span><b id="relay-url">—</b></div>
-    <div class="kv"><span>Секрет</span><b id="relay-token">—</b></div>
-    <div class="row">
-      <button id="btn-relay-test" class="ghost">Проверить релей</button>
-      <a id="relay-worker-link" class="ghost btn" target="_blank" rel="noopener"
+    <div class="gw-kv"><span>URL</span><b id="relay-url">—</b></div>
+    <div class="gw-kv"><span>Секрет</span><b id="relay-token">—</b></div>
+    <div class="gw-row">
+      <button id="btn-relay-test" class="gw-ghost">Проверить релей</button>
+      <a id="relay-worker-link" class="gw-ghost gw-btn" target="_blank" rel="noopener"
          href="/api/relay/worker">Исходник воркера</a>
     </div>
-    <div id="relay-test-result" class="hint"></div>
+    <div id="relay-test-result" class="gw-hint"></div>
   </div>
 
-  <div class="card">
+  <div class="gw-card">
     <h3>Развернуть автоматически</h3>
-    <div class="hint">
+    <div class="gw-hint">
       Нужен Vercel Access Token (vercel.com/account/tokens). Шлюз задеплоит
       воркер сам и подставит URL автоматически.
     </div>
@@ -78,15 +83,15 @@
     <label>Имя проекта (необязательно)
       <input id="relay-project-input" type="text" placeholder="cloud-routers-relay" autocomplete="off">
     </label>
-    <div class="row">
-      <button id="btn-relay-deploy" class="primary">Развернуть на Vercel</button>
+    <div class="gw-row">
+      <button id="btn-relay-deploy" class="gw-primary">Развернуть на Vercel</button>
     </div>
-    <div id="relay-deploy-result" class="hint"></div>
+    <div id="relay-deploy-result" class="gw-hint"></div>
   </div>
 
-  <div class="card">
+  <div class="gw-card">
     <h3>Развернуть вручную</h3>
-    <div class="hint">
+    <div class="gw-hint">
       Надёжный путь, если авто-деплой недоступен. Скопируйте исходник воркера,
       создайте на Vercel Edge-проект, задайте переменные окружения
       <code>RELAY_TOKEN</code> (обязательно — нажмите «Показать секрет», чтобы
@@ -97,54 +102,54 @@
     <label>URL релея
       <input id="relay-url-input" type="text" placeholder="https://my-relay.vercel.app" autocomplete="off">
     </label>
-    <div class="row">
-      <button id="btn-relay-save" class="primary">Сохранить URL</button>
-      <button id="btn-relay-show-token" class="ghost">Показать секрет RELAY_TOKEN</button>
+    <div class="gw-row">
+      <button id="btn-relay-save" class="gw-primary">Сохранить URL</button>
+      <button id="btn-relay-show-token" class="gw-ghost">Показать секрет RELAY_TOKEN</button>
     </div>
-    <div id="relay-token-manual" class="hint" hidden></div>
+    <div id="relay-token-manual" class="gw-hint" hidden></div>
   </div>
 
-  <div class="card">
+  <div class="gw-card">
     <h3>Маршрутизация через релей</h3>
-    <div class="hint">Для каждого провайдера галочка «через релей» в карточке на вкладке «Провайдеры».</div>
+    <div class="gw-hint">Для каждого провайдера галочка «через релей» в карточке на вкладке «Провайдеры».</div>
   </div>
 </section>
 
 <!-- ────────────────────────────── Журнал ────────────────────────────── -->
-<section class="page" id="page-log" hidden>
-  <div class="row">
-    <button id="btn-log-refresh" class="ghost">Обновить</button>
-    <label class="inline"><input type="checkbox" id="log-autoscroll" checked> Следить за новыми</label>
+<section class="gw-page" id="page-log" hidden>
+  <div class="gw-row">
+    <button id="btn-log-refresh" class="gw-ghost">Обновить</button>
+    <label class="gw-inline"><input type="checkbox" id="log-autoscroll" checked> Следить за новыми</label>
   </div>
-  <div id="log-list" class="log"></div>
+  <div id="log-list" class="gw-log"></div>
 </section>
 
 <!-- ───────────────────── Модалка входа Kiro (OAuth) ───────────────────── -->
-<div class="modal-backdrop" id="oauth-modal" hidden>
-  <div class="modal">
+<div class="gw-modal-backdrop" id="oauth-modal" hidden>
+  <div class="gw-modal">
     <h3>Вход Kiro через AWS Builder ID</h3>
-    <div class="hint">
+    <div class="gw-hint">
       Свой вход: дашборд покажет код — введите его в браузере по ссылке ниже.
       Не вставляйте токен из 9Router: один refresh-токен на два места уронит обе сессии.
     </div>
-    <div class="kv"><span>Код</span><b id="oauth-user-code">—</b></div>
-    <div class="kv"><span>Ссылка</span><b class="break" id="oauth-uri">—</b></div>
-    <div class="row">
-      <a id="oauth-open" class="primary btn" target="_blank" rel="noopener" href="#">Открыть вход</a>
-      <button id="btn-oauth-cancel" class="ghost">Отмена</button>
+    <div class="gw-kv"><span>Код</span><b id="oauth-user-code">—</b></div>
+    <div class="gw-kv"><span>Ссылка</span><b class="gw-break" id="oauth-uri">—</b></div>
+    <div class="gw-row">
+      <a id="oauth-open" class="gw-primary gw-btn" target="_blank" rel="noopener" href="#">Открыть вход</a>
+      <button id="btn-oauth-cancel" class="gw-ghost">Отмена</button>
     </div>
-    <div class="hint" id="oauth-status">Ожидание подтверждения в браузере…</div>
+    <div class="gw-hint" id="oauth-status">Ожидание подтверждения в браузере…</div>
   </div>
 </div>
 
 <!-- ───────────────────── Модалка добавления провайдера ───────────────────── -->
-<div class="modal-backdrop" id="add-modal" hidden>
-  <div class="modal">
+<div class="gw-modal-backdrop" id="add-modal" hidden>
+  <div class="gw-modal">
     <h3>Новый провайдер</h3>
 
-    <div class="row">
-      <button id="btn-modal-sync" class="ghost">Обновить каталог</button>
-      <span class="hint" id="modal-presets-hint"></span>
+    <div class="gw-row">
+      <button id="btn-modal-sync" class="gw-ghost">Обновить каталог</button>
+      <span class="gw-hint" id="modal-presets-hint"></span>
     </div>
 
     <label>Провайдер из каталога
@@ -152,7 +157,7 @@
       <select id="preset-select">
         <option value="">— выберите из списка —</option>
       </select>
-      <span class="hint" id="preset-count"></span>
+      <span class="gw-hint" id="preset-count"></span>
     </label>
 
     <label>Идентификатор (латиница, цифры, «-» и «_»)
@@ -167,11 +172,11 @@
     <label>API-ключи (по одному в строке)
       <textarea id="new-keys" rows="4" placeholder="gsk_…"></textarea>
     </label>
-    <div class="hint" id="new-docs" hidden></div>
+    <div class="gw-hint" id="new-docs" hidden></div>
 
-    <div class="row modal-actions">
-      <button id="btn-modal-cancel" class="ghost">Отмена</button>
-      <button id="btn-modal-save" class="primary">Добавить</button>
+    <div class="gw-row gw-modal-actions">
+      <button id="btn-modal-cancel" class="gw-ghost">Отмена</button>
+      <button id="btn-modal-save" class="gw-primary">Добавить</button>
     </div>
   </div>
 </div>

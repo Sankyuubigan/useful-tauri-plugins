@@ -219,6 +219,14 @@ const STYLE = `
     overflow: hidden;
     text-overflow: ellipsis;
   }
+  /* Копирование адреса Web UI: адрес живёт в обычном браузере, не только во
+     вкладке приложения (в чужой программе вкладок может не быть). */
+  .copy-url {
+    padding: 3px 10px;
+    border-radius: 6px;
+    font-size: 11.5px;
+    flex-shrink: 0;
+  }
 
   /* ── Экшены и Кнопки ── */
   .actions-bar {
@@ -849,8 +857,24 @@ export class CloudRoutersPanel extends HTMLElement {
     }
   }
 
-  private async onInstallUpdate() {
-    const router = this.router
+  /** Скопировать адрес Web UI: юзер открывает дашборд в обычном браузере, а не
+   * только вкладкой приложения. Адрес — из статуса роутера
+   * (`RouterStatus.base_url`), доп. источников нет (SSOT). */
+  private async onCopyUrl() {
+    const url = this.status?.base_url
+    if (!url) return
+    try {
+      await navigator.clipboard.writeText(url)
+      toast('Адрес Web UI скопирован в буфер', 'success')
+      logPlugin(`[cloud-routers] адрес скопирован: ${url}`)
+    } catch (e) {
+      const msg = `Не удалось скопировать адрес: ${String(e)}`
+      logPlugin(`[cloud-routers] ${msg}`)
+      toast(msg, 'error')
+    }
+  }
+
+  private async onInstallUpdate() {    const router = this.router
     try {
       // force=false: обновление — это обновление. force=true звал полную
       // переустановку (заново Node + снос dist + npm с нуля) там, где хватило
@@ -1064,6 +1088,18 @@ export class CloudRoutersPanel extends HTMLElement {
           <span class="spec-label">Порт</span>
           <span class="spec-value" style="color: #38bdf8;">${port}</span>
         </div>
+        ${s?.base_url ? `
+          <!-- Адрес Web UI: юзер открывает дашборд в обычном браузере, копируя
+               его отсюда (правило SSOT: адрес — только из RouterStatus.base_url,
+               никаких вторых источников). -->
+          <div class="spec-item" style="grid-column: span 2;">
+            <span class="spec-label">Адрес</span>
+            <span class="spec-value" style="display:flex; align-items:center; gap:8px; min-width:0;">
+              <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="${esc(s.base_url)}">${esc(s.base_url)}</span>
+              <button class="copy-url" title="Скопировать адрес, чтобы открыть дашборд в обычном браузере">Скопировать</button>
+            </span>
+          </div>
+        ` : ''}
         ${s?.has_npm_runtime ? `
           <div class="spec-item">
             <span class="spec-label">Runtime</span>
@@ -1145,6 +1181,7 @@ export class CloudRoutersPanel extends HTMLElement {
     })
     this.root.querySelector('.check-update')?.addEventListener('click', () => void this.onCheckUpdate())
     this.root.querySelector('.install-update')?.addEventListener('click', () => void this.onInstallUpdate())
+    this.root.querySelector('.copy-url')?.addEventListener('click', () => void this.onCopyUrl())
     this.root.querySelector('.start')?.addEventListener('click', () => void this.onStart())
     this.root.querySelector('.stop')?.addEventListener('click', () => void this.onStop())
     this.root.querySelector('.refresh')?.addEventListener('click', () => void this.onShowCombos())

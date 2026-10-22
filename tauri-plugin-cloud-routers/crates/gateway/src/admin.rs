@@ -1302,6 +1302,30 @@ async fn restart(State(state): State<AppState>) -> ApiResult<Json<serde_json::Va
     }
 }
 
+/// Остановить шлюз — процесс завершает **сам себя**.
+///
+/// Задача «убить чужой процесс» на Windows упирается в политику
+/// TerminateProcess: процесс, созданный повышенным (админским) хостом, нельзя
+/// остановить из не-повышенного (реальный кейс 22.10.26: taskkill по пиду
+/// старой копии — «Отказано в доступе» ×3). Задача «процесс сам себя закрывает»
+/// этих прав не требует вовсе, поэтому остановка хостом идёт через этот
+/// эндпойнт как первый шаг, а taskkill остаётся запасом на зависший процесс.
+///
+/// Ответ отдаётся сразу; выход — через 300 мс, чтобы TCP-ответ и строка
+/// event-лога успели уйти. `clear_server_record` перед `exit(0)` обязателен:
+/// exit не крутит деструкторы, и `server.json` иначе остался бы сиротой.
+async fn shutdown(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
+    state.events().warn("запрошена остановка шлюза по HTTP");
+    let data_dir = state.data_dir().to_path_buf();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        core_store::clear_server_record(&data_dir);
+        log::info!("шлюз завершает себя по запросу /api/shutdown");
+        std::process::exit(0);
+    });
+    Ok(Json(serde_json::json!({ "status": "shutting_down" })))
+}
+
 /// Проверить, что конфигурация в порядке (используется дашбордом как «светофор»).
 async fn health_check(State(state): State<AppState>) -> Response {
     let config = state.config();
@@ -1347,6 +1371,7 @@ pub fn router() -> axum::Router<AppState> {
         .route("/api/relay/test", axum::routing::post(relay_test))
         .route("/api/events", axum::routing::get(get_events))
         .route("/api/restart", axum::routing::post(restart))
+        .route("/api/shutdown", axum::routing::post(shutdown))
 }
 
 #[cfg(test)]

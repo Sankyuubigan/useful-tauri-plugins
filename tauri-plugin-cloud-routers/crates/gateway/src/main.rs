@@ -26,6 +26,7 @@
 mod admin;
 mod app;
 mod eventstream;
+mod key_check;
 mod kiro_oauth;
 mod kiro_stream;
 mod logbuf;

@@ -241,6 +241,9 @@ fn mock_router(state: Arc<MockState>) -> Router {
         .route("/models", get(mock_models))
         .route("/chat/completions", post(mock_chat))
         .route("/v1/chat/completions", post(mock_chat))
+        // Нативный путь проверки Gemini-ключей: сегмент начинается с буквы —
+        // это литерал для axum 0.7, а не параметр. Другие тесты по нему не ходят.
+        .route("/v1beta/models/gemini-2.0-flash:countTokens", post(mock_chat))
         .with_state(state)
 }
 
@@ -291,7 +294,7 @@ fn tmp_dir(tag: &str) -> std::path::PathBuf {
 }
 
 fn key(id: &str, secret: &str, active: bool) -> AccountKey {
-    AccountKey { id: id.to_string(), key: secret.to_string(), is_active: active }
+    AccountKey { id: id.to_string(), key: secret.to_string(), is_active: active, name: None }
 }
 
 /// Состояние шлюза с одним провайдером, указывающим на `base_url`.
@@ -790,5 +793,113 @@ async fn ping_provider_reports_latency_and_model_count() {
     assert_eq!(r.models_count, 2);
     assert!(!r.via_relay);
     assert!(r.target.starts_with("http://127.0.0.1"), "{}", r.target);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ───────────────────────── проверка Gemini-ключей ─────────────────────────
+
+/// Нативный путь `:countTokens` обслуживает тот же mock_router (маршрут
+/// добавлен в него): сегмент начинается с буквы — это литерал для axum 0.7,
+/// а не параметр (параметр 0.7 — целый сегмент с ведущим `:`).
+
+fn gemini_check_plan(base: &str) -> crate::key_check::CheckPlan {
+    crate::key_check::CheckPlan {
+        model: "gemini-2.0-flash".into(),
+        via_relay: false,
+        target_url: format!("{base}/v1beta/models/gemini-2.0-flash:countTokens"),
+    }
+}
+
+/// План собирается вручную поверх мок-кода: is_gemini_provider отсёк бы
+/// 127.0.0.1 адрес, а задача теста — сеть, заголовки и классификация.
+///
+/// Отказ «первый ключ — 401, второй — 200» детерминирован fail_first_calls:
+/// проверка последовательна, по ключу за раз.
+#[tokio::test]
+async fn key_check_run_plan_verdicts_each_key_without_losing_any() {
+    let ok_behavior = MockBehavior {
+        chat_status: 200,
+        chat_content_type: "application/json".into(),
+        chat_body: br#"{"ok":true}"#.to_vec(),
+        models_body: models_body_json(),
+        ..Default::default()
+    };
+    let failure_behavior = MockBehavior {
+        chat_status: 401,
+        chat_content_type: "application/json".into(),
+        chat_body: br#"{"error":{"code":401,"message":"API key not valid."}}"#.to_vec(),
+        models_body: models_body_json(),
+        ..Default::default()
+    };
+    let (base, mock) = start_mock_with(ok_behavior, failure_behavior, 1).await;
+    let (state, dir) = state_for(
+        &base,
+        vec![
+            key("k1", "AQ.Ab8-first", true),
+            key("k2", "AQ.Ab8-second", true),
+        ],
+    );
+    let provider = state.config().provider("mock").expect("provider").clone();
+
+    let summary = crate::key_check::run_plan(&state, &provider, gemini_check_plan(&base))
+        .await
+        .expect("run plan");
+
+    assert!(!summary.via_relay);
+    assert_eq!(summary.model, "gemini-2.0-flash");
+    assert_eq!(summary.results.len(), 2, "оба ключа обязаны попасть в свод: никакой ключ не теряется");
+    assert_eq!(summary.results[0].key_id, "k1");
+    assert_eq!(summary.results[0].verdict, crate::key_check::CheckVerdict::Invalid, "первый вызов — 401");
+    assert_eq!(
+        summary.results[1].verdict,
+        crate::key_check::CheckVerdict::Valid,
+        "второй вызов — 200"
+    );
+    let first = &summary.results[0];
+    assert!(
+        !first.masked.contains("AQ.Ab8-first"),
+        "секрет целиком наружу не уходит: {}",
+        first.masked
+    );
+
+    // Проверка — диагностика, а не ротация: is_active не изменился, ретрай
+    // ключа не случился (только по одному запросу на ключ).
+    assert_eq!(mock.chat_count(), 2, "запросов ровно по одному на ключ");
+    let after = state.config();
+    let after_provider = after.provider("mock").expect("provider after");
+    assert!(
+        after_provider.keys.iter().all(|k| k.is_active),
+        "run_plan не должен деактивировать ключи: это делает только чат"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Ключ идёт как `x-goog-api-key`, а НЕ как Authorization: секрет не должен
+/// уезжать в заголовок чужого стандарта (тот же контракт, что у юзерского
+/// рецепта с PowerShell).
+#[tokio::test]
+async fn key_check_secret_travels_only_in_x_goog_api_key() {
+    let (base, mock) = start_mock(MockBehavior {
+        chat_status: 200,
+        chat_content_type: "application/json".into(),
+        chat_body: br#"{"totalTokens":1}"#.to_vec(),
+        models_body: models_body_json(),
+        ..Default::default()
+    })
+    .await;
+    let (state, dir) = state_for(&base, vec![key("k1", "AQ.Ab8-secret", true)]);
+    let provider = state.config().provider("mock").expect("provider").clone();
+
+    crate::key_check::run_plan(&state, &provider, gemini_check_plan(&base))
+        .await
+        .expect("run plan");
+
+    let headers = mock.header_names().remove(0);
+    assert!(
+        headers.iter().any(|h| h == "x-goog-api-key"),
+        "x-goog-api-key обязателен: {:?}",
+        headers
+    );
+    assert!(!headers.iter().any(|h| h == "authorization"), "Authorization запрещён: {:?}", headers);
     let _ = std::fs::remove_dir_all(&dir);
 }

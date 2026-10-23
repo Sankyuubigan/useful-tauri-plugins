@@ -759,7 +759,7 @@ mod tests {
             id: "groq".into(),
             name: "Groq".into(),
             base_url: "https://api.groq.com/openai/v1".into(),
-            keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: false }],
+            keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: false, name: None }],
             models: vec![cloud_routers_core::DiscoveredModel { id: "m1".into(), ..Default::default() }],
             ..Default::default()
         });
@@ -790,7 +790,7 @@ mod tests {
             name: "Groq".into(),
             base_url: "https://api.groq.com/openai/v1".into(),
             use_relay: true,
-            keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true }],
+            keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true, name: None }],
             models: vec![cloud_routers_core::DiscoveredModel { id: "m1".into(), ..Default::default() }],
             ..Default::default()
         });

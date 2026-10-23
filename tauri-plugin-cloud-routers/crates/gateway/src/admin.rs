@@ -32,6 +32,7 @@ use cloud_routers_core::presets;
 use cloud_routers_core::store as core_store;
 
 use crate::app::AppState;
+use crate::key_check;
 use crate::logbuf::mask_secret;
 use crate::proxy;
 use crate::relay;
@@ -133,6 +134,9 @@ struct ProviderDto {
     models_count: usize,
     /// Готов к маршрутизации (есть ключ и модели).
     routable: bool,
+    /// Апстрим — Gemini (generativelanguage.googleapis.com): только такому
+    /// провайдеру дашборд показывает кнопку «Проверить ключи».
+    is_gemini: bool,
     /// Остаток кулдауна по каждому ключу, секунды.
     cooldowns: Vec<KeyCooldownDto>,
 }
@@ -155,6 +159,8 @@ enum ProviderAuthDto {
 #[derive(Debug, Serialize)]
 struct KeyDto {
     id: String,
+    /// Имя, заданное пользователем при добавлении (`mihael2`), если было.
+    name: Option<String>,
     masked: String,
     is_active: bool,
 }
@@ -221,11 +227,17 @@ fn provider_dto(state: &AppState, p: &ProviderConfig) -> ProviderDto {
         keys: p
             .keys
             .iter()
-            .map(|k| KeyDto { id: k.id.clone(), masked: mask_secret(&k.key), is_active: k.is_active })
+            .map(|k| KeyDto {
+                id: k.id.clone(),
+                name: k.name.clone(),
+                masked: mask_secret(&k.key),
+                is_active: k.is_active,
+            })
             .collect(),
         models: p.models.iter().map(|m| m.id.clone()).collect(),
         models_count: p.models.len(),
         routable: p.is_routable(),
+        is_gemini: key_check::is_gemini_provider(p),
         cooldowns: p
             .keys
             .iter()
@@ -389,6 +401,67 @@ async fn reload_config(State(state): State<AppState>) -> ApiResult<Json<serde_js
 
 // ────────────────────────────── Провайдеры ──────────────────────────────
 
+/// Один элемент списка ключей во входе дашборда.
+///
+/// `#[serde(untagged)]` принимает ОБА формата:
+/// - объект `{"name": "mihael2", "secret": "AQ.Ab8…"}` — новый (имя задаётся
+///   при добавлении);
+/// - плоскую строку `"AQ.Ab8…"` — старый (совместимость: сохранить ввод без
+///   имени в старом формате не должен ломаться).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+enum KeySpec {
+    Named { name: String, secret: String },
+    Plain(String),
+}
+
+/// SSOT-конверсия `KeySpec → AccountKey`: трим, пропуск пустых, дедуп по
+/// секрету, сквозная нумерация `k{n}` от `next_index`.
+///
+/// Единственная точка сборки ключей. Раньше модалка провайдера и «Добавить
+/// ключи» делали это дублирующим кодом — при любом новом правиле (нормализация,
+/// дедуп) пришлось бы править два места; правило живёт здесь одно.
+fn keyspecs_into_account_keys(
+    specs: &[KeySpec],
+    existing: &mut Vec<AccountKey>,
+    mut next_index: usize,
+) -> usize {
+    for spec in specs {
+        let (secret, name) = match spec {
+            KeySpec::Named { name, secret } => (secret.as_str(), Some(name.clone())),
+            KeySpec::Plain(secret) => (secret.as_str(), None),
+        };
+        let secret = secret.trim();
+        if secret.is_empty() {
+            continue;
+        }
+        // Повтор того же секрета не плодит мёртвую запись: два одинаковых
+        // ключа в ротации бессмысленны и только раздувают список.
+        if existing.iter().any(|k| k.key == secret) {
+            continue;
+        }
+        next_index += 1;
+        existing.push(cloud_routers_core::config::account_key(
+            format!("k{next_index}"),
+            secret.to_string(),
+            name,
+        ));
+    }
+    next_index
+}
+
+/// Список ключей для события: `<имя> (<маска>)`. Секреты никогда не попадают
+/// в журнал целиком — только через `mask_secret`.
+fn key_brief_list(keys: &[AccountKey]) -> String {
+    keys.iter()
+        .map(|k| match k.name.as_deref() {
+            Some(n) => format!("{n} ({})", mask_secret(&k.key)),
+            None => mask_secret(&k.key),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// Тело добавления провайдера.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -399,8 +472,8 @@ struct NewProvider {
     id: Option<String>,
     name: Option<String>,
     base_url: Option<String>,
-    /// API-ключи (можно несколько сразу).
-    keys: Vec<String>,
+    /// API-ключи (можно несколько сразу), каждым — с опциональным именем.
+    keys: Vec<KeySpec>,
 }
 
 async fn add_provider(State(state): State<AppState>, Json(body): Json<NewProvider>) -> ApiResult<Json<ProviderDto>> {
@@ -451,14 +524,10 @@ async fn add_provider(State(state): State<AppState>, Json(body): Json<NewProvide
         .or_else(|| preset.as_ref().map(|p| p.name.clone()))
         .unwrap_or_else(|| id.clone());
 
-    let keys: Vec<AccountKey> = body
-        .keys
-        .iter()
-        .map(|k| k.trim())
-        .filter(|k| !k.is_empty())
-        .enumerate()
-        .map(|(i, k)| AccountKey { id: format!("k{}", i + 1), key: k.to_string(), is_active: true })
-        .collect();
+    // Ключи собирает SSOT-хелпер: нумерация k1…, трим, пустые отброшены,
+    // дубликаты схлопнуты. Имя ключа (если задано) живёт в AccountKey.name.
+    let mut keys: Vec<AccountKey> = Vec::new();
+    keyspecs_into_account_keys(&body.keys, &mut keys, 0);
 
     // Подсказки из пресета НЕ попадают в список моделей: он означает «модели,
     // которые провайдер отдал на реальный /models». Пока этого не случилось,
@@ -481,6 +550,7 @@ async fn add_provider(State(state): State<AppState>, Json(body): Json<NewProvide
     };
 
     let key_count = provider.keys.len();
+    let key_brief = key_brief_list(&provider.keys);
     state
         .update_config(|c| {
             c.providers.push(provider);
@@ -488,7 +558,10 @@ async fn add_provider(State(state): State<AppState>, Json(body): Json<NewProvide
         })
         .map_err(internal)?;
 
-    state.events().info(format!("добавлен провайдер «{}» ({} ключей)", id, key_count));
+    state.events().info(format!(
+        "добавлен провайдер «{}» ({} ключей: {})",
+        id, key_count, key_brief
+    ));
     notify_host(&state, "provider-added");
     Ok(Json(provider_dto(&state, &state.config().provider(&id).cloned().unwrap_or_default())))
 }
@@ -574,11 +647,13 @@ async fn delete_provider(State(state): State<AppState>, Path(id): Path<String>) 
 
 // ────────────────────────────── Ключи ──────────────────────────────
 
-/// Тело добавления ключа: один или несколько сразу.
+/// Тело добавления ключей: один или несколько сразу. Каждый элемент — либо
+/// плоская строка-секрет (старый формат), либо `{"name": "…", "secret": "…"}`
+/// (новый, с именем). Разбор выступает `KeySpec` — см. его док.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct NewKeys {
-    keys: Vec<String>,
+    keys: Vec<KeySpec>,
 }
 
 async fn add_keys(
@@ -586,41 +661,36 @@ async fn add_keys(
     Path(id): Path<String>,
     Json(body): Json<NewKeys>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let incoming: Vec<String> = body
-        .keys
-        .iter()
-        .map(|k| k.trim().to_string())
-        .filter(|k| !k.is_empty())
-        .collect();
-    if incoming.is_empty() {
+    // Хотя бы один непустой секрет должен прийти: обработать «пустые строки»
+    // как «передано ничего» — та же причина, что и раньше.
+    let has_input = body.keys.iter().any(|s| match s {
+        KeySpec::Named { secret, .. } => !secret.trim().is_empty(),
+        KeySpec::Plain(s) => !s.trim().is_empty(),
+    });
+    if !has_input {
         return Err(bad_request("Не передано ни одного ключа"));
     }
     require_provider(&state, &id)?;
-    let added = state
+    let (added, added_keys) = state
         .update_config(|c| {
             let p = c
                 .provider_mut(&id)
                 .ok_or_else(|| format!("Провайдер «{}» исчез между проверкой и записью", id))?;
-            let mut n = p.keys.len();
-            let mut added = 0usize;
-            for key in &incoming {
-                // Повтор того же секрета не плодит мёртвую запись: два одинаковых
-                // ключа в ротации бессмысленны и только раздувают список.
-                if p.keys.iter().any(|k| k.key == *key) {
-                    continue;
-                }
-                n += 1;
-                p.keys.push(AccountKey { id: format!("k{n}"), key: key.clone(), is_active: true });
-                added += 1;
-            }
-            Ok(added)
+            let start = p.keys.len();
+            let next = keyspecs_into_account_keys(&body.keys, &mut p.keys, start);
+            Ok((next - start, p.keys[start..].to_vec()))
         })
         .map_err(internal)?;
 
     if added == 0 {
         return Err(bad_request(format!("Все переданные ключи уже добавлены к провайдеру «{}»", id)));
     }
-    state.events().info(format!("к провайдеру «{}» добавлено {} ключей", id, added));
+    state.events().info(format!(
+        "к провайдеру «{}» добавлено {} ключ(ей): {}",
+        id,
+        added,
+        key_brief_list(&added_keys)
+    ));
     notify_host(&state, "keys-changed");
     Ok(Json(serde_json::json!({ "added": added })))
 }
@@ -1494,30 +1564,55 @@ async fn health_check(State(state): State<AppState>) -> Response {
     .into_response()
 }
 
+/// Проверить все активные Gemini-ключи провайдера через `:countTokens`
+/// (лимит генерации не расходуется). Логику исполняет [`crate::key_check`],
+/// обработчик — только разбор зависимостей и код ответа: диагностическая
+/// причина («не Gemini», «релей без URL») приходит в тост дашборда как 400.
+async fn check_keys_gemini(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let Some(provider) = state.config().provider(&id).cloned() else {
+        return Err(not_found(format!("Провайдер «{}» не найден", id)));
+    };
+    let summary = key_check::check_provider_keys(&state, &provider)
+        .await
+        .map_err(bad_request)?;
+    Ok(Json(serde_json::to_value(&summary).expect("сводка проверки сериализуется")))
+}
+
 /// Собрать все маршруты управления (используется в [`crate::server`]).
 pub fn router() -> axum::Router<AppState> {
+    // Синтаксис параметров — axum 0.7 (`:id`): с Cargo.lock 0.7.9 формы
+    // `{id}` не захватываются (matchit 0.7 трактует их как обычные литеральные
+    // сегменты), маршруты не совпадают и дашборд получает пустую 404 на всякое
+    // действие над конкретным провайдером. Регресс: tests::provider_param_routes_use_axum07_syntax.
     axum::Router::new()
         .route("/api/status", axum::routing::get(status))
         .route("/api/health", axum::routing::get(health_check))
         .route("/api/config", axum::routing::get(get_config).put(put_config))
         .route("/api/config/reload", axum::routing::post(reload_config))
         .route("/api/providers", axum::routing::post(add_provider))
-        .route("/api/providers/{id}", axum::routing::patch(patch_provider).delete(delete_provider))
-        .route("/api/providers/{id}/keys", axum::routing::post(add_keys))
+        .route("/api/providers/:id", axum::routing::patch(patch_provider).delete(delete_provider))
+        .route("/api/providers/:id/keys", axum::routing::post(add_keys))
         .route(
-            "/api/providers/{id}/keys/{key_id}",
+            "/api/providers/:id/keys/:key_id",
             axum::routing::delete(delete_key),
         )
         .route(
-            "/api/providers/{id}/keys/{key_id}/reset",
+            "/api/providers/:id/keys/:key_id/reset",
             axum::routing::post(reset_key),
         )
-        .route("/api/providers/{id}/models/refresh", axum::routing::post(refresh_models))
-        .route("/api/providers/{id}/test", axum::routing::post(test_provider))
-        .route("/api/providers/{id}/oauth/start", axum::routing::post(oauth_start))
-        .route("/api/providers/{id}/oauth/poll", axum::routing::post(oauth_poll))
-        .route("/api/providers/{id}/oauth", axum::routing::get(oauth_status))
-        .route("/api/providers/{id}/oauth/disconnect", axum::routing::post(oauth_disconnect))
+        .route(
+            "/api/providers/:id/keys/check",
+            axum::routing::post(check_keys_gemini),
+        )
+        .route("/api/providers/:id/models/refresh", axum::routing::post(refresh_models))
+        .route("/api/providers/:id/test", axum::routing::post(test_provider))
+        .route("/api/providers/:id/oauth/start", axum::routing::post(oauth_start))
+        .route("/api/providers/:id/oauth/poll", axum::routing::post(oauth_poll))
+        .route("/api/providers/:id/oauth", axum::routing::get(oauth_status))
+        .route("/api/providers/:id/oauth/disconnect", axum::routing::post(oauth_disconnect))
         .route("/api/presets", axum::routing::get(get_presets))
         .route("/api/presets/sync", axum::routing::post(sync_presets))
         .route("/api/relay/worker", axum::routing::get(relay_worker))
@@ -1532,13 +1627,220 @@ pub fn router() -> axum::Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
     use axum::response::IntoResponse;
     use cloud_routers_core::config::GatewayConfig;
+    use tower::ServiceExt;
 
     fn tmp(tag: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("cr_gw_admin_{tag}"));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    /// Регрессия 23.10.2026: параметризованные маршруты регистрировались в
+    /// синтаксисе axum 0.8 (`/api/providers/{id}`) при закреплённой axum 0.7
+    /// (Cargo.lock 0.7.9), где захват пишется как `:id`. В 0.7 `{id}` — обычный
+    /// литеральный сегмент, маршруты не совпадали, и весь блок «провайдер +
+    /// вложенные действия» дашборда (PATCH провайдера, добавление/удаление
+    /// ключей, refresh моделей, проверка связи, OAuth) отдавал дефолтный 404
+    /// с ПУСТЫМ телом — юзер видел «Не удалось сохранить: HTTP 404» на чекбоксе
+    /// «через релей». Тест прогоняет PATCH и POST-ключи через полный роутер:
+    /// если кто-то вернёт `{id}`, оба запроса упрутся в 404 и тест упадёт сразу.
+    #[tokio::test]
+    async fn provider_param_routes_use_axum07_syntax() {
+        let dir = tmp("axum07params");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let mut cfg = GatewayConfig::default();
+        cfg.providers.push(ProviderConfig {
+            id: "mock".into(),
+            name: "Mock".into(),
+            base_url: "https://upstream.example/v1".into(),
+            keys: vec![AccountKey {
+                id: "k1".into(),
+                key: "sk-1".into(),
+                is_active: true,
+                name: None,
+            }],
+            ..Default::default()
+        });
+        core_store::save(&dir, &cfg).expect("save");
+        let state = AppState::new(&dir).expect("state");
+        let app = crate::server::build(state);
+
+        // PATCH провайдера — тот самый чекбокс «через релей» (use_relay).
+        let r = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(axum::http::Method::PATCH)
+                    .uri("/api/providers/mock")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"use_relay":true}"#))
+                    .expect("req"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            r.status(),
+            StatusCode::OK,
+            "PATCH /api/providers/:id обязан проходить (см. комментарий к тесту)"
+        );
+        let saved = cloud_routers_core::load_config(&dir);
+        assert!(
+            saved.providers[0].use_relay,
+            "флаг «через релей» обязан примениться в конфиге"
+        );
+
+        // POST ключей — второй параметризованный маршрут того же блока.
+        let r2 = app
+            .oneshot(
+                Request::builder()
+                    .method(axum::http::Method::POST)
+                    .uri("/api/providers/mock/keys")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"keys":["sk-new-1"]}"#))
+                    .expect("req"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            r2.status(),
+            StatusCode::OK,
+            "POST /api/providers/:id/keys обязан проходить"
+        );
+        let saved2 = cloud_routers_core::load_config(&dir);
+        assert!(
+            saved2.providers[0].keys.iter().any(|k| k.key == "sk-new-1"),
+            "ключ обязан добавиться к провайдеру"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 23.10.26 — ключи с именами: новый формат `{name, secret}`, старый
+    /// плоский список продолжает работать, нумерация продолжается от
+    /// существующих ключей, дубликат секрета (с именем или без) не плодит
+    /// запись и не перезаписывает имя существующего ключа.
+    #[tokio::test]
+    async fn add_keys_accepts_named_entries_and_legacy_plain_list() {
+        let dir = tmp("keynames");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let mut cfg = GatewayConfig::default();
+        cfg.providers.push(ProviderConfig {
+            id: "mock".into(),
+            name: "Mock".into(),
+            base_url: "https://upstream.example/v1".into(),
+            keys: vec![AccountKey { id: "k1".into(), key: "sk-existing".into(), is_active: true, name: None }],
+            ..Default::default()
+        });
+        core_store::save(&dir, &cfg).expect("save");
+        let state = AppState::new(&dir).expect("state");
+        let app = crate::server::build(state);
+
+        // Новый и старый элементы вперемешку: объекты с именами, плоская
+        // строка, объект с именем из одних пробелов.
+        let body = "{\"keys\":[{\"name\":\"mihael2\",\"secret\":\"AQ.Ab8-1\"},\
+                    {\"name\":\"  maredon3  \",\"secret\":\"AQ.Ab8-2\"},\
+                    \"AQ.Ab8-3\",{\"name\":\"   \",\"secret\":\"AQ.Ab8-4\"}]}";
+        let r = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(axum::http::Method::POST)
+                    .uri("/api/providers/mock/keys")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .expect("req"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(
+            r.status(),
+            StatusCode::OK,
+            "именованные и плоские ключи обязаны приниматься"
+        );
+        let saved = cloud_routers_core::load_config(&dir);
+        let keys = &saved.providers[0].keys;
+        assert_eq!(keys.len(), 5, "существующий + 4 добавленных");
+        let by_secret = |s: &str| keys.iter().find(|k| k.key == s).expect("key");
+        assert_eq!(by_secret("AQ.Ab8-1").name.as_deref(), Some("mihael2"));
+        assert_eq!(by_secret("AQ.Ab8-2").name.as_deref(), Some("maredon3"), "имя обрезается");
+        assert_eq!(by_secret("AQ.Ab8-3").name, None, "плоская строка — без имени");
+        assert_eq!(by_secret("AQ.Ab8-4").name, None, "пустое имя схлопывается в None");
+        // Нумерация продолжается от существующих ключей.
+        assert_eq!(by_secret("AQ.Ab8-1").id, "k2");
+        assert_eq!(by_secret("AQ.Ab8-4").id, "k5");
+
+        // Дубликат секрета с новым именем не плодит запись и не меняет имя.
+        let dup = app
+            .oneshot(
+                Request::builder()
+                    .method(axum::http::Method::POST)
+                    .uri("/api/providers/mock/keys")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"keys":[{"name":"again","secret":"AQ.Ab8-1"}]}"#))
+                    .expect("req"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(dup.status(), StatusCode::BAD_REQUEST, "все переданные уже добавлены");
+        let saved2 = cloud_routers_core::load_config(&dir);
+        assert_eq!(saved2.providers[0].keys.len(), 5, "дубликат не добавлен");
+        assert_eq!(
+            saved2.providers[0]
+                .keys
+                .iter()
+                .find(|k| k.key == "AQ.Ab8-1")
+                .and_then(|k| k.name.as_deref()),
+            Some("mihael2"),
+            "имя существующего ключа не перезаписывается дубликатом"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 23.10.26 — имена ключей доходят до дашборда через /api/config, а секреты
+    /// по-прежнему только в масках.
+    #[tokio::test]
+    async fn provider_config_dto_exposes_key_names_without_secrets() {
+        let dir = tmp("keydto");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let mut cfg = GatewayConfig::default();
+        cfg.providers.push(ProviderConfig {
+            id: "google".into(),
+            name: "Google".into(),
+            base_url: "https://generativelanguage.googleapis.com/v1beta/openai".into(),
+            keys: vec![AccountKey {
+                id: "k1".into(),
+                key: "AQ.Ab8RN6-secret-value".into(),
+                is_active: true,
+                name: Some("mihael2".into()),
+            }],
+            ..Default::default()
+        });
+        core_store::save(&dir, &cfg).expect("save");
+        let state = AppState::new(&dir).expect("state");
+        let resp = {
+            let app = crate::server::build(state);
+            app.oneshot(Request::builder().uri("/api/config").body(Body::empty()).expect("req"))
+                .await
+                .expect("response")
+        };
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX).await.expect("body");
+        let v: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(
+            v["providers"][0]["keys"][0]["name"],
+            "mihael2",
+            "имя ключа обязано дойти до дашборда: {v}"
+        );
+        assert!(v["providers"][0]["keys"][0]["masked"].is_string(), "маска обязана быть");
+        let text = serde_json::to_string(&v).expect("text");
+        assert!(
+            !text.contains("AQ.Ab8RN6-secret-value"),
+            "живой секрет не имеет права утекать в /api/config:\n{text}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1571,6 +1873,7 @@ mod tests {
                 id: "k1".into(),
                 key: "gsk_supersecretvalue123".into(),
                 is_active: true,
+                name: None,
             }],
             models: vec![cloud_routers_core::DiscoveredModel { id: "m1".into(), ..Default::default() }],
             ..Default::default()
@@ -1771,7 +2074,7 @@ mod tests {
             State(state),
             Json(NewProvider {
                 preset_id: Some("groq".into()),
-                keys: vec!["gsk-1".into()],
+                keys: vec![KeySpec::Plain("gsk-1".into())],
                 ..Default::default()
             }),
         )
@@ -1814,7 +2117,7 @@ mod tests {
             State(AppState::new(&dir).expect("state")),
             Json(NewProvider {
                 preset_id: Some("groq".into()),
-                keys: vec!["gsk-1".into()],
+                keys: vec![KeySpec::Plain("gsk-1".into())],
                 ..Default::default()
             }),
         )
@@ -1830,7 +2133,7 @@ mod tests {
             State(AppState::new(&dir).expect("state")),
             Json(NewProvider {
                 preset_id: Some("groq".into()),
-                keys: vec!["gsk-2".into()],
+                keys: vec![KeySpec::Plain("gsk-2".into())],
                 ..Default::default()
             }),
         )
@@ -1871,7 +2174,7 @@ mod tests {
             id: "groq".into(),
             name: "Groq".into(),
             base_url: "https://api.groq.com/openai/v1".into(),
-            keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true }],
+            keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true, name: None }],
             models: vec![cloud_routers_core::DiscoveredModel { id: "old-model".into(), ..Default::default() }],
             ..Default::default()
         });
@@ -1902,7 +2205,7 @@ mod tests {
             id: "groq".into(),
             name: "Groq".into(),
             base_url: "https://api.groq.com/openai/v1".into(),
-            keys: vec![AccountKey { id: "k1".into(), key: "gsk-secret".into(), is_active: true }],
+            keys: vec![AccountKey { id: "k1".into(), key: "gsk-secret".into(), is_active: true, name: None }],
             ..Default::default()
         });
         core_store::save(&dir, &cfg).expect("save");
@@ -1950,7 +2253,7 @@ mod tests {
             id: "groq".into(),
             name: "Groq".into(),
             base_url: "https://api.groq.com/openai/v1".into(),
-            keys: vec![AccountKey { id: "k1".into(), key: "gsk-same".into(), is_active: true }],
+            keys: vec![AccountKey { id: "k1".into(), key: "gsk-same".into(), is_active: true, name: None }],
             ..Default::default()
         });
         core_store::save(&dir, &cfg).expect("save");
@@ -1959,7 +2262,7 @@ mod tests {
         let r = add_keys(
             State(state),
             Path("groq".into()),
-            Json(NewKeys { keys: vec!["gsk-same".into()] }),
+            Json(NewKeys { keys: vec![KeySpec::Plain("gsk-same".into())] }),
         )
         .await;
         assert!(r.is_err(), "дубль секрета должен отвергаться, а не плодить запись");

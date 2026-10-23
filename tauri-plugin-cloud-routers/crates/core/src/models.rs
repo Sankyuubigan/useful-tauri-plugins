@@ -180,7 +180,7 @@ mod tests {
             base_url: "https://api.example.com/v1".to_string(),
             is_enabled: true,
             use_relay: false,
-            keys: vec![AccountKey { id: "k1".into(), key: "sk-1".into(), is_active: true }],
+            keys: vec![AccountKey { id: "k1".into(), key: "sk-1".into(), is_active: true, name: None }],
             models: models.iter().map(|m| DiscoveredModel { id: m.to_string(), ..Default::default() }).collect(),
             ..Default::default()
         }

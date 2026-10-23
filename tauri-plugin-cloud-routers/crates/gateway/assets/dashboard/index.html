@@ -169,8 +169,8 @@
     <label>Базовый URL
       <input id="new-base-url" type="text" placeholder="https://api.groq.com/openai/v1" autocomplete="off">
     </label>
-    <label>API-ключи (по одному в строке)
-      <textarea id="new-keys" rows="4" placeholder="gsk_…"></textarea>
+    <label>API-ключи (по одному в строке, можно с именем: «имя|ключ»)
+      <textarea id="new-keys" rows="4" placeholder="groq_prod|gsk_…&#10;gsk_…"></textarea>
     </label>
     <div class="gw-hint" id="new-docs" hidden></div>
 
@@ -181,6 +181,24 @@
   </div>
 </div>
 
-<script src="/dashboard/app.js"></script>
+<!-- ───────────────────── Модалка добавления ключей ───────────────────── -->
+<!-- По ключу на строку: «имя|ключ» или просто «ключ». Имя видно в карточке
+     провайдера рядом с маской, так что пять безликих AQ.Ab8… становится
+     различимым. -->
+<div class="gw-modal-backdrop" id="keys-modal" hidden>
+  <div class="gw-modal">
+    <h3>Добавить ключи</h3>
+    <div class="gw-hint">По одному ключу в строке: «имя|ключ» или просто «ключ».
+      Дубликаты не добавляются.</div>
+    <textarea id="keys-input" rows="6" class="gw-mono"
+      placeholder="mihael2|AQ.Ab8R…&#10;maredon3|AQ.Ab8R…"></textarea>
+    <div class="gw-row gw-modal-actions">
+      <button id="btn-keys-cancel" class="gw-ghost">Отмена</button>
+      <button id="btn-keys-save" class="gw-primary">Добавить</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/dashboard/app.js"></script>
 </body>
 </html>

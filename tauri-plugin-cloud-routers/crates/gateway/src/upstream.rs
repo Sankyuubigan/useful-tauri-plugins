@@ -227,7 +227,7 @@ mod tests {
             name: "Groq".into(),
             base_url: base.into(),
             use_relay,
-            keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true }],
+            keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true, name: None }],
             ..Default::default()
         }
     }

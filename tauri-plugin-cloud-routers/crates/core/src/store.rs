@@ -243,7 +243,7 @@ mod tests {
             base_url: "https://api.groq.com/openai/v1".into(),
             is_enabled: true,
             use_relay: false,
-            keys: vec![AccountKey { id: "k1".into(), key: "gsk_test".into(), is_active: true }],
+            keys: vec![AccountKey { id: "k1".into(), key: "gsk_test".into(), is_active: true, name: None }],
             models: vec![DiscoveredModel { id: "llama-3.3-70b-versatile".into(), ..Default::default() }],
             ..Default::default()
         });

@@ -192,6 +192,22 @@ textarea { font-family: var(--mono); resize: vertical; }
 .gw-key .gw-spacer { flex: 1; }
 .gw-key.gw-off .gw-val { text-decoration: line-through; color: var(--muted); }
 
+/* Пользовательское имя ключа («имя — маска» в gw-val): имя — текстовый цвет,
+ * чтобы различать безликие AQ.Ab8…; маска остаётся приглушённой. */
+.gw-keyname { color: var(--text); }
+
+/* Деталь вердикта в результатах «Проверить ключи»: тело ответа провайдера
+ * (бэкенд оборачивает 300 символовами) — мелким моноширинным текстом с
+ * веткой-отступом, чтобы блок не сливался со строкой ключа. */
+.gw-check-detail {
+  margin: 2px 0 4px 14px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border);
+  font-family: var(--mono);
+  font-size: 11px;
+  word-break: break-word;
+}
+
 .gw-models-list { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
 .gw-models-list span {
   padding: 2px 7px;

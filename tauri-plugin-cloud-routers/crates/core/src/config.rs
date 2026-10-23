@@ -201,11 +201,31 @@ pub struct AccountKey {
     pub key: String,
     /// Ручное/автоматическое отключение.
     pub is_active: bool,
+    /// Понятное имя ключа, заданное пользователем при добавлении
+    /// (`mihael2`, `work-main`). Опционально: у ключей из старых конфигов и
+    /// из пресетов имени нет — читать их без `None` нельзя.
+    pub name: Option<String>,
 }
 
 impl Default for AccountKey {
     fn default() -> Self {
-        Self { id: String::new(), key: String::new(), is_active: true }
+        Self { id: String::new(), key: String::new(), is_active: true, name: None }
+    }
+}
+
+/// Конструктор нового ключа с нормализацией полей: секрет без краевых
+/// пробелов, пустое/пробельное имя схлопывается в `None`.
+///
+/// SSOT для всех потоков добавления ключей (модалка провайдера, «Добавить
+/// ключи» в дашборде): раньше каждый поток собирал `AccountKey` руками и
+/// расползался бы при следующем новом поле.
+pub fn account_key(id: String, secret: String, name: Option<String>) -> AccountKey {
+    let trimmed_name = name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    AccountKey {
+        id,
+        key: secret.trim().to_string(),
+        is_active: true,
+        name: trimmed_name,
     }
 }
 
@@ -337,7 +357,7 @@ mod tests {
             base_url: base.to_string(),
             is_enabled: true,
             use_relay: false,
-            keys: vec![AccountKey { id: "k1".into(), key: "sk-1".into(), is_active: true }],
+            keys: vec![AccountKey { id: "k1".into(), key: "sk-1".into(), is_active: true, name: None }],
             models: vec![DiscoveredModel { id: "m".into(), object: None, created: None }],
             ..Default::default()
         }
@@ -448,8 +468,8 @@ mod tests {
     #[test]
     fn active_keys_skips_deactivated_and_blank() {
         let mut p = provider("groq", "https://a.dev");
-        p.keys.push(AccountKey { id: "k2".into(), key: "sk-2".into(), is_active: false });
-        p.keys.push(AccountKey { id: "k3".into(), key: "   ".into(), is_active: true });
+        p.keys.push(AccountKey { id: "k2".into(), key: "sk-2".into(), is_active: false, name: None });
+        p.keys.push(AccountKey { id: "k3".into(), key: "   ".into(), is_active: true, name: None });
         let ids: Vec<&str> = p.active_keys().map(|k| k.id.as_str()).collect();
         assert_eq!(ids, vec!["k1"]);
     }
@@ -502,5 +522,37 @@ mod tests {
         let cfg: GatewayConfig = serde_json::from_str(raw).expect("parse");
         assert_eq!(cfg.providers[0].protocol, crate::protocol::VendorProtocol::Openai);
         assert_eq!(cfg.providers[0].auth, crate::protocol::ProviderAuth::ApiKeys);
+    }
+
+    // 23.10.26 — поле name у ключа: имена задаются при добавлении, но ждать их
+    // от старых конфигов нельзя. Поэтому конструктор нормализует пустые имена
+    // в None (структурно исключая «имя из пробелов» как отдельное состояние),
+    // а старые JSON читаются как name: None — отсутствие имени не ошибка.
+    #[test]
+    fn account_keys_without_name_parse_and_roundtrip_names_survive() {
+        // Старый JSON: у ключа нет name — читается как None.
+        let raw = r#"{"port":20131,"providers":[{"id":"g","name":"G","base_url":"https://a.dev","keys":[{"id":"k1","key":"sk-1","is_active":true}]}]}"#;
+        let cfg: GatewayConfig = serde_json::from_str(raw).expect("parse");
+        assert_eq!(cfg.providers[0].keys[0].name, None, "у старых ключей имени нет");
+
+        // Конструктор обрезает края: пробелы вокруг секрета и имени не живут.
+        let named = account_key("k1".into(), "  sk-2  ".into(), Some(" mihael2 ".into()));
+        assert_eq!(named.key, "sk-2");
+        assert_eq!(named.name.as_deref(), Some("mihael2"));
+        let blank = account_key("k2".into(), "sk-3".into(), Some("   ".into()));
+        assert_eq!(blank.name, None, "имя из одних пробелов не сохраняется как Some(\"   \")");
+
+        // Имя и секрет переживают serialize→deserialize без искажений.
+        let mut p = provider("g", "https://a.dev");
+        p.keys.clear();
+        p.keys.push(named);
+        let values = serde_json::to_value(&p).expect("serialize");
+        let back: ProviderConfig = serde_json::from_value(values).expect("parse back");
+        assert_eq!(
+            back.keys[0].name.as_deref(),
+            Some("mihael2"),
+            "имя ключа обязано пережить roundtrip"
+        );
+        assert_eq!(back.keys[0].key, "sk-2");
     }
 }

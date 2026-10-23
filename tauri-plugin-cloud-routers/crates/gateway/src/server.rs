@@ -45,6 +45,10 @@ use crate::proxy;
 const DASHBOARD_HTML: &str = include_str!("../assets/dashboard/index.html");
 const DASHBOARD_CSS: &str = include_str!("../assets/dashboard/style.css");
 const DASHBOARD_JS: &str = include_str!("../assets/dashboard/app.js");
+/// ES-модули дашборда: index.html подключает ТОЛЬКО app.js (`type="module"`),
+/// app.js импортирует его домен и утилиты — их надо отдавать по HTTP.
+const DASHBOARD_PROVIDERS_JS: &str = include_str!("../assets/dashboard/providers.js");
+const DASHBOARD_UTILS_JS: &str = include_str!("../assets/dashboard/utils.js");
 
 fn asset(content_type: &'static str, body: &'static str) -> Response {
     (
@@ -70,6 +74,14 @@ async fn dashboard_css() -> Response {
 
 async fn dashboard_js() -> Response {
     asset("text/javascript; charset=utf-8", DASHBOARD_JS)
+}
+
+async fn dashboard_providers_js() -> Response {
+    asset("text/javascript; charset=utf-8", DASHBOARD_PROVIDERS_JS)
+}
+
+async fn dashboard_utils_js() -> Response {
+    asset("text/javascript; charset=utf-8", DASHBOARD_UTILS_JS)
 }
 
 /// `GET /health` — лёгкая проверка без чтения конфига.
@@ -128,6 +140,8 @@ pub fn build(state: AppState) -> Router {
         .route("/dashboard/", get(dashboard_html))
         .route("/dashboard/style.css", get(dashboard_css))
         .route("/dashboard/app.js", get(dashboard_js))
+        .route("/dashboard/providers.js", get(dashboard_providers_js))
+        .route("/dashboard/utils.js", get(dashboard_utils_js))
         .route("/style.css", get(dashboard_css))
         .route("/app.js", get(dashboard_js))
         .route("/", get(dashboard_html))
@@ -163,7 +177,7 @@ mod tests {
             id: "groq".into(),
             name: "Groq".into(),
             base_url: "https://api.groq.com/openai/v1".into(),
-            keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true }],
+            keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true, name: None }],
             models: vec![DiscoveredModel { id: "llama-3.3-70b-versatile".into(), ..Default::default() }],
             ..Default::default()
         });
@@ -274,15 +288,23 @@ mod tests {
             "в index.html классы вне пространства gw-: {html_bad:?} (собрано {html_n}) — правило «Namespace CSS» (docs/README.md)"
         );
 
-        let (js_n, js_bad) = dotted_tokens(DASHBOARD_JS);
+        // Шаблонные классы сканируются по ВСЕМ JS-модулям: карточки рендерит
+        // providers.js, а не app.js — гвард обязан читать источники, а не
+        // «где удобно». Прямые `assert`-строки для каждого файла ниже.
+        let js_all = format!(
+            "{DASHBOARD_JS}\n{DASHBOARD_PROVIDERS_JS}\n{DASHBOARD_UTILS_JS}\n"
+        );
+        let (js_n, js_bad) = dotted_tokens(&js_all);
         assert!(
             js_bad.is_empty() && js_n >= 40,
-            "в app.js сгенерированные шаблонами классы вне gw-: {js_bad:?} (собрано {js_n})"
+            "в JS-модулях сгенерированные шаблонами классы вне gw-: {js_bad:?} (собрано {js_n})"
         );
 
         // JS-селекторы: `$$('.x')` / `$('.x')` обязаны тоже жить в gw-.
         // Сканим только расширенные селекторы точкой; `$('#id')` — не классы.
-        let mut sel_rest = DASHBOARD_JS;
+        // (`$$(` содержит `$('` со второго символа, так что оба вида захвата
+        // ловятся одним сканом.)
+        let mut sel_rest = js_all.as_str();
         while let Some(open) = sel_rest.find("$('") {
             let after = &sel_rest[open + 3..];
             sel_rest = match after.find('\'') {
@@ -296,7 +318,7 @@ mod tests {
                             .collect();
                         assert!(
                             tok.starts_with("gw-"),
-                            "JS-селектор `.{tok}` вне пространства gw- (app.js)"
+                            "JS-селектор `.{tok}` вне пространства gw- (dashboard js)"
                         );
                     }
                     &after[close + 1..]
@@ -305,7 +327,7 @@ mod tests {
         }
 
         // classList.toggle('x') — динамические класс-имёна (busy/active).
-        let mut tog_rest = DASHBOARD_JS;
+        let mut tog_rest = js_all.as_str();
         while let Some(open) = tog_rest.find("classList.toggle('") {
             let after = &tog_rest[open + "classList.toggle('".len()..];
             tog_rest = match after.find('\'') {
@@ -314,7 +336,7 @@ mod tests {
                     let tok = &after[..close];
                     assert!(
                         tok.starts_with("gw-"),
-                        "classList.toggle('{tok}') вне пространства gw- (app.js)"
+                        "classList.toggle('{tok}') вне пространства gw- (dashboard js)"
                     );
                     &after[close + 1..]
                 }
@@ -432,6 +454,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Шаг 3 (PRP): прогресс «Обновить каталог» с секундами. Контракт
+    /// встречный: app.js обязан содержать стартовый текст хинта, setInterval
+    /// для счётчика и clearInterval для снятия таймера; index.html обязан
+    /// предоставлять DOM-узлы обоих хинтов. Не всякое заявление страницы —
+    /// свойство страницы: строки закреплены тестом.
+    #[test]
+    fn sync_presets_progress_hint_is_wired() {
+        assert!(
+            DASHBOARD_JS.contains("обновляем каталог провайдеров…"),
+            "app.js обязан показывать стартовый текст прогресса с секундами"
+        );
+        assert!(
+            DASHBOARD_JS.contains("setInterval"),
+            "счётчик секунд строится на setInterval (без него весь прогресс статичен)"
+        );
+        assert!(
+            DASHBOARD_JS.contains("clearInterval"),
+            "таймер обязан сниматься в finally — иначе он тикает без кнопки"
+        );
+        assert!(
+            DASHBOARD_HTML.contains("id=\"presets-hint\"")
+                && DASHBOARD_HTML.contains("id=\"modal-presets-hint\""),
+            "index.html обязан предоставлять DOM-узлы обоих хинтов каталога"
+        );
+    }
+
     #[tokio::test]
     async fn dashboard_is_served_without_network() {
         let dir = tmp("dash");
@@ -460,6 +508,10 @@ mod tests {
         for (uri, ct) in [
             ("/dashboard/style.css", "text/css; charset=utf-8"),
             ("/dashboard/app.js", "text/javascript; charset=utf-8"),
+            // ES-модули, которые app.js импортирует: без этих маршрутов импорт
+            // падал бы HTTP 404, а страница молча оставалась без логики.
+            ("/dashboard/providers.js", "text/javascript; charset=utf-8"),
+            ("/dashboard/utils.js", "text/javascript; charset=utf-8"),
             ("/style.css", "text/css; charset=utf-8"),
             ("/app.js", "text/javascript; charset=utf-8"),
         ] {

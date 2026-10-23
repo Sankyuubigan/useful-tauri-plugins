@@ -1,91 +1,26 @@
-// Логика встроенного дашборда шлюза.
+// Логика встроенного дашборда шлюза: вкладки, модели, релей, журнал,
+// каталог пресетов и общий init.
 //
-// Один источник правды — REST API шлюза (см. src/admin.rs). Страница ничего не
-// запоминает между перезагрузками: после перезапуска порта/состава провайдеров
-// она показывает ровно то, что реально настроено.
+// Домен провайдеров (карточки, ключи, OAuth, модалки) живёт в providers.js,
+// общие хелперы — в utils.js: файлы разделены по домену, а не по размеру.
+// Один источник правды — REST API шлюза (см. src/admin.rs). Страница ничего
+// не запоминает между перезагрузками: после перезапуска порта/состава
+// провайдеров она показывает ровно то, что реально настроено.
 //
 // Встраивание в приложение-хост: после любого изменения конфигурации шлюз
-// сообщает родительскому окну через postMessage, и панель хоста обновляет свой
-// список комбо без ожидания собственного таймера.
+// сообщает родительскому окну через postMessage, и панель хоста обновляет
+// свой список комбо без ожидания собственного таймера.
 
-const $ = (sel) => document.querySelector(sel);
-const $$ = (sel) => Array.from(document.querySelectorAll(sel));
-
-const state = {
-  config: null,
-  status: null,
-  presets: null,
-  events: [],
-  lastSeq: 0,
-  logTimer: null,
-};
-
-// ────────────────────────────── утилиты ──────────────────────────────
-
-async function api(path, options = {}) {
-  const res = await fetch(path, {
-    headers: { 'content-type': 'application/json' },
-    ...options,
-  });
-  const text = await res.text();
-  let body = null;
-  if (text) {
-    try { body = JSON.parse(text); } catch { body = { error: text }; }
-  }
-  if (!res.ok) {
-    throw new Error((body && body.error) || `HTTP ${res.status}`);
-  }
-  return body;
-}
-
-function toast(message, kind = 'ok') {
-  const el = $('#toast');
-  el.textContent = message;
-  el.className = `gw-toast ${kind === 'err' ? 'gw-err' : 'gw-ok'}`;
-  el.hidden = false;
-  clearTimeout(el._t);
-  el._t = setTimeout(() => { el.hidden = true; }, 4200);
-}
-
-function fail(where, e) {
-  console.error(where, e);
-  toast(`${where}: ${e.message || e}`, 'err');
-}
-
-function busy(selector, on) {
-  const el = typeof selector === 'string' ? $(selector) : selector;
-  if (!el) return;
-  el.disabled = on;
-  el.classList.toggle('gw-busy', on);
-}
-
-function esc(s) {
-  return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
-function plural(n, one, few, many) {
-  const m10 = n % 10, m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
-  return many;
-}
-
-/** Сообщить хосту, что список провайдеров изменился. */
-function notifyHost(reason) {
-  if (window.parent && window.parent !== window) {
-    try {
-      window.parent.postMessage(
-        { source: 'cloud-routers-gateway', type: 'config-changed', reason },
-        '*'
-      );
-    } catch { /* хост может быть в песочнице — это не повод ломать UI */ }
-  }
-}
+import {
+  $, $$, state, api, toast, fail, busy, esc, plural, notifyHost,
+} from './utils.js';
+// Циклический импорт безопасен: это function-декларации в providers.js,
+// к моменту любого вызова модуль с ними уже вычислен.
+import { renderProviders, bindProviderExtras } from './providers.js';
 
 // ────────────────────────────── загрузка ──────────────────────────────
 
-async function refreshAll() {
+export async function refreshAll() {
   try {
     const [status, config] = await Promise.all([api('/api/status'), api('/api/config')]);
     state.status = status;
@@ -99,7 +34,7 @@ async function refreshAll() {
   }
 }
 
-async function refreshPresets() {
+export async function refreshPresets() {
   state.presets = await api('/api/presets');
   renderPresetsHint();
   fillPresetSelect();
@@ -121,7 +56,7 @@ function renderHeader() {
 }
 
 // Карточка проблем конфигурации рисуется ВМЕСТЕ со списком провайдеров —
-// в `renderProviders`.
+// в `renderProviders` (providers.js).
 //
 // Отдельный `renderProblems` тут был не нужен: он искал карточку по классу
 // gw-problems, которого в разметке не бывает (карточки проблем рисует
@@ -137,292 +72,6 @@ function renderPresetsHint() {
   $('#presets-hint').textContent =
     `каталог: ${p.source} · ${p.providers.length} провайдеров · обновлён ${p.updated_at || '—'}`;
   $('#modal-presets-hint').textContent = `${p.providers.length} провайдеров (${p.source})`;
-}
-
-// ───────────────────────────── провайдеры ─────────────────────────────
-
-function protocolBadge(p) {
-  if (p.protocol === 'kiro') return '<span class="gw-badge gw-info">Kiro</span>';
-  return '<span class="gw-badge">OpenAI</span>';
-}
-
-function authBlock(p) {
-  // OAuth-привязка: секретов в ответе нет (только метаданные) — показываем
-  // статус и кнопки входа/отвязки. API-ключи — как раньше.
-  if (p.auth && p.auth.kind === 'o_auth') {
-    const a = p.auth;
-    const state = !a.session_present
-      ? '<span class="gw-badge gw-err">сессия потеряна — войдите заново</span>'
-      : (a.email ? `<span class="gw-hint">${esc(a.email)}</span>` : '<span class="gw-badge gw-ok">привязан</span>');
-    const exp = a.expires_at_unix
-      ? `<span class="gw-hint">токен до ${new Date(a.expires_at_unix * 1000).toLocaleString()}</span>`
-      : '';
-    return (
-      `<div class="gw-kv"><span>Вход</span><b>Kiro OAuth${a.method ? ` (${esc(String(a.method))})` : ''}</b></div>` +
-      `<div class="gw-row">${state} ${exp}` +
-      `<span class="gw-spacer"></span>` +
-      `<button class="gw-primary gw-btn-oauth-start" data-provider="${esc(p.id)}">Войти заново</button>` +
-      `<button class="gw-ghost gw-btn-oauth-drop" data-provider="${esc(p.id)}">Отвязать</button>` +
-      `</div>` +
-      `<div class="gw-hint">Не вставляйте токен из 9Router: пройдите свой вход — иначе сломаете обе сессии.</div>`
-    );
-  }
-  if (p.protocol === 'kiro') {
-    return (
-      `<div class="gw-row"><span class="gw-badge gw-warn">не привязан</span><span class="gw-spacer"></span>` +
-      `<button class="gw-primary gw-btn-oauth-start" data-provider="${esc(p.id)}">Подключить Kiro (OAuth)</button></div>` +
-      `<div class="gw-hint">Свой вход через AWS Builder ID: дашборд покажет код, подтвердите в браузере.</div>`
-    );
-  }
-  return '';
-}
-
-function providerCard(p) {
-  const status = p.routable
-    ? '<span class="gw-badge gw-ok">используется</span>'
-    : (!p.is_enabled
-        ? '<span class="gw-badge">выключен</span>'
-        : ((p.auth && p.auth.kind === 'o_auth')
-            ? '<span class="gw-badge gw-warn">войдите через OAuth</span>'
-            : (!p.keys.length
-                ? '<span class="gw-badge gw-warn">нужен ключ</span>'
-                : (p.keys.some(k => k.is_active)
-                    ? '<span class="gw-badge gw-warn">нажмите «Обновить модели»</span>'
-                    : '<span class="gw-badge gw-err">все ключи выключены</span>'))));
-  const cooldownByKey = new Map(p.cooldowns.map(c => [c.key_id, c.remaining_sec]));
-
-  const keys = p.keys.map((k) => {
-    const cd = cooldownByKey.get(k.id);
-    const badges = [
-      k.is_active ? '' : '<span class="gw-badge gw-err">выключен</span>',
-      cd ? `<span class="gw-badge gw-warn">пауза ${cd} с</span>` : '',
-    ].join(' ');
-    return (
-      `<div class="gw-key ${k.is_active ? '' : 'gw-off'}">` +
-      `<span class="gw-val">${esc(k.masked)}</span>` +
-      badges +
-      `<span class="gw-spacer"></span>` +
-      `<button class="gw-ghost gw-btn-key-reset" data-provider="${esc(p.id)}" data-key="${esc(k.id)}"` +
-      `${k.is_active && cd ? '' : ' hidden'}>Снять паузу</button>` +
-      `<button class="gw-danger gw-btn-key-del" data-provider="${esc(p.id)}" data-key="${esc(k.id)}">Удалить</button>` +
-      `</div>`
-    );
-  }).join('');
-
-  const models = p.models.length
-    ? `<div class="gw-models-list">${p.models.slice(0, 40).map(m => `<span>${esc(m)}</span>`).join('')}` +
-      (p.models.length > 40 ? `<span>…и ещё ${p.models.length - 40}</span>` : '') + `</div>`
-    : '';
-
-  return (
-    `<div class="gw-card ${p.is_enabled ? '' : 'gw-off'}">` +
-    `<div class="gw-card-head">` +
-    `<span class="gw-name">${esc(p.name)}</span>` +
-    `<span class="gw-id">${esc(p.id)}</span>` +
-    protocolBadge(p) +
-    status +
-    `<span class="gw-spacer"></span>` +
-    `<label class="gw-inline"><input type="checkbox" class="gw-prov-toggle" data-provider="${esc(p.id)}"` +
-    `${p.is_enabled ? ' checked' : ''}> включён</label>` +
-    `<label class="gw-inline"><input type="checkbox" class="gw-prov-relay" data-provider="${esc(p.id)}"` +
-    `${p.use_relay ? ' checked' : ''}> через релей</label>` +
-    `</div>` +
-
-    `<div class="gw-kv"><span>Адрес</span><b class="gw-break">${esc(p.base_url)}</b></div>` +
-    authBlock(p) +
-    `<div class="gw-kv"><span>Моделей</span><b>${p.models_count}</b></div>` +
-    `<div class="gw-kv"><span>Ключей</span><b>${p.keys.length} (активных ${p.keys.filter(k => k.is_active).length})</b></div>` +
-    models +
-    `<div class="gw-row">` +
-    `<button class="gw-primary gw-btn-models" data-provider="${esc(p.id)}">Обновить модели</button>` +
-    `<button class="gw-ghost gw-btn-test" data-provider="${esc(p.id)}">Проверить связь</button>` +
-    `<button class="gw-ghost gw-btn-keys-add" data-provider="${esc(p.id)}">Добавить ключ</button>` +
-    `<button class="gw-danger gw-btn-prov-del" data-provider="${esc(p.id)}">Удалить провайдера</button>` +
-    `</div>` +
-    `<div class="gw-keys">${keys || '<div class="gw-hint">Ключей нет — добавьте хотя бы один.</div>'}</div>` +
-    `</div>`
-  );
-}
-
-function renderProviders() {
-  const list = $('#providers-list');
-  const problems = (state.config.problems || []).length
-    ? `<div class="gw-card gw-problems"><h3>Проблемы конфигурации</h3>` +
-      state.config.problems.map(p => `<div class="gw-hint">• ${esc(p)}</div>`).join('') + `</div>`
-    : '';
-  const body = state.config.providers.length
-    ? state.config.providers.map(providerCard).join('')
-    : `<div class="gw-empty">Провайдеров пока нет.<br>` +
-      `Нажмите «Добавить провайдера», выберите сервис из каталога, вставьте API-ключ ` +
-      `и нажмите «Обновить модели».</div>`;
-  list.innerHTML = problems + body;
-  bindProviderButtons();
-}
-
-function bindProviderButtons() {
-  $$('.gw-prov-toggle').forEach(el => el.addEventListener('change', () =>
-    patchProvider(el.dataset.provider, { is_enabled: el.checked })));
-  $$('.gw-prov-relay').forEach(el => el.addEventListener('change', () =>
-    patchProvider(el.dataset.provider, { use_relay: el.checked })));
-
-  $$('.gw-btn-models').forEach(el => el.addEventListener('click', () => refreshModels(el)));
-  $$('.gw-btn-test').forEach(el => el.addEventListener('click', () => testProvider(el)));
-  $$('.gw-btn-prov-del').forEach(el => el.addEventListener('click', () => deleteProvider(el)));
-  $$('.gw-btn-key-del').forEach(el => el.addEventListener('click', () => deleteKey(el)));
-  $$('.gw-btn-key-reset').forEach(el => el.addEventListener('click', () => resetKey(el)));
-  $$('.gw-btn-oauth-start').forEach(el => el.addEventListener('click', () => startOAuth(el)));
-  $$('.gw-btn-oauth-drop').forEach(el => el.addEventListener('click', () => dropOAuth(el)));
-
-  $$('.gw-btn-keys-add').forEach(el => el.addEventListener('click', async () => {
-    const id = el.dataset.provider;
-    const key = window.prompt('API-ключ провайдера:');
-    if (!key || !key.trim()) return;
-    busy(el, true);
-    try {
-      await api(`/api/providers/${encodeURIComponent(id)}/keys`, {
-        method: 'POST',
-        body: JSON.stringify({ keys: [key.trim()] }),
-      });
-      toast('Ключ добавлен');
-      await refreshAll();
-      notifyHost('key-added');
-    } catch (e) { fail('Не удалось добавить ключ', e); }
-    finally { busy(el, false); }
-  }));
-}
-
-async function patchProvider(id, patch) {
-  try {
-    await api(`/api/providers/${encodeURIComponent(id)}`, {
-      method: 'PATCH',
-      body: JSON.stringify(patch),
-    });
-    await refreshAll();
-    notifyHost('provider-patched');
-  } catch (e) { fail('Не удалось сохранить', e); }
-}
-
-async function refreshModels(btn) {
-  const id = btn.dataset.provider;
-  busy(btn, true);
-  try {
-    const r = await api(`/api/providers/${encodeURIComponent(id)}/models/refresh`, { method: 'POST' });
-    toast(`Получено ${r.count} ${plural(r.count, 'модель', 'модели', 'моделей')} за ${r.latency_ms} мс`);
-    await refreshAll();
-    notifyHost('models-changed');
-  } catch (e) { fail('Не удалось получить модели', e); }
-  finally { busy(btn, false); }
-}
-
-async function testProvider(btn) {
-  const id = btn.dataset.provider;
-  busy(btn, true);
-  try {
-    const r = await api(`/api/providers/${encodeURIComponent(id)}/test`, { method: 'POST' });
-    toast(`Связь есть: ${r.latency_ms} мс, моделей ${r.models_count}${r.via_relay ? ' (через релей)' : ''}`);
-  } catch (e) { fail('Проверка не удалась', e); }
-  finally { busy(btn, false); }
-}
-
-// ─────────────────────── OAuth Kiro ───────────────────────
-
-let oauthTimer = null;
-
-function stopOAuthPolling() {
-  if (oauthTimer) { clearInterval(oauthTimer); oauthTimer = null; }
-  $('#oauth-modal').hidden = true;
-}
-
-async function startOAuth(btn) {
-  const id = btn.dataset.provider;
-  busy(btn, true);
-  try {
-    const r = await api(`/api/providers/${encodeURIComponent(id)}/oauth/start`, {
-      method: 'POST',
-      body: JSON.stringify({ region: 'us-east-1' }),
-    });
-    $('#oauth-user-code').textContent = r.user_code;
-    $('#oauth-uri').textContent = r.verification_uri_complete || r.verification_uri;
-    $('#oauth-open').href = r.verification_uri_complete || r.verification_uri;
-    $('#oauth-status').textContent = 'Ожидание подтверждения в браузере…';
-    $('#oauth-modal').hidden = false;
-    stopOAuthPolling();
-    // Поллинг раз в 5 секунд: чаще AWS просит замедлиться (slow_down).
-    oauthTimer = setInterval(() => void pollOAuth(id, r.session_id), 5000);
-  } catch (e) { fail('Не удалось начать вход', e); }
-  finally { busy(btn, false); }
-}
-
-async function pollOAuth(id, sessionId) {
-  try {
-    const r = await api(`/api/providers/${encodeURIComponent(id)}/oauth/poll`, {
-      method: 'POST',
-      body: JSON.stringify({ session_id: sessionId }),
-    });
-    if (r.status === 'done') {
-      stopOAuthPolling();
-      toast('Kiro подключён. Нажмите «Обновить модели».');
-      await refreshAll();
-      notifyHost('provider-patched');
-    }
-  } catch (e) {
-    stopOAuthPolling();
-    fail('Вход не удался', e);
-  }
-}
-
-async function dropOAuth(btn) {
-  const id = btn.dataset.provider;
-  if (!window.confirm(`Отвязать Kiro-сессию провайдера «${id}»? Токены будут удалены.`)) return;
-  busy(btn, true);
-  try {
-    await api(`/api/providers/${encodeURIComponent(id)}/oauth/disconnect`, { method: 'POST' });
-    toast('Сессия удалена');
-    await refreshAll();
-    notifyHost('provider-patched');
-  } catch (e) { fail('Не удалось отвязать', e); }
-  finally { busy(btn, false); }
-}
-
-async function deleteProvider(btn) {
-  const id = btn.dataset.provider;
-  const name = (state.config.providers.find(p => p.id === id) || {}).name || id;
-  if (!window.confirm(`Удалить провайдера «${name}» вместе со всеми его ключами?`)) return;
-  busy(btn, true);
-  try {
-    await api(`/api/providers/${encodeURIComponent(id)}`, { method: 'DELETE' });
-    toast('Провайдер удалён');
-    await refreshAll();
-    notifyHost('provider-deleted');
-  } catch (e) { fail('Не удалось удалить', e); }
-  finally { busy(btn, false); }
-}
-
-async function deleteKey(btn) {
-  const { provider, key } = btn.dataset;
-  if (!window.confirm('Удалить этот ключ?')) return;
-  busy(btn, true);
-  try {
-    await api(`/api/providers/${encodeURIComponent(provider)}/keys/${encodeURIComponent(key)}`,
-      { method: 'DELETE' });
-    toast('Ключ удалён');
-    await refreshAll();
-    notifyHost('key-deleted');
-  } catch (e) { fail('Не удалось удалить ключ', e); }
-  finally { busy(btn, false); }
-}
-
-async function resetKey(btn) {
-  const { provider, key } = btn.dataset;
-  busy(btn, true);
-  try {
-    await api(`/api/providers/${encodeURIComponent(provider)}/keys/${encodeURIComponent(key)}/reset`,
-      { method: 'POST' });
-    toast('Пауза снята, ключ включён');
-    await refreshAll();
-    notifyHost('key-reset');
-  } catch (e) { fail('Не удалось снять паузу', e); }
-  finally { busy(btn, false); }
 }
 
 // ─────────────────────────────── модели ───────────────────────────────
@@ -551,13 +200,13 @@ async function showRelayToken() {
  * не попадает: иначе `<select>` молча терял бы выбор пользователя при каждом
  * вводе символа.
  */
-function presetMatches(p, q) {
+export function presetMatches(p, q) {
   if (!q) return true;
   const hay = `${p.name || ''} ${p.id || ''} ${p.default_base_url || ''}`.toLowerCase();
   return hay.includes(q);
 }
 
-function fillPresetSelect() {
+export function fillPresetSelect() {
   const sel = $('#preset-select');
   const search = $('#preset-search');
   const q = (search && search.value || '').trim().toLowerCase();
@@ -577,8 +226,27 @@ function fillPresetSelect() {
   }
 }
 
-async function syncPresets(btn) {
+/**
+ * Обновить каталог провайдеров.
+ *
+ * Показывает прогресс с секундами прямо в строке каталога (шаг 3 плана):
+ * источники каталога — это сеть, sync легко идёт дольше секунды, и без
+ * обратной связи кнопка выглядела зависшей. При неудаче текст каталога
+ * восстанавливается прежним — прежние данные не исчезают.
+ */
+export async function syncPresets(btn) {
   busy(btn, true);
+  // Бэкап текстов до старта: именно их восстановим при ошибке.
+  const hintMain = $('#presets-hint'), hintModal = $('#modal-presets-hint');
+  const prevMain = hintMain.textContent, prevModal = hintModal.textContent;
+  const started = Date.now();
+  hintMain.textContent = 'обновляем каталог провайдеров… 0 с';
+  hintModal.textContent = 'обновляем каталог… 0 с';
+  const tick = setInterval(() => {
+    const sec = Math.floor((Date.now() - started) / 1000);
+    hintMain.textContent = `обновляем каталог провайдеров… ${sec} с`;
+    hintModal.textContent = `обновляем каталог… ${sec} с`;
+  }, 1000);
   try {
     const r = await api('/api/presets/sync', { method: 'POST' });
     const failed = (r.attempts || []).filter(a => !a.ok);
@@ -588,61 +256,19 @@ async function syncPresets(btn) {
     }
     toast(msg, failed.length ? 'err' : 'ok');
     await refreshPresets();
-  } catch (e) { fail('Не удалось обновить каталог', e); }
-  finally { busy(btn, false); }
-}
-
-// ─────────────────────── модалка добавления провайдера ───────────────────────
-
-function openAddModal() {
-  $('#new-id').value = '';
-  $('#new-name').value = '';
-  $('#new-base-url').value = '';
-  $('#new-keys').value = '';
-  $('#new-docs').hidden = true;
-  $('#preset-search').value = '';
-  fillPresetSelect();
-  $('#preset-select').value = '';
-  // Показываем окно ДО загрузки каталога. Раньше `await refreshPresets()` стоял
-  // выше этой строки, и любая задержка или сбой сети съедал показ целиком:
-  // кнопка «Добавить провайдера» выглядела как нерабочая.
-  $('#add-modal').hidden = false;
-  if (!state.presets) {
-    refreshPresets().catch((e) => fail('Не удалось загрузить каталог провайдеров', e));
+  } catch (e) {
+    fail('Не удалось обновить каталог', e);
+    hintMain.textContent = prevMain;
+    hintModal.textContent = prevModal;
+  } finally {
+    clearInterval(tick);
+    busy(btn, false);
   }
-}
-
-function closeAddModal() {
-  $('#add-modal').hidden = true;
-}
-
-async function saveNewProvider() {
-  const btn = $('#btn-modal-save');
-  const body = {
-    preset_id: $('#preset-select').value || null,
-    id: $('#new-id').value.trim() || null,
-    name: $('#new-name').value.trim() || null,
-    base_url: $('#new-base-url').value.trim() || null,
-    keys: $('#new-keys').value.split('\n').map(s => s.trim()).filter(Boolean),
-  };
-  if (!body.preset_id && !body.base_url) {
-    toast('Выберите провайдера из каталога или впишите адрес вручную', 'err');
-    return;
-  }
-  busy(btn, true);
-  try {
-    await api('/api/providers', { method: 'POST', body: JSON.stringify(body) });
-    closeAddModal();
-    toast('Провайдер добавлен. Нажмите «Обновить модели».');
-    await refreshAll();
-    notifyHost('provider-added');
-  } catch (e) { fail('Не удалось добавить провайдера', e); }
-  finally { busy(btn, false); }
 }
 
 // ──────────────────────────────── журнал ────────────────────────────────
 
-async function loadEvents(append = false) {
+export async function loadEvents(append = false) {
   try {
     const q = append && state.lastSeq ? `?since=${state.lastSeq}` : '?limit=200';
     const r = await api('/api/events' + q);
@@ -687,34 +313,9 @@ function initTabs() {
 
 function init() {
   initTabs();
-  $('#btn-add-provider').addEventListener('click', () => openAddModal());
+  bindProviderExtras();
   $('#btn-sync-presets').addEventListener('click', (e) => void syncPresets(e.currentTarget));
   $('#btn-modal-sync').addEventListener('click', (e) => void syncPresets(e.currentTarget));
-  $('#btn-modal-cancel').addEventListener('click', closeAddModal);
-  $('#btn-modal-save').addEventListener('click', () => void saveNewProvider());
-  $('#add-modal').addEventListener('click', (e) => { if (e.target.id === 'add-modal') closeAddModal(); });
-  $('#btn-oauth-cancel').addEventListener('click', stopOAuthPolling);
-  $('#oauth-modal').addEventListener('click', (e) => { if (e.target.id === 'oauth-modal') stopOAuthPolling(); });
-
-  $('#preset-search').addEventListener('input', () => fillPresetSelect());
-  $('#preset-select').addEventListener('change', (e) => {
-    const opt = e.target.selectedOptions[0];
-    if (!opt || !opt.value) return;
-    // Подставляем name/base_url из каталога: пользователю остаётся вставить ключ.
-    $('#new-name').value = opt.dataset.name || '';
-    $('#new-base-url').value = opt.dataset.base || '';
-    // `$('#new-id')`, а не `('#new-id')`: строка всегда истинна, `!` по ней даёт
-    // `false`, и условие не выполнялось НИКОГДА — выбранный сервис не
-    // подставлялся в поле id. Надо было спрашивать значение поля, а не строку.
-    if (!$('#new-id').value) $('#new-id').value = opt.value;
-    const docs = $('#new-docs');
-    if (opt.dataset.docs) {
-      docs.textContent = `Документация провайдера: ${opt.dataset.docs}`;
-      docs.hidden = false;
-    } else {
-      docs.hidden = true;
-    }
-  });
 
   $('#btn-relay-test').addEventListener('click', () => void testRelay());
   $('#btn-relay-deploy').addEventListener('click', () => void deployRelay());

@@ -214,7 +214,7 @@ mod tests {
             id: "groq".into(),
             name: "Groq".into(),
             base_url: "https://api.groq.com/openai/v1".into(),
-            keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true }],
+            keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true, name: None }],
             models: vec![DiscoveredModel { id: "m1".into(), ..Default::default() }],
             ..Default::default()
         });

@@ -284,7 +284,7 @@ mod tests {
     use crate::AccountKey;
 
     fn key(id: &str, active: bool) -> AccountKey {
-        AccountKey { id: id.to_string(), key: format!("sk-{id}"), is_active: active }
+        AccountKey { id: id.to_string(), key: format!("sk-{id}"), is_active: active, name: None }
     }
 
     #[test]

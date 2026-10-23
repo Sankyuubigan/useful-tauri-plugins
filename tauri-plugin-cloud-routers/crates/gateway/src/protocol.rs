@@ -187,7 +187,7 @@ mod tests {
             base_url: "https://api.groq.com/openai/v1".into(),
             is_enabled: true,
             use_relay: false,
-            keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true }],
+            keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true, name: None }],
             ..Default::default()
         }
     }

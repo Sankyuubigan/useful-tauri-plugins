@@ -314,7 +314,22 @@ async fn put_config(State(state): State<AppState>, Json(patch): Json<ConfigPatch
             }
             if let Some(v) = patch.vercel_relay_url.as_deref() {
                 let v = v.trim();
-                c.vercel_relay_url = if v.is_empty() { None } else { Some(trim_base_url(v)) };
+                if v.is_empty() {
+                    c.vercel_relay_url = None;
+                } else {
+                    // Схемная проверка здесь же, а не в момент запроса: релей
+                    // без схемы (реальный кейс 22.10.2026 — «my-relay.vercel.app»)
+                    // ломает КАЖДЫЙ запрос через него бессмысленным
+                    // «builder error». Пусть это будет ошибка сохранения с
+                    // понятным текстом, а не поломка каталога через час.
+                    let base = cloud_routers_core::config::relay_base_url(v);
+                    if base.is_none() {
+                        return Err(format!(
+                            "URL релея «{v}» должен начинаться с http:// или https://"
+                        ));
+                    }
+                    c.vercel_relay_url = base;
+                }
             }
             if let Some(v) = patch.vercel_relay_token.as_deref() {
                 // Пустая строка — осознанный сброс. Но оставлять поле пустым
@@ -940,82 +955,80 @@ async fn sync_presets(State(state): State<AppState>) -> ApiResult<Json<PresetsSy
     let mut external: Option<(String, Vec<ExternalProvider>)> = None;
     let mut extra_hints: Vec<(String, Vec<String>)> = Vec::new();
 
+    // Каждая неудачная попытка обязана попасть в журнал ОДНОЙ точкой: до
+    // камеры 23.10.2026 «неизвестный формат тела» не логировался никуда,
+    // и пользователь не видел в журнале причин провала sync.
+    let push_fail = |attempts: &mut Vec<SourceAttempt>, url: &str, detail: String| {
+        log::error!("cloud-routers: sync каталога: {url}: {detail}");
+        state.events().warn(format!("sync каталога: {url}: {detail}"));
+        attempts.push(SourceAttempt { url: url.to_string(), ok: false, detail });
+    };
+
     for url in &urls {
-        match fetch_source_text(&state, &config, url).await {
-            Err(e) => attempts.push(SourceAttempt {
-                url: url.clone(),
-                ok: false,
-                detail: e,
-            }),
+        let (fetched, note) = fetch_source_text_with_fallback(&state, &config, url).await;
+        match fetched {
+            Err(e) => push_fail(&mut attempts, url, e),
             Ok(text) => {
                 // Формат тела определяет классификатор, а не перебор парсеров:
                 // перебор «успешно» разбирал чужие тела как мусор (поймано E2E:
                 // litellm и models.json давали тысячи «провайдеров» с пустыми
                 // моделями, и подсказки терялись).
+                let mut push_ok = |url: &str, detail: String| {
+                    attempts.push(SourceAttempt { url: url.to_string(), ok: true, detail });
+                };
                 match classify_source_body(&text) {
                     SourceBodyKind::ModelsDev => match parse_models_dev_body(&text) {
                         Ok(list) => {
                             if external.is_none() {
-                                attempts.push(SourceAttempt {
-                                    url: url.clone(),
-                                    ok: true,
-                                    detail: format!("провайдеров: {}", list.len()),
-                                });
+                                push_ok(url, format!("провайдеров: {}", list.len()));
                                 external = Some((url.clone(), list));
                             } else {
                                 let hint_count: usize =
                                     list.iter().map(|p| p.models.len()).sum();
-                                attempts.push(SourceAttempt {
-                                    url: url.clone(),
-                                    ok: true,
-                                    detail: format!("модели в подсказки: {hint_count}"),
-                                });
+                                push_ok(url, format!("модели в подсказки: {hint_count}"));
                                 accumulate_models_as_hints(&mut extra_hints, &list);
                             }
                         }
-                        Err(e) => attempts.push(SourceAttempt {
-                            url: url.clone(),
-                            ok: false,
-                            detail: format!("models.dev-тело не разобралось: {e}"),
-                        }),
+                        Err(e) => push_fail(
+                            &mut attempts,
+                            url,
+                            format!("models.dev-тело не разобралось: {e}"),
+                        ),
                     },
                     SourceBodyKind::Litellm => match parse_litellm_hints(&text) {
                         Ok(hints) => {
                             let count: usize = hints.iter().map(|(_, m)| m.len()).sum();
-                            attempts.push(SourceAttempt {
-                                url: url.clone(),
-                                ok: true,
-                                detail: format!("подсказок моделей: {count}"),
-                            });
+                            push_ok(url, format!("подсказок моделей: {count}"));
                             merge_hints(&mut extra_hints, hints);
                         }
-                        Err(e) => attempts.push(SourceAttempt {
-                            url: url.clone(),
-                            ok: false,
-                            detail: format!("litellm-тело не разобралось: {e}"),
-                        }),
+                        Err(e) => push_fail(
+                            &mut attempts,
+                            url,
+                            format!("litellm-тело не разобралось: {e}"),
+                        ),
                     },
                     SourceBodyKind::ModelsJson => match parse_models_json_hints(&text) {
                         Ok(hints) => {
                             let count: usize = hints.iter().map(|(_, m)| m.len()).sum();
-                            attempts.push(SourceAttempt {
-                                url: url.clone(),
-                                ok: true,
-                                detail: format!("подсказок моделей: {count}"),
-                            });
+                            push_ok(url, format!("подсказок моделей: {count}"));
                             merge_hints(&mut extra_hints, hints);
                         }
-                        Err(e) => attempts.push(SourceAttempt {
-                            url: url.clone(),
-                            ok: false,
-                            detail: format!("models.json-тело не разобралось: {e}"),
-                        }),
+                        Err(e) => push_fail(
+                            &mut attempts,
+                            url,
+                            format!("models.json-тело не разобралось: {e}"),
+                        ),
                     },
-                    SourceBodyKind::Unknown => attempts.push(SourceAttempt {
-                        url: url.clone(),
-                        ok: false,
-                        detail: "неизвестный формат тела".to_string(),
-                    }),
+                    SourceBodyKind::Unknown => push_fail(&mut attempts, url, unknown_body_reason(&text)),
+                }
+                // Успешная после фоллбэка попытка несёт в detail своё
+                // пояснение: откуда тело, если релей провалился.
+                if let Some(note) = note {
+                    if let Some(last) = attempts.last_mut() {
+                        if last.ok {
+                            last.detail = format!("{} ({})", last.detail, note);
+                        }
+                    }
                 }
             }
         }
@@ -1142,46 +1155,148 @@ fn reqwest_kind(e: &reqwest::Error) -> &'static str {
     }
 }
 
+/// Честная причина «неизвестный формат тела».
+///
+/// Голый «неизвестный формат» нодекабжу», так был закрыт целый раунд работы
+/// (кейс 23.10.2026). Релей, чье URL ведёт не на воркер, отдаёт HTML-страницу
+/// SSR приложения — это распознаётся и прямо называется.
+fn unknown_body_reason(text: &str) -> String {
+    let head = text.trim_start();
+    let lower = head.to_ascii_lowercase();
+    if lower.starts_with("<!doctype html") || lower.starts_with("<html") {
+        "тело — HTML-страница, а не JSON: похоже, URL релея ведёт не на воркер релея (отдаётся фронт приложения). Проверьте/разверните релей".to_string()
+    } else {
+        let sample: String = text.chars().take(80).collect();
+        format!("неизвестный формат тела (начало: «{sample}»)")
+    }
+}
+
+/// Путь источника каталога для суффикса релей-запроса.
+///
+/// Источники — полные URL («https://models.dev/api.json»); для обращения к
+/// воркеру релея в URL запроса годится только path (возможно с query) —
+/// хост и схема уходят в заголовок `x-target-url`. Источник без схемы
+/// понимается как уже путь и возвращается как есть.
+fn source_path_tail(url: &str) -> String {
+    let s = url.trim();
+    for scheme in ["https://", "http://"] {
+        if let Some(rest) = s.strip_prefix(scheme) {
+            return match rest.find('/') {
+                Some(idx) => rest[idx..].to_string(),
+                None => "/catalog".to_string(),
+            };
+        }
+    }
+    s.to_string()
+}
+
 /// Скачать тело одного источника каталога.
 ///
 /// Ошибки возвращаются текстом с видом отказа и URL: вызывающий пишет их в
 /// `attempts`, а не теряет. Успешный не-2xx — тоже ошибка с кодом статуса.
+///
+/// `allow_relay = false` — прямая попытка: используется фоллбэком
+/// ([`fetch_source_text_with_fallback`]) после неудачи через релей.
 async fn fetch_source_text(
     state: &AppState,
     config: &cloud_routers_core::config::GatewayConfig,
     url: &str,
+    allow_relay: bool,
 ) -> Result<String, String> {
     // Каталог тянем через релей, если он настроен: часть источников в
     // некоторых сетях недоступна напрямую.
-    let relay_url = config
-        .vercel_relay_url
-        .as_deref()
-        .map(trim_base_url)
-        .filter(|s| !s.is_empty());
-    let relay_token = config.vercel_relay_token.as_deref().filter(|t| !t.trim().is_empty());
-    let via_relay = relay_url.is_some() && relay_token.is_some();
+    //
+    // Базу берёт ЕДИНАЯ `relay_base_url`, а не «настроен = иди»: релей без
+    // схемы (реальный кейс 22.10.2026, «my-relay.vercel.app» в конфиге) давал
+    // scheme-less склейку и reqwest 0.12 `Kind::Builder` («builder error») на
+    // КАЖДОМ источнике. Теперь негодная база даёт явную причину с текстом
+    // «исправьте поле», а не четыре нулевразумительных «builder error».
+    let relay_ready = allow_relay
+        && config.vercel_relay_url.is_some()
+        && config.vercel_relay_token.as_deref().map(|t| !t.trim().is_empty()).unwrap_or(false);
+    if relay_ready {
+        let relay_raw = config
+            .vercel_relay_url
+            .as_deref()
+            .filter(|s| !trim_base_url(s).is_empty());
+        let relay_url = relay_raw.and_then(cloud_routers_core::config::relay_base_url);
+        let relay_url = match relay_url {
+            Some(base) => base,
+            None => {
+                let raw = relay_raw.unwrap_or_default();
+                let msg = format!(
+                    "{url}: настроенный URL релея «{raw}» не начинается с http:// или https:// — исправьте поле «URL релея» в разделе «Релей»"
+                );
+                log::error!("cloud-routers: sync каталога: {msg}");
+                return Err(msg);
+            }
+        };
+        let relay_token = config
+            .vercel_relay_token
+            .as_deref()
+            .filter(|t| !t.trim().is_empty())
+            .expect("проверено выше");
 
-    let request = if via_relay {
-        state
+        // Воркер релея делает ровно один fetch по `x-target-url` и путь запроса
+        // НЕ читает (assets/relay-worker.js: линия target → fetch). Прибавлять
+        // к префиксу источник ЦЕЛИКОМ нельзя: источники каталога — полные URL
+        // («https://models.dev/api.json»), и склейка «gateway» + «https://...»
+        // даёт URL-мусор «.../api/gatewayhttps://models.dev/api.json» — боевой
+        // кейс 23.10.2026 («нет соединения» на каждом источнике, пользователь
+        // поставил схему, а sync всё ещё падал). Как суффикс идёт только
+        // ПУТЬ источника — он уникален, читаем и формирует корректный URL
+        // endpoint'а воркера.
+        let request = state
             .http()
             .get(format!(
                 "{}{}{}",
-                relay_url.expect("проверено выше"),
+                relay_url,
                 crate::upstream::RELAY_PATH_PREFIX,
-                url.trim_start_matches('/')
+                source_path_tail(url)
             ))
             .header(crate::upstream::HDR_TARGET_URL, url)
-            .header(crate::upstream::HDR_RELAY_TOKEN, relay_token.expect("проверено выше"))
-    } else {
-        state.http().get(url)
-    }
-    .timeout(std::time::Duration::from_secs(presets::sources::SOURCE_TIMEOUT_SECS));
+            .header(crate::upstream::HDR_RELAY_TOKEN, relay_token)
+            .timeout(std::time::Duration::from_secs(presets::sources::SOURCE_TIMEOUT_SECS));
 
-    let response = request.send().await.map_err(|e| {
-        let msg = format!("{}: {} ({})", url, reqwest_kind(&e), e);
-        log::error!("cloud-routers: sync каталога: {msg}");
-        msg
-    })?;
+        let response = request.send().await.map_err(|e| {
+            let msg = format!("{}: запрос к релею: {} ({})", url, reqwest_kind(&e), e);
+            log::error!("cloud-routers: sync каталога: {msg}");
+            msg
+        })?;
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            let msg = format!("{url}: релей ответил HTTP {}", status.as_u16());
+            log::error!("cloud-routers: sync каталога: {msg}");
+            return Err(msg);
+        }
+        // HTTP 200 не обязан значить «источник скачан»: релей, чей URL ведёт не
+        // на воркер, сам отвечает фронтовой HTML-страницей SSR (боевой кейс
+        // 23.10.2026: 200, text/html, при том что источник напрямую жив). HTML
+        // классификатор отбросил бы как Unknown И ПОСЛЕ него фоллбэк напрямую
+        // уже не начался бы — поэтому провал релея объявляется именно здесь,
+        // до возврата Ok.
+        let reason = unknown_body_reason(&text);
+        if reason.contains("HTML-страница") {
+            let msg = format!("{url}: {reason}");
+            log::error!("cloud-routers: sync каталога: {msg}");
+            return Err(msg);
+        }
+        return Ok(text);
+    }
+
+    // Прямая попытка (родной путь sync, когда релей не настроен или фоллбэк).
+    let response = state
+        .http()
+        .get(url)
+        .timeout(std::time::Duration::from_secs(presets::sources::SOURCE_TIMEOUT_SECS))
+        .send()
+        .await
+        .map_err(|e| {
+            let msg = format!("{}: {} ({})", url, reqwest_kind(&e), e);
+            log::error!("cloud-routers: sync каталога: {msg}");
+            msg
+        })?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -1190,6 +1305,46 @@ async fn fetch_source_text(
         return Err(msg);
     }
     Ok(text)
+}
+
+/// Тело источника: попытка через релей (если настроен), затем напрямую.
+///
+/// Результат — `Ok(тело)` + `Option<пояснение>` успех-сценария (заполняется,
+/// когда через релей не вышло, а напрямую сработало) или `Err(полная причина)`
+/// с обеими попытками. Пояснение попадает в `attempts` панели, причина —
+/// дополнительно в журнал — silent-fail каталога был поводом целого раунда
+/// работы (кейс 23.10.2026), у любого отказа记账 обязано быть лицо.
+async fn fetch_source_text_with_fallback(
+    state: &AppState,
+    config: &cloud_routers_core::config::GatewayConfig,
+    url: &str,
+) -> (Result<String, String>, Option<String>) {
+    let relay_ready = config.vercel_relay_url.is_some()
+        && config
+            .vercel_relay_token
+            .as_deref()
+            .map(|t| !t.trim().is_empty())
+            .unwrap_or(false);
+
+    if !relay_ready {
+        return (fetch_source_text(state, config, url, false).await, None);
+    }
+
+    match fetch_source_text(state, config, url, true).await {
+        Ok(text) => (Ok(text), None),
+        Err(relay_err) => match fetch_source_text(state, config, url, false).await {
+            Ok(text) => {
+                let note = format!("через релей не вышло ({relay_err}); взято напрямую");
+                log::warn!("cloud-routers: sync каталога: {url}: {note}");
+                (Ok(text), Some(note))
+            }
+            Err(direct_err) => {
+                let cause = format!("{relay_err}; попытка напрямую тоже не вышла: {direct_err}");
+                log::error!("cloud-routers: sync каталога: {url}: {cause}");
+                (Err(cause), None)
+            }
+        },
+    }
 }
 
 // ────────────────────────────── Релей ──────────────────────────────
@@ -1475,6 +1630,28 @@ mod tests {
         )
         .await;
         assert!(r.is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn put_config_rejects_relay_url_without_scheme() {
+        // Кейс 22.10.2026: релей «my-relay.vercel.app» сохранялся как настроенный
+        // и ломал каждый запрос каталога «builder error». Сохранение обязано
+        // отказать с понятной причиной — негодный релей не должен попасть
+        // в конфиг и, значит, не может повредить sync/маршрутизацию.
+        let dir = tmp("relayurl");
+        let state = AppState::new(&dir).expect("state");
+        let r = put_config(
+            State(state.clone()),
+            Json(ConfigPatch {
+                vercel_relay_url: Some("my-relay.vercel.app".into()),
+                ..Default::default()
+            }),
+        )
+        .await;
+        assert!(r.is_err(), "без http(s):// сохранение обязано упасть");
+        // Значение не должно просочиться в конфиг после отказа.
+        assert_eq!(state.config().vercel_relay_url, None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1831,6 +2008,124 @@ mod tests {
         let (catalog, source) = presets::load(&dir);
         assert!(catalog.providers.len() >= 20);
         assert_eq!(source, presets::CatalogSource::Embedded);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn source_path_tail_strips_scheme_and_host_keeps_path_and_query() {
+        // Боевой кейс 23.10.2026: склейка gateway + ПОЛНЫЙ URL источника
+        // давала «.../api/gatewayhttps://models.dev/api.json» (нет соединения).
+        assert_eq!(source_path_tail("https://models.dev/api.json"), "/api.json");
+        assert_eq!(
+            source_path_tail("https://raw.githubusercontent.com/BerriAI/litellm/main/prices.json?v=2"),
+            "/BerriAI/litellm/main/prices.json?v=2"
+        );
+        assert_eq!(source_path_tail("http://127.0.0.1:8808/x.json"), "/x.json");
+        // Уже путь — вернуться без изменений; адрес без пути — заглушка.
+        assert_eq!(source_path_tail("/local.json"), "/local.json");
+        assert_eq!(source_path_tail("https://models.dev"), "/catalog");
+    }
+
+    #[tokio::test]
+    async fn sync_with_schemeless_relay_names_the_field_not_builder() {
+        // Кейс 22.10.2026: релей настроен («my-relay.vercel.app», token есть),
+        // и каждый источник отвечал «неверный URL запроса (builder) (builder
+        // error)» — ноль диагностики. Негодный релей обязан дать отказ до
+        // сети с текстом, где чинить.
+        let dir = tmp("syncrelay");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        // Пишем сырой JSON в обход save: save теперь сам валидирует
+        // (invalid config больше невозможен через штатный путь), а кейс
+        // воспроизводит именно СТАРЫЙ конфиг на диске, подпорченный раньше.
+        std::fs::write(
+            core_store::config_path(&dir),
+            r#"{"port":20131,"providers":[],"vercel_relay_url":"my-relay.vercel.app","vercel_relay_token":"tok","presets_sources":["http://127.0.0.1:1/none.json"]}"#,
+        )
+        .expect("write");
+        let state = AppState::new(&dir).expect("state");
+
+        let r = sync_presets(State(state)).await;
+        let err_resp = r.expect_err("sync обязан упасть").into_response();
+        let bytes =
+            axum::body::to_bytes(err_resp.into_body(), usize::MAX).await.expect("body");
+        let err_text = String::from_utf8_lossy(&bytes);
+        assert!(
+            err_text.contains("my-relay.vercel.app") && err_text.contains("http:// или https://"),
+            "ошибка обязана называть поле релея и нужную схему: {err_text}"
+        );
+        assert!(!err_text.contains("builder"), "{err_text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Заглушка релея, у которого URL указывает не на воркер: ВСЕ пути
+    /// отвечают 200 text/html страницей SSR приложения (как реальный кейс
+    /// 23.10.2026: `data-dpl-id` Vercel-страницы на под-пути воркера).
+    async fn fake_relay_fallback() -> &'static str {
+        "<!DOCTYPE html><html data-dpl-id=\"dpl_test\"><body>next.js page</body></html>"
+    }
+
+    #[tokio::test]
+    async fn relay_html_falls_back_to_direct_and_syncs() {
+        // Кейс 23.10.2026: релей пользователя отдал 200 с HTML-страницей (URL
+        // ведёт не на воркер релея), при этом источник каталога доступен
+        // напрямую. Sync обязан опознать HTML как провал релей-попытки, взять
+        // тело напрямую и отчитаться в attempts ОБЕИМИ ветками, а не
+        // упасть с «неизвестный формат тела».
+        let (relay_base, source_base) = {
+            let html_router = axum::Router::new().fallback(fake_relay_fallback);
+            let rl = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind relay");
+            let relay_port = rl.local_addr().expect("relay addr").port();
+            tokio::spawn(async move { let _ = axum::serve(rl, html_router).await; });
+
+            let src_router = axum::Router::new().route(
+                "/api.json",
+                axum::routing::get(|| async {
+                    r#"{"groq":{"name":"Groq","api":"https://api.groq.example/openai/v1","models":{"llama-3":{}}}}"#
+                }),
+            );
+            let sl = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind source");
+            let src_port = sl.local_addr().expect("source addr").port();
+            tokio::spawn(async move { let _ = axum::serve(sl, src_router).await; });
+
+            (format!("http://127.0.0.1:{relay_port}"), format!("http://127.0.0.1:{src_port}"))
+        };
+
+        let dir = tmp("relayfb");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        // Валидный конфиг (релей СО схемой) — кейс: релей «работает» HTTP-wise,
+        // но отдаёт не то, ради чего он был заведён.
+        std::fs::write(
+            core_store::config_path(&dir),
+            format!(
+                r#"{{"port":20131,"providers":[],"vercel_relay_url":"{relay_base}","vercel_relay_token":"tok","presets_sources":["{source_base}/api.json"]}}"#,
+            ),
+        )
+        .expect("write");
+        let state = AppState::new(&dir).expect("state");
+
+        let r = sync_presets(State(state)).await.expect("sync обязан выжить через фоллбэк");
+        assert_eq!(r.attempts.len(), 1, "одна попытка — один источник");
+        let a = &r.attempts[0];
+        assert!(a.ok, "попытка обязана быть успешной (фоллбэк): {:?}", a);
+        assert!(
+            a.detail.contains("провайдеров: 1"),
+            "успешный разбор обязателен: {:?}",
+            a
+        );
+        assert!(
+            a.detail.contains("через релей не вышло") && a.detail.contains("HTML-страница"),
+            "detail обязан объяснить фоллбэк и причину провала релея: {:?}",
+            a
+        );
+        // Итоговый каталог = встроенный seed + внешний слой, поэтому
+        // absolute-count здесь = invented-number. Проверяем ФАКТ применения
+        // мок-источника: провайдер groq обязан появиться в сохранённом кэше.
+        let (catalog, _) = presets::load(&dir);
+        assert!(
+            catalog.providers.iter().any(|p| p.id == "groq"),
+            "groq из мок-источника обязан попасть в каталог: {:?}",
+            catalog.providers.iter().map(|p| p.id.as_str()).collect::<Vec<_>>()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

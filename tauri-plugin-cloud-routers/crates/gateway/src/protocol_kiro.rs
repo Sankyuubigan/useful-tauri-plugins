@@ -17,7 +17,7 @@
 //! по одному.
 
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
-use cloud_routers_core::config::{DiscoveredModel, GatewayConfig, ProviderConfig, trim_base_url};
+use cloud_routers_core::config::{DiscoveredModel, GatewayConfig, ProviderConfig};
 
 use crate::protocol::{UpstreamRequest, VendorProtocol};
 use crate::upstream::Route;
@@ -138,17 +138,9 @@ impl VendorProtocol for KiroProtocol {
         let mut headers = Self::headers(credential, api_key_mode, profile_arn.as_deref())?;
         // Релей: absolute target + заголовки поверх (та же схема, что OpenAI).
         let route = if provider.use_relay {
-            let relay = config
-                .vercel_relay_url
-                .as_deref()
-                .map(trim_base_url)
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    format!(
-                        "Провайдер «{}» настроен на работу через релей, но URL релея не задан",
-                        provider.id
-                    )
-                })?;
+            // Единый источник правила боковой настройки (проверка «настроен,
+            // но без схемы» живёт в relay_route_base, а не в копиях).
+            let relay = crate::upstream::relay_route_base(provider, config)?;
             let route = Route::Relay {
                 url: format!("{relay}{}/ListAvailableModels", crate::upstream::RELAY_PATH_PREFIX),
                 target_url: url,
@@ -180,17 +172,7 @@ impl VendorProtocol for KiroProtocol {
             .map_err(|e| format!("Не удалось сериализовать тело Kiro-запроса: {e}"))?;
         let first = CHAT_ENDPOINTS[0].to_string();
         let (route, target) = if provider.use_relay {
-            let relay = config
-                .vercel_relay_url
-                .as_deref()
-                .map(trim_base_url)
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| {
-                    format!(
-                        "Провайдер «{}» настроен на работу через релей, но URL релея не задан",
-                        provider.id
-                    )
-                })?;
+            let relay = crate::upstream::relay_route_base(provider, config)?;
             let target = first.clone();
             let route = Route::Relay {
                 url: format!(

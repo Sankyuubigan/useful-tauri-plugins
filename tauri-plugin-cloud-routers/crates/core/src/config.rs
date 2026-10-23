@@ -232,6 +232,31 @@ pub fn trim_base_url(url: &str) -> String {
     url.trim().trim_end_matches('/').to_string()
 }
 
+/// База релея, пригодная для склейки URL запроса.
+///
+/// Возвращает `Some(trimmed)`, если значение настроено и начинается с
+/// `http://`/`https://` (после обрезки завершающих `/`), иначе `None`.
+///
+/// Почему проверка схемы здесь и единственная в кодовой базе — реальный кейс
+/// 22.10.2026: в конфиге оказался `vercel_relay_url` **без** схемы
+/// (`my-relay.vercel.app`). Значение считалось «настроенным», релей
+/// подключался, и склейка `{base}{path}` давала scheme-less URL — reqwest
+/// отвечал `Kind::Builder` («builder error») на **каждый** запрос через релей:
+/// sync каталога, модели, Kiro. Пользователь видел бессмысленное «неверный URL
+/// запроса». Единое место превращает негодную базу в `None`, а потребители
+/// обязаны дать понятную причину вместо мёртвого «builder error».
+pub fn relay_base_url(raw: &str) -> Option<String> {
+    let base = trim_base_url(raw);
+    if base.is_empty() {
+        return None;
+    }
+    if base.starts_with("http://") || base.starts_with("https://") {
+        Some(base)
+    } else {
+        None
+    }
+}
+
 impl GatewayConfig {
     /// Источники каталога с учётом пользовательского списка.
     ///
@@ -290,6 +315,13 @@ impl GatewayConfig {
             seen.push(&p.id);
             problems.extend(p.validate());
         }
+        if let Some(raw) = self.vercel_relay_url.as_deref().filter(|s| !trim_base_url(s).is_empty()) {
+            if relay_base_url(raw).is_none() {
+                problems.push(format!(
+                    "vercel_relay_url «{raw}» не начинается с http:// или https:// — релей обязан быть абсолютным URL"
+                ));
+            }
+        }
         problems
     }
 }
@@ -335,6 +367,36 @@ mod tests {
     fn trim_base_url_removes_trailing_slashes() {
         assert_eq!(trim_base_url("https://api.groq.com/openai/v1/"), "https://api.groq.com/openai/v1");
         assert_eq!(trim_base_url("  https://x.dev///  "), "https://x.dev");
+    }
+
+    #[test]
+    fn relay_base_url_accepts_only_absolute_addresses() {
+        // Реальный кейс 22.10.2026: конфиг содержал релей без схемы — и sync
+        // каталога падал «builder error» на каждом источнике. Единственная
+        // точка проверки схемы: негодная база отдаёт None, а не URL-мусор.
+        assert_eq!(
+            relay_base_url("https://my-relay.vercel.app"),
+            Some("https://my-relay.vercel.app".to_string())
+        );
+        assert_eq!(relay_base_url("http://127.0.0.1:8787///"), Some("http://127.0.0.1:8787".to_string()));
+        assert_eq!(relay_base_url("my-relay.vercel.app"), None);
+        assert_eq!(relay_base_url("   "), None);
+        assert_eq!(relay_base_url(""), None);
+    }
+
+    #[test]
+    fn validate_catches_relay_url_without_scheme() {
+        let mut c = GatewayConfig::default();
+        c.vercel_relay_url = Some("my-relay.vercel.app".into());
+        let p = c.validate();
+        assert!(
+            p.iter().any(|m| m.contains("vercel_relay_url") && m.contains("https://")),
+            "{:?}",
+            p
+        );
+        // С корректным релеем проблем от этого поля нет.
+        c.vercel_relay_url = Some("https://my-relay.vercel.app".into());
+        assert!(c.validate().iter().all(|m| !m.contains("vercel_relay_url")));
     }
 
     #[test]

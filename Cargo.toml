@@ -73,8 +73,11 @@ windows = { version = "0.58", features = [
     "Win32_Foundation",
 ] }
 
-# Единый кастомный log::Log логгер хоста (core rules §2.5)
-log = "0.4"
+# Единый кастомный log::Log логгер хоста (core rules §2.5).
+# `std` включает и `alloc`: gateway ставит лог-фасад через set_boxed_logger
+# (warn/error -> stderr -> gateway.log), перезапись логов назвалась бы
+# «не ставится» без этой фичи.
+log = { version = "0.4", features = ["std"] }
 
 # Движок llama.cpp (tauri-plugin-llama-engine): GPU-детект, VRAM, скачивание моделей.
 # reqwest в плагине объявлен отдельно (default-features=false + rustls, как в хосте).

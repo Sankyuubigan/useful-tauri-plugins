@@ -78,12 +78,41 @@ impl Route {
     }
 }
 
-/// Собрать маршрут для апстрим-пути (например `/v1/chat/completions`).
+/// База релея, пригодная для склейки маршрута, или причина невозможности.
+///
+/// Общий источник для `resolve_route` и Kiro-протокола: если сюда добавить
+/// новое правило (как проверку схемы после кейса 22.10.2026), оно действует
+/// сразу во всех маршрутизаторах, а не в тех копиях, до которых дошли руки.
+/// URL релея **должен** быть абсолютным: `my-relay.vercel.app` без схемы
+/// «настроен», но `format!("{relay}{path}")` даёт scheme-less URL — reqwest
+/// отвечает `Kind::Builder` («builder error»), и пользователь видит
+/// бессмысленное «неверный URL запроса» на каждом запросе.
 ///
 /// Если у провайдера включён релей, но URL релея не задан — падаем **ошибкой**,
 /// а не молча идём напрямую. Причина: пользователь нажал «через релей»,
 /// потому что прямой доступ заблокирован; молчаливый прямой запрос выглядел бы
 /// как «релей сломался» и побудил бы его чинить не то.
+pub fn relay_route_base(provider: &ProviderConfig, config: &GatewayConfig) -> Result<String, String> {
+    match config.vercel_relay_url.as_deref().and_then(cloud_routers_core::config::relay_base_url) {
+        Some(base) => Ok(base),
+        None => {
+            let described = config
+                .vercel_relay_url
+                .as_deref()
+                .filter(|s| !cloud_routers_core::config::trim_base_url(s).is_empty())
+                .map_or_else(
+                    || "не задан".to_string(),
+                    |raw| format!("задан без http:// или https:// префикса: «{raw}»"),
+                );
+            Err(format!(
+                "Провайдер «{}» настроен на работу через релей, но URL релея {}",
+                provider.id, described
+            ))
+        }
+    }
+}
+
+/// Собрать маршрут для апстрим-пути (например `/v1/chat/completions`).
 pub fn resolve_route(
     provider: &ProviderConfig,
     config: &GatewayConfig,
@@ -93,17 +122,7 @@ pub fn resolve_route(
     if !provider.use_relay {
         return Ok(Route::Direct { url: direct });
     }
-    let relay = config
-        .vercel_relay_url
-        .as_deref()
-        .map(cloud_routers_core::config::trim_base_url)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            format!(
-                "Провайдер «{}» настроен на работу через релей, но URL релея не задан",
-                provider.id
-            )
-        })?;
+    let relay = relay_route_base(provider, config)?;
     Ok(Route::Relay {
         url: format!("{relay}{RELAY_PATH_PREFIX}{upstream_path}"),
         target_url: direct,
@@ -264,6 +283,18 @@ mod tests {
     fn relay_blank_url_counts_as_missing() {
         let p = provider("https://api.groq.com/openai/v1", true);
         assert!(resolve_route(&p, &config_with_relay(Some("   "), None), "/v1/chat/completions").is_err());
+    }
+
+    #[test]
+    fn relay_url_without_scheme_is_named_not_builder_error() {
+        // Кейс 22.10.2026: конфиг содержал релей без схемы, и каждый запрос
+        // падал reqwest'ом «builder error». Причина обязана называть поле.
+        let p = provider("https://api.groq.com/openai/v1", true);
+        let err = resolve_route(&p, &config_with_relay(Some("my-relay.vercel.app"), Some("tok")), "/v1/chat/completions")
+            .expect_err("must fail");
+        assert!(err.contains("my-relay.vercel.app"), "{err}");
+        assert!(err.contains("http:// или https://"), "{err}");
+        assert!(!err.contains("builder"), "{err}");
     }
 
     #[test]

@@ -108,8 +108,37 @@ fn print_help() {
     );
 }
 
+/// Минимальный log-фасад: warn/error уходят в stderr.
+///
+/// До 22.10.2026 фасада не было вовсе, и `log::error!` (например, причина
+/// провала sync каталога в admin.rs) не попадал **никуда**: gateway.log
+/// содержал только строку запуска, а пользователь видел пустой журнал и
+/// сломанный каталог. stdout/stderr перенаправляются плагином в gateway.log
+/// (см. `crates/core` spawn), поэтому stderr — уже «в файл», без второй
+/// точки записи в журнал.
+struct StderrLogger;
+
+impl log::Log for StderrLogger {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Warn
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!("[{}] {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
 #[tokio::main]
 async fn main() {
+    // Фасад ставится до parse_args: любое `log::warn!` из дальнейших модулей
+    // (kiro_oauth, admin, respawn) обязано попасть в журнал.
+    let _ = log::set_boxed_logger(Box::new(StderrLogger));
+    log::set_max_level(log::LevelFilter::Warn);
+
     if let Err(e) = run().await {
         // Пишем в stderr: stdout/stderr перенаправлены плагином в gateway.log,
         // но при ручном запуске сообщение должно быть видно в терминале.

@@ -104,12 +104,25 @@ pub struct RelayProbe {
 /// если соединение не установилось — релей недоступен.
 pub async fn probe_relay(state: &AppState) -> Result<RelayProbe, String> {
     let config = state.config();
+    // Единая проверка базы: негодная (без схемы) база релея иначе дала бы
+    // reqwest Kind::Builder («builder error»), а не причину с текстом чинилки.
     let base = config
         .vercel_relay_url
         .as_deref()
-        .map(cloud_routers_core::config::trim_base_url)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| "URL релея не задан".to_string())?;
+        .filter(|s| !cloud_routers_core::config::trim_base_url(s).is_empty())
+        .and_then(cloud_routers_core::config::relay_base_url)
+        .ok_or_else(|| {
+            let raw = config
+                .vercel_relay_url
+                .as_deref()
+                .map(|s| s.trim())
+                .unwrap_or_default();
+            if raw.is_empty() {
+                "URL релея не задан".to_string()
+            } else {
+                format!("URL релея «{raw}» не начинается с http:// или https://")
+            }
+        })?;
     let url = format!("{}{}/__ping", base, crate::upstream::RELAY_PATH_PREFIX);
     let started = std::time::Instant::now();
     let response = state

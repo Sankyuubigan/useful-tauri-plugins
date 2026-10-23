@@ -206,14 +206,11 @@ pub fn start_server(app: &AppHandle, router_id: RouterId, cfg: &RouterConfig) ->
         // Не выкидываем pid: процесс мог подняться чуть позже (антивирус, диск).
         return Ok(pid);
     }
-    // Версию пишем после успешного bind: только тогда процесс точно наш.
-    if let Some(rec) = config::read_server_record(&data_dir) {
-        let mut rec = rec;
-        rec.version = Some(env!("CARGO_PKG_VERSION").to_string());
-        if let Ok(json) = serde_json::to_string_pretty(&rec) {
-            let _ = ko_json_store::write_atomic(&config::server_record_path(&data_dir), &json);
-        }
-    }
+    // Версию ЗАПИСЫВАЕТ САМ БИНАРЬ при старте: main.rs run() вызывает
+    // write_server_record(Some(core VERSION)). Ставить сюда версию плагина
+    // (env!("CARGO_PKG_VERSION") = 0.1.0) нельзя: она затирала бы честную
+    // версию бинаря сразу после bind, и панель показывала «v0.1.0» при живом
+    // 0.1.4 — доказано боем 23.10.2026 (server.json).
     Ok(pid)
 }
 

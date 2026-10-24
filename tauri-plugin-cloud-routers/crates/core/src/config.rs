@@ -26,11 +26,61 @@ pub const DEFAULT_PORT: u16 = 20131;
 /// не должен быть доступен из сети.
 pub const DEFAULT_HOST: &str = "127.0.0.1";
 
+/// Вид релея: Vercel Edge Function.
+pub const RELAY_KIND_VERCEL: &str = "vercel";
+/// Вид релея: Cloudflare Workers.
+pub const RELAY_KIND_CLOUDFLARE: &str = "cloudflare";
+
+/// Подключённый релей («слот»).
+///
+/// После миграции — единственный источник правды про URL и секрет релея;
+/// `vercel_relay_url`/`vercel_relay_token` остаются только как место чтения
+/// старых конфигов и очищаются при первом сохранении (SSOT - документация
+/// миграции см. `GatewayConfig::migrate_relay_slots`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RelaySlot {
+    /// Slug-идентификатор ("vercel", "cf-main"). На него ссылается
+    /// `active_relay`; `/` в id запрещён тем же запретом, что у провайдеров.
+    pub id: String,
+    /// Вид - [`RELAY_KIND_VERCEL`] или [`RELAY_KIND_CLOUDFLARE`].
+    pub kind: String,
+    /// Публичный base релея; при `None` запрос со слотами хранит настройки
+    /// деплоя, но сам релей может быть ещё не развёрнут.
+    pub url: Option<String>,
+    /// Общий секрет воркера: `x-relay-token` одновременно с клиентской
+    /// стороны и `RELAY_TOKEN` в окружении воркера.
+    pub relay_secret: Option<String>,
+    /// Для cloudflare: Account ID деплоя.
+    pub cf_account_id: Option<String>,
+    /// Для cloudflare: имя Worker-скрипта (из него собирается workers.dev URL).
+    pub cf_script_name: Option<String>,
+}
+
+impl Default for RelaySlot {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            kind: RELAY_KIND_VERCEL.to_string(),
+            url: None,
+            relay_secret: None,
+            cf_account_id: None,
+            cf_script_name: None,
+        }
+    }
+}
+
+impl RelaySlot {
+    /// Секрет в_reader для проверки «настроен» или нет (trim пустоты).
+    pub fn usable_secret(&self) -> Option<String> {
+        self.relay_secret.clone().filter(|t| !t.trim().is_empty())
+    }
+}
+
 /// Конфигурация шлюза целиком (`<data_dir>/gateway.json`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct GatewayConfig {
-    /// Порт HTTP-сервера.
+pub struct GatewayConfig {    /// Порт HTTP-сервера.
     pub port: u16,
     /// Интерфейс bind. По умолчанию только loopback.
     pub host: String,
@@ -54,6 +104,14 @@ pub struct GatewayConfig {
     /// конфига, а не выпуском новой версии.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub presets_sources: Vec<String>,
+    /// Подключённые релеи. После [`GatewayConfig::migrate_relay_slots`] —
+    /// единственный источник правды; до него пусто, а смысл живёт в
+    /// legacy-полях `vercel_relay_*`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relays: Vec<RelaySlot>,
+    /// Какой слот используется провайдерами с `use_relay = true`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_relay: Option<String>,
     /// Поля, которых эта версия крейта не знает.
     ///
     /// Сохраняются и переписываются при следующем сохранении. Это не
@@ -75,6 +133,8 @@ impl Default for GatewayConfig {
             vercel_relay_token: None,
             providers: Vec::new(),
             presets_sources: Vec::new(),
+            relays: Vec::new(),
+            active_relay: None,
             extra: BTreeMap::new(),
         }
     }
@@ -307,6 +367,57 @@ impl GatewayConfig {
         self.providers.iter().filter(|p| p.is_routable())
     }
 
+    /// Активный слот релея (тот, что используют `use_relay`-провайдеры).
+    pub fn active_slot(&self) -> Option<&RelaySlot> {
+        let id = self.active_relay.as_deref()?;
+        self.relays.iter().find(|s| s.id == id)
+    }
+
+    /// Vercel-слот (тот, что знает конфиг-совместимая запись через панель).
+    pub fn vercel_slot(&self) -> Option<&RelaySlot> {
+        self.relays.iter().find(|s| s.kind == RELAY_KIND_VERCEL)
+    }
+
+    pub fn vercel_slot_mut(&mut self) -> Option<&mut RelaySlot> {
+        self.relays.iter_mut().find(|s| s.kind == RELAY_KIND_VERCEL)
+    }
+
+    /// URL релея для маршрутизации запросов: активный слот; в конфигах без
+    /// слотов (не мигрировали — не сохраняли после старта) - legacy-поле.
+    pub fn relay_url(&self) -> Option<String> {
+        self.active_slot()
+            .and_then(|s| s.url.clone())
+            .or_else(|| self.vercel_relay_url.clone())
+    }
+
+    /// Секрет релея дляHeaders `x-relay-token`: активный слот, затем legacy.
+    pub fn relay_token(&self) -> Option<String> {
+        self.active_slot().and_then(|s| s.usable_secret()).or_else(|| self.vercel_relay_token.clone())
+    }
+
+    /// Миграция legacy-полей релея в слоты. Идемпотентно, в памяти (файл
+    /// перепишется при следующем сохранении — как миграция `presets_sync_url`).
+    pub fn migrate_relay_slots(&mut self) -> bool {
+        if !self.relays.is_empty() {
+            return false;
+        }
+        if self.vercel_relay_url.is_none() && self.vercel_relay_token.is_none() {
+            return false;
+        }
+        self.relays.push(RelaySlot {
+            id: "vercel".to_string(),
+            kind: RELAY_KIND_VERCEL.to_string(),
+            url: self.vercel_relay_url.clone(),
+            relay_secret: self.vercel_relay_token.clone(),
+            cf_account_id: None,
+            cf_script_name: None,
+        });
+        self.active_relay = Some("vercel".to_string());
+        self.vercel_relay_url = None;
+        self.vercel_relay_token = None;
+        true
+    }
+
     /// Базовый URL шлюза для подключения IDE.
     pub fn base_url(&self) -> String {
         format!("http://{}:{}", self.host, self.port)
@@ -340,6 +451,30 @@ impl GatewayConfig {
                 problems.push(format!(
                     "vercel_relay_url «{raw}» не начинается с http:// или https:// — релей обязан быть абсолютным URL"
                 ));
+            }
+        }
+        for slot in &self.relays {
+            if slot.id.trim().is_empty() {
+                problems.push("релей: пустой id слота".to_string());
+            }
+            if slot.kind != RELAY_KIND_VERCEL && slot.kind != RELAY_KIND_CLOUDFLARE {
+                problems.push(format!(
+                    "релей «{}»: неизвестный вид «{}» (ожидали vercel или cloudflare)",
+                    slot.id, slot.kind
+                ));
+            }
+            if let Some(raw) = slot.url.as_deref().filter(|s| !trim_base_url(s).is_empty()) {
+                if relay_base_url(raw).is_none() {
+                    problems.push(format!(
+                        "релей «{}»: URL «{raw}» не начинается с http:// или https://",
+                        slot.id
+                    ));
+                }
+            }
+        }
+        if let Some(id) = self.active_relay.as_deref() {
+            if !self.relays.iter().any(|s| s.id == id) {
+                problems.push(format!("активный релей «{id}» не найден среди слотов"));
             }
         }
         problems
@@ -425,6 +560,86 @@ mod tests {
         c.providers.push(provider("bad/id", "https://x.dev"));
         let p = c.validate();
         assert!(p.iter().any(|m| m.contains("разделитель")), "{:?}", p);
+    }
+
+    #[test]
+    fn migrate_relay_slots_moves_legacy_into_slot_and_clears_it() {
+        // Договор миграции 23.10.2026: слот — единственный источник правды,
+        // legacy-поля после переноса пусты, активный слот назначен.
+        let mut c = GatewayConfig::default();
+        c.vercel_relay_url = Some("https://my-relay.vercel.app".into());
+        c.vercel_relay_token = Some("tok".into());
+        assert!(c.migrate_relay_slots(), "миграция должна сработать");
+        assert_eq!(c.relays.len(), 1);
+        let slot = &c.relays[0];
+        assert_eq!(slot.id, "vercel");
+        assert_eq!(slot.kind, RELAY_KIND_VERCEL);
+        assert_eq!(slot.url.as_deref(), Some("https://my-relay.vercel.app"));
+        assert_eq!(slot.relay_secret.as_deref(), Some("tok"));
+        assert_eq!(c.active_relay.as_deref(), Some("vercel"));
+        assert_eq!(c.vercel_relay_url, None);
+        assert_eq!(c.vercel_relay_token, None);
+        // Идемпотентность: второй вызов ничего не делает.
+        assert!(!c.migrate_relay_slots());
+        assert_eq!(c.relays.len(), 1);
+    }
+
+    #[test]
+    fn migrate_relay_slots_is_noop_without_legacy() {
+        let mut c = GatewayConfig::default();
+        assert!(!c.migrate_relay_slots());
+        assert!(c.relays.is_empty());
+        assert_eq!(c.active_relay, None);
+    }
+
+    #[test]
+    fn relay_url_and_token_prefer_active_slot_over_legacy() {
+        let mut c = GatewayConfig::default();
+        c.vercel_relay_url = Some("https://legacy.vercel.app".into());
+        c.vercel_relay_token = Some("legacy-tok".into());
+        // До миграции работает legacy.
+        assert_eq!(c.relay_url().as_deref(), Some("https://legacy.vercel.app"));
+        assert_eq!(c.relay_token().as_deref(), Some("legacy-tok"));
+        // После миграции + добавления CF-слота активным становится CF.
+        c.migrate_relay_slots();
+        c.relays.push(RelaySlot {
+            id: "cf-main".into(),
+            kind: RELAY_KIND_CLOUDFLARE.into(),
+            url: Some("https://cf-relay.workers.dev".into()),
+            relay_secret: Some("cf-tok".into()),
+            ..Default::default()
+        });
+        c.active_relay = Some("cf-main".into());
+        assert_eq!(c.relay_url().as_deref(), Some("https://cf-relay.workers.dev"));
+        assert_eq!(c.relay_token().as_deref(), Some("cf-tok"));
+        // После миграции legacy-поле стёрто (SSOT): без активного слота URL нет.
+        c.active_relay = None;
+        assert_eq!(c.relay_url(), None);
+    }
+
+    #[test]
+    fn validate_catches_unknown_relay_kind_and_dangling_active() {
+        let mut c = GatewayConfig::default();
+        c.relays.push(RelaySlot {
+            id: "cfx".into(),
+            kind: "netlify".into(),
+            url: Some("https://r.workers.dev".into()),
+            ..Default::default()
+        });
+        c.active_relay = Some("ghost".into());
+        let p = c.validate();
+        assert!(p.iter().any(|m| m.contains("неизвестный вид")), "{:?}", p);
+        assert!(p.iter().any(|m| m.contains("ghost")), "{:?}", p);
+        // Корректный слот не даёт проблем.
+        c.relays.clear();
+        c.relays.push(RelaySlot {
+            id: "cf-main".into(),
+            kind: RELAY_KIND_CLOUDFLARE.into(),
+            url: Some("https://cf.workers.dev".into()),
+            ..Default::default()
+        });
+        c.active_relay = Some("cf-main".into());
+        assert!(c.validate().iter().all(|m| !m.contains("релей")), "{:?}", c.validate());
     }
 
     #[test]

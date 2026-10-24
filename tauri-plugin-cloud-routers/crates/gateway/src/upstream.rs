@@ -93,11 +93,11 @@ impl Route {
 /// потому что прямой доступ заблокирован; молчаливый прямой запрос выглядел бы
 /// как «релей сломался» и побудил бы его чинить не то.
 pub fn relay_route_base(provider: &ProviderConfig, config: &GatewayConfig) -> Result<String, String> {
-    match config.vercel_relay_url.as_deref().and_then(cloud_routers_core::config::relay_base_url) {
+    match config.relay_url().as_deref().and_then(cloud_routers_core::config::relay_base_url) {
         Some(base) => Ok(base),
         None => {
             let described = config
-                .vercel_relay_url
+                .relay_url()
                 .as_deref()
                 .filter(|s| !cloud_routers_core::config::trim_base_url(s).is_empty())
                 .map_or_else(
@@ -126,7 +126,7 @@ pub fn resolve_route(
     Ok(Route::Relay {
         url: format!("{relay}{RELAY_PATH_PREFIX}{upstream_path}"),
         target_url: direct,
-        token: config.vercel_relay_token.clone().filter(|t| !t.trim().is_empty()),
+        token: config.relay_token().filter(|t| !t.trim().is_empty()),
     })
 }
 

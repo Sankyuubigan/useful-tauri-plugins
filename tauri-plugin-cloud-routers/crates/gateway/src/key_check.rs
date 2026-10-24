@@ -181,7 +181,8 @@ pub fn build_check_plan(provider: &ProviderConfig, config: &GatewayConfig) -> Re
         // Общий helper релея: «настроен, но не задан / задан без схемы» —
         // жёсткая ошибка, молчаливого прямого запроса нет.
         relay_route_base(provider, config)?;
-        let token = config.vercel_relay_token.as_deref().map(str::trim).filter(|t| !t.is_empty());
+        let token_owned = config.relay_token();
+        let token = token_owned.as_deref().map(str::trim).filter(|t| !t.is_empty());
         if token.is_none() {
             return Err(
                 "релей настроен, но секрет релея не задан — впишите его в воркер (кнопка \
@@ -216,7 +217,7 @@ pub async fn run_plan(state: &AppState, provider: &ProviderConfig, plan: CheckPl
     } else {
         plan.target_url.clone()
     };
-    let relay_token = config.vercel_relay_token.clone().filter(|t| !t.trim().is_empty());
+    let relay_token = config.relay_token().filter(|t| !t.trim().is_empty());
 
     let client = reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)

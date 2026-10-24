@@ -66,7 +66,8 @@ fn kind_str(router_id: RouterId) -> &'static str {
 }
 
 fn build_status(app: &AppHandle, router_id: RouterId) -> RouterStatus {
-    let cfg = config::load_config(&app, router_id);
+    // `mut` — gateway-ветка может кэшировать probe-версию бинаря в конфиге.
+    let mut cfg = config::load_config(&app, router_id);
     let dir = router_dir(app, router_id);
     let data_dir = config::router_data_dir(app, router_id);
     let port = cfg.port_or_default(router_id);
@@ -90,7 +91,26 @@ fn build_status(app: &AppHandle, router_id: RouterId) -> RouterStatus {
             let exe_present = gateway_process::gateway_exe(&dir).exists();
             let running = exe_present && gw == process::GatewayState::OursRunning;
             let rec = gateway_process::read_record(&data_dir);
-            let version = rec.and_then(|r| r.version);
+            // Версия для показа: живая (server_record) приоритетнее запомненной
+            // при установке — при остановке `clear_server_record` затирает рекорд,
+            // и панель без fallback показывала бы пустоту (баг 23.10.2026).
+            let mut version = gateway_process::display_version(
+                rec.as_ref().and_then(|r| r.version.clone()),
+                cfg.installed_version.clone(),
+            );
+            if version.is_none() && exe_present && !running {
+                // Конфиги до 23.10.2026 могли не иметь `installed_version`:
+                // один раз спрашиваем сам бинарь и кэшируем ответ в конфиге —
+                // build_status опрашивается панелью постоянно, повторять спавн
+                // `--version` на каждом запросе нельзя.
+                if let Ok(v) = crate::router::gateway_installer::probe_version(
+                    &gateway_process::gateway_exe(&dir),
+                ) {
+                    cfg.installed_version = Some(v.clone());
+                    config::save_config(app, router_id, &cfg).ok();
+                    version = Some(v);
+                }
+            }
             let message = if !exe_present {
                 format!("{} не установлен. Нажмите «Установить».", router_id)
             } else if running {
@@ -112,7 +132,13 @@ fn build_status(app: &AppHandle, router_id: RouterId) -> RouterStatus {
                     )
                 }
             } else {
-                "Установлен, не запущен".to_string()
+                format!(
+                    "Установлен, не запущен{}",
+                    version
+                        .as_deref()
+                        .map(|v| format!(" (v{v})"))
+                        .unwrap_or_default()
+                )
             };
             (exe_present, running, version, false, exe_present, message)
         }
@@ -641,6 +667,25 @@ pub fn set_api_key(app: AppHandle, router: String, key: Option<String>) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stopped_status_shows_installed_version() {
+        // PRP 23.10.2026 шаг 1: при остановке `clear_server_record` затирает
+        // рекорд, и панель месяцами врала «Установлен, не запущен» без версии,
+        // хотя установщик её запоминал в конфиге. Формула приоритета:
+        use crate::router::gateway_process::display_version as dv;
+        assert_eq!(
+            dv(Some("0.1.3".into()), Some("0.1.2".into())),
+            Some("0.1.3".into()),
+            "живая запись важнее конфига: отражает реальный процесс"
+        );
+        assert_eq!(
+            dv(None, Some("0.1.2".into())),
+            Some("0.1.2".into()),
+            "остановлен → рекорд пуст, показываем запомненную из конфига"
+        );
+        assert_eq!(dv(None, None), None, "нет ни одного источника — не выдумываем");
+    }
 
     #[test]
     fn normalize_router_dir_appends_subdir_for_parent_path() {

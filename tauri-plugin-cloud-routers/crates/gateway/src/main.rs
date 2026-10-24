@@ -34,6 +34,7 @@ mod protocol;
 mod protocol_kiro;
 mod proxy;
 mod relay;
+mod relay_cf;
 mod respawn;
 mod server;
 mod upstream;

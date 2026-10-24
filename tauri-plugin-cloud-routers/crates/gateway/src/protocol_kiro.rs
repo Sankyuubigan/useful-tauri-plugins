@@ -144,7 +144,7 @@ impl VendorProtocol for KiroProtocol {
             let route = Route::Relay {
                 url: format!("{relay}{}/ListAvailableModels", crate::upstream::RELAY_PATH_PREFIX),
                 target_url: url,
-                token: config.vercel_relay_token.clone().filter(|t| !t.trim().is_empty()),
+                token: config.relay_token().filter(|t| !t.trim().is_empty()),
             };
             crate::upstream::apply_route_headers(&route, &mut headers);
             route
@@ -179,8 +179,8 @@ impl VendorProtocol for KiroProtocol {
                     "{relay}{}/generateAssistantResponse",
                     crate::upstream::RELAY_PATH_PREFIX
                 ),
-                target_url: target.clone(),
-                token: config.vercel_relay_token.clone().filter(|t| !t.trim().is_empty()),
+                    target_url: target.clone(),
+                    token: config.relay_token().filter(|t| !t.trim().is_empty()),
             };
             (route, target)
         } else {

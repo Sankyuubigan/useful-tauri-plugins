@@ -27,7 +27,9 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use cloud_routers_core::config::{AccountKey, ProviderConfig, trim_base_url};
+use cloud_routers_core::config::{
+    AccountKey, ProviderConfig, RELAY_KIND_CLOUDFLARE, RELAY_KIND_VERCEL, trim_base_url,
+};
 use cloud_routers_core::presets;
 use cloud_routers_core::store as core_store;
 
@@ -36,6 +38,7 @@ use crate::key_check;
 use crate::logbuf::mask_secret;
 use crate::proxy;
 use crate::relay;
+use crate::relay_cf;
 
 /// Тело ошибки управления.
 #[derive(Debug, Serialize)]
@@ -100,10 +103,9 @@ async fn status(State(state): State<AppState>) -> Response {
         presets_count: catalog.providers.len(),
         presets_source: source.as_str(),
         presets_updated_at: catalog.updated_at.clone(),
-        relay_url: config.vercel_relay_url.clone(),
+        relay_url: config.relay_url(),
         relay_token_set: config
-            .vercel_relay_token
-            .as_deref()
+            .relay_token()
             .map(|t| !t.trim().is_empty())
             .unwrap_or(false),
         auto_start: config.auto_start,
@@ -261,10 +263,9 @@ async fn get_config(State(state): State<AppState>) -> Response {
         port: config.port,
         host: config.host.clone(),
         auto_start: config.auto_start,
-        vercel_relay_url: config.vercel_relay_url.clone(),
+        vercel_relay_url: config.relay_url(),
         vercel_relay_token_set: config
-            .vercel_relay_token
-            .as_deref()
+            .relay_token()
             .map(|t| !t.trim().is_empty())
             .unwrap_or(false),
         presets_sources: config.effective_presets_sources(),
@@ -326,20 +327,27 @@ async fn put_config(State(state): State<AppState>, Json(patch): Json<ConfigPatch
             }
             if let Some(v) = patch.vercel_relay_url.as_deref() {
                 let v = v.trim();
-                if v.is_empty() {
-                    c.vercel_relay_url = None;
+                // Схемная проверка здесь же, а не в момент запроса: релей
+                // без схемы (реальный кейс 22.10.2026 — «my-relay.vercel.app»)
+                // ломает КАЖДЫЙ запрос через него бессмысленным
+                // «builder error». Пусть это будет ошибка сохранения с
+                // понятным текстом, а не поломка каталога через час.
+                let base = if v.is_empty() {
+                    None
                 } else {
-                    // Схемная проверка здесь же, а не в момент запроса: релей
-                    // без схемы (реальный кейс 22.10.2026 — «my-relay.vercel.app»)
-                    // ломает КАЖДЫЙ запрос через него бессмысленным
-                    // «builder error». Пусть это будет ошибка сохранения с
-                    // понятным текстом, а не поломка каталога через час.
                     let base = cloud_routers_core::config::relay_base_url(v);
                     if base.is_none() {
                         return Err(format!(
                             "URL релея «{v}» должен начинаться с http:// или https://"
                         ));
                     }
+                    base
+                };
+                // Запись идёт в Vercel-слот, если он есть (миграция 23.10.2026);
+                // в конфигах без слотов — в legacy-поле (совместимая запись).
+                if let Some(slot) = c.vercel_slot_mut() {
+                    slot.url = base;
+                } else {
                     c.vercel_relay_url = base;
                 }
             }
@@ -349,7 +357,12 @@ async fn put_config(State(state): State<AppState>, Json(patch): Json<ConfigPatch
                 // посимвольно, и пустая строка выглядела бы как заданный секрет,
                 // который отвергает каждый запрос. Поэтому пустое = сброс в None.
                 let v = v.trim();
-                c.vercel_relay_token = if v.is_empty() { None } else { Some(v.to_string()) };
+                let secret = if v.is_empty() { None } else { Some(v.to_string()) };
+                if let Some(slot) = c.vercel_slot_mut() {
+                    slot.relay_secret = secret;
+                } else {
+                    c.vercel_relay_token = secret;
+                }
             }
             if let Some(list) = patch.presets_sources.as_deref() {
                 let mut cleaned: Vec<String> = Vec::with_capacity(list.len());
@@ -383,8 +396,8 @@ async fn put_config(State(state): State<AppState>, Json(patch): Json<ConfigPatch
         port: config.port,
         host: config.host.clone(),
         auto_start: config.auto_start,
-        vercel_relay_url: config.vercel_relay_url.clone(),
-        vercel_relay_token_set: config.vercel_relay_token.as_deref().map(|t| !t.trim().is_empty()).unwrap_or(false),
+        vercel_relay_url: config.relay_url(),
+        vercel_relay_token_set: config.relay_token().map(|t| !t.trim().is_empty()).unwrap_or(false),
         presets_sources: config.effective_presets_sources(),
         providers: config.providers.iter().map(|p| provider_dto(&state, p)).collect(),
         problems: config.validate(),
@@ -1282,11 +1295,11 @@ async fn fetch_source_text(
     // КАЖДОМ источнике. Теперь негодная база даёт явную причину с текстом
     // «исправьте поле», а не четыре нулевразумительных «builder error».
     let relay_ready = allow_relay
-        && config.vercel_relay_url.is_some()
-        && config.vercel_relay_token.as_deref().map(|t| !t.trim().is_empty()).unwrap_or(false);
+        && config.relay_url().is_some()
+        && config.relay_token().map(|t| !t.trim().is_empty()).unwrap_or(false);
     if relay_ready {
-        let relay_raw = config
-            .vercel_relay_url
+        let relay_url_owned = config.relay_url();
+        let relay_raw = relay_url_owned
             .as_deref()
             .filter(|s| !trim_base_url(s).is_empty());
         let relay_url = relay_raw.and_then(cloud_routers_core::config::relay_base_url);
@@ -1302,8 +1315,7 @@ async fn fetch_source_text(
             }
         };
         let relay_token = config
-            .vercel_relay_token
-            .as_deref()
+            .relay_token()
             .filter(|t| !t.trim().is_empty())
             .expect("проверено выше");
 
@@ -1389,12 +1401,8 @@ async fn fetch_source_text_with_fallback(
     config: &cloud_routers_core::config::GatewayConfig,
     url: &str,
 ) -> (Result<String, String>, Option<String>) {
-    let relay_ready = config.vercel_relay_url.is_some()
-        && config
-            .vercel_relay_token
-            .as_deref()
-            .map(|t| !t.trim().is_empty())
-            .unwrap_or(false);
+    let relay_ready = config.relay_url().is_some()
+        && config.relay_token().map(|t| !t.trim().is_empty()).unwrap_or(false);
 
     if !relay_ready {
         return (fetch_source_text(state, config, url, false).await, None);
@@ -1444,23 +1452,53 @@ async fn relay_token(State(state): State<AppState>) -> ApiResult<Json<serde_json
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct DeployBody {
+    /// Токен платформы: Vercel или Cloudflare — что именно, задаёт `kind`.
+    /// (Имя поля сохранено `vercel_token` ради совместимости панели.)
     vercel_token: String,
+    /// Vercel: имя проекта; в Cloudflare-пути не используется.
     project: Option<String>,
+    /// Cloudflare: Account ID, если токен видит несколько аккаунтов.
+    account_id: Option<String>,
+    /// Cloudflare: имя воркера (`https://{script}.{sub}.workers.dev`).
+    script: Option<String>,
+    /// "vercel" (по умолчанию, совместимая панель) | "cloudflare".
+    kind: Option<String>,
 }
 
 async fn relay_deploy(State(state): State<AppState>, Json(body): Json<DeployBody>) -> ApiResult<Json<serde_json::Value>> {
-    let result = relay::deploy_relay(&state, &body.vercel_token, body.project.as_deref())
-        .await
-        .map_err(|e| bad_request(e))?;
-    // Развёрнутый URL сразу сохраняем: пользователь не должен копировать его
-    // руками и не должен получить «получилось, но в поле пусто».
-    let url = result.url.clone();
-    state
-        .update_config(|c| {
-            c.vercel_relay_url = Some(url);
-            Ok(())
-        })
-        .map_err(|e| internal(e))?;
+    let result: relay::DeployResult = match body.kind.as_deref().unwrap_or(RELAY_KIND_VERCEL) {
+        RELAY_KIND_CLOUDFLARE => {
+            // CF-путь сам пишет свой слот и делает его активным (relay_cf.rs).
+            relay_cf::deploy_relay_cf(&state, &body.vercel_token, body.account_id.as_deref(), body.script.as_deref())
+                .await
+                .map_err(|e| bad_request(e))?
+        }
+        _ => {
+            let result = relay::deploy_relay(&state, &body.vercel_token, body.project.as_deref())
+                .await
+                .map_err(|e| bad_request(e))?;
+            // Развёрнутый URL сразу сохраняем: пользователь не должен копировать
+            // его руками и не должен получить «получилось, но в поле пусто».
+            // Развернули — и СДЕЛАЛИ АКТИВНЫМ: панель не заставляет пользователя
+            // после деплоя искать ещё одну кнопку.
+            let url = result.url.clone();
+            state
+                .update_config(|c| {
+                    c.migrate_relay_slots();
+                    let activated = c.vercel_slot_mut().map(|slot| {
+                        slot.url = Some(url.clone());
+                        slot.id.clone()
+                    });
+                    match activated {
+                        Some(id) => c.active_relay = Some(id),
+                        None => c.vercel_relay_url = Some(url),
+                    }
+                    Ok(())
+                })
+                .map_err(|e| internal(e))?;
+            result
+        }
+    };
     notify_host(&state, "relay-deployed");
     Ok(Json(serde_json::to_value(result).map_err(|e| internal(e.to_string()))?))
 }
@@ -1468,6 +1506,104 @@ async fn relay_deploy(State(state): State<AppState>, Json(body): Json<DeployBody
 async fn relay_test(State(state): State<AppState>) -> ApiResult<Json<serde_json::Value>> {
     let probe = relay::probe_relay(&state).await.map_err(|e| bad_request(e))?;
     Ok(Json(serde_json::to_value(probe).map_err(|e| internal(e.to_string()))?))
+}
+
+// ────────────────────────────── Слоты релея ──────────────────────────────
+
+/// Слот релея для панели.
+///
+/// `url` — не секрет: это публичный адрес воркера. Секрет отдаётся только
+/// флагом «задан» — по тому же правилу «секреты маскируются», что и в
+/// `ConfigDto`.
+#[derive(Debug, Serialize)]
+struct RelaySlotDto {
+    id: String,
+    kind: String,
+    url: Option<String>,
+    relay_secret_set: bool,
+    cf_account_id: Option<String>,
+    cf_script_name: Option<String>,
+    active: bool,
+}
+
+/// Список слотов релея + активный путь доставки.
+async fn relay_slots_list(State(state): State<AppState>) -> Json<serde_json::Value> {
+    let config = state.config();
+    let slots: Vec<RelaySlotDto> = config
+        .relays
+        .iter()
+        .map(|s| RelaySlotDto {
+            id: s.id.clone(),
+            kind: s.kind.clone(),
+            url: s.url.clone(),
+            // «Задан» = непустая непробельная строка: воркер сравнивает
+            // заголовок посимвольно, пробельный секрет отклонял бы всё 401.
+            relay_secret_set: s
+                .relay_secret
+                .as_deref()
+                .map(|t| !t.trim().is_empty())
+                .unwrap_or(false),
+            cf_account_id: s.cf_account_id.clone(),
+            cf_script_name: s.cf_script_name.clone(),
+            active: config.active_relay.as_deref() == Some(s.id.as_str()),
+        })
+        .collect();
+    Json(serde_json::json!({ "slots": slots, "active": config.active_relay }))
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct RelaySlotIdBody {
+    id: String,
+}
+
+/// Переключить активный путь доставки на слот.
+async fn relay_slot_activate(
+    State(state): State<AppState>,
+    Json(body): Json<RelaySlotIdBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let id = body.id.clone();
+    let exists = state.config().relays.iter().any(|s| s.id == id);
+    if !exists {
+        return Err(not_found(format!("Слот релея «{}» не найден", id)));
+    }
+    state
+        .update_config(move |c| {
+            if c.relays.iter().any(|s| s.id == id) {
+                c.active_relay = Some(id.clone());
+            }
+            Ok(())
+        })
+        .map_err(|e| internal(e))?;
+    notify_host(&state, "relay-slot-activated");
+    Ok(Json(serde_json::json!({ "ok": true, "active": body.id })))
+}
+
+/// Удалить слот.
+///
+/// Удаление АКТИВНОГО слота снимает его с активного пути (`active_relay: None`):
+/// доставка честно перестаёт работать, а не продолжает указывать на
+/// несуществующий релей.
+async fn relay_slot_delete(
+    State(state): State<AppState>,
+    Json(body): Json<RelaySlotIdBody>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let id = body.id.clone();
+    let exists = state.config().relays.iter().any(|s| s.id == id);
+    if !exists {
+        return Err(not_found(format!("Слот релея «{}» не найден", id)));
+    }
+    state
+        .update_config(move |c| {
+            c.relays.retain(|s| s.id != id);
+            if c.active_relay.as_deref() == Some(id.as_str()) {
+                c.active_relay = None;
+            }
+            Ok(())
+        })
+        .map_err(|e| internal(e))?;
+    notify_host(&state, "relay-slot-deleted");
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 // ────────────────────────────── Журнал ──────────────────────────────
@@ -1580,9 +1716,15 @@ async fn check_keys_gemini(
         .map_err(bad_request)?;
     Ok(Json(serde_json::to_value(&summary).expect("сводка проверки сериализуется")))
 }
-
 /// Собрать все маршруты управления (используется в [`crate::server`]).
-pub fn router() -> axum::Router<AppState> {
+///
+/// Единый механизм «админ-отказ в журнале» (23.10.2026): middleware ниже ловит
+/// ответ 4xx/5xx любого маршрута и пишет причину в журнал событий (и дальше —
+/// в `gateway.log` через `EventLog::push`). Причина формируется в хендлерах
+/// (`err/bad_request/not_found/internal`), дублировать `log::!` в каждом из них
+/// не нужно.
+#[allow(clippy::needless_pass_by_value)]
+pub fn router(state: AppState) -> axum::Router<AppState> {
     // Синтаксис параметров — axum 0.7 (`:id`): с Cargo.lock 0.7.9 формы
     // `{id}` не захватываются (matchit 0.7 трактует их как обычные литеральные
     // сегменты), маршруты не совпадают и дашборд получает пустую 404 на всякое
@@ -1619,9 +1761,49 @@ pub fn router() -> axum::Router<AppState> {
         .route("/api/relay/token", axum::routing::get(relay_token))
         .route("/api/relay/deploy", axum::routing::post(relay_deploy))
         .route("/api/relay/test", axum::routing::post(relay_test))
+        .route("/api/relay/slots", axum::routing::get(relay_slots_list))
+        .route("/api/relay/slots/activate", axum::routing::post(relay_slot_activate))
+        .route("/api/relay/slots/delete", axum::routing::post(relay_slot_delete))
         .route("/api/events", axum::routing::get(get_events))
         .route("/api/restart", axum::routing::post(restart))
         .route("/api/shutdown", axum::routing::post(shutdown))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            log_admin_errors,
+        ))
+}
+
+/// Миддлварь журнала отказов admin-API.
+///
+/// Без неё причины ошибок (`{ «error»: «…» }`) умирали бы только в HTTP-ответе:
+/// дашборд показал тост и всё, журналы (`gateway.log`, вкладка событий) молчали.
+/// `/api/events` исключён — это сам журнал: писать в журнал о чтении журнала —
+/// бесконечный feedback-цикл.
+async fn log_admin_errors(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let path = req.uri().path().to_owned();
+    let method = req.method().to_string();
+    let response = next.run(req).await;
+    let status = response.status().as_u16();
+    if status < 400 || path == "/api/events" {
+        return response;
+    }
+    let (parts, body) = response.into_parts();
+    // Тело ошибки маскируется в точке формирования (см. доку модуля); здесь
+    // только ограничение размера: наш JSON ошибок короткий.
+    let bytes = match axum::body::to_bytes(body, 4096).await {
+        Ok(b) => b,
+        Err(_) => axum::body::Bytes::new(),
+    };
+    let reason: String = String::from_utf8_lossy(&bytes).trim().chars().take(300).collect();
+    state
+        .events()
+        .error(format!("{} {} → {}: {}", method, path, status, reason));
+    // Отдаём клиенту ОРИГИНАЛЬНОЕ тело (не обрезанное): обрезка — только для журнала.
+    Response::from_parts(parts, axum::body::Body::from(bytes))
 }
 
 #[cfg(test)]
@@ -1999,26 +2181,27 @@ mod tests {
         let dir = tmp("relaytoken");
         let state = AppState::new(&dir).expect("state");
 
-        put_config(
+        let _ = put_config(
             State(state.clone()),
             Json(ConfigPatch { vercel_relay_token: Some("  my-secret  ".into()), ..Default::default() }),
         )
         .await
         .expect("принять секрет");
         assert_eq!(
-            cloud_routers_core::load_config(&dir).vercel_relay_token.as_deref(),
+            cloud_routers_core::load_config(&dir).relay_token().as_deref(),
             Some("my-secret"),
             "секрет должен сохраниться без краёв пробелов"
         );
 
-        put_config(
+        let _ = put_config(
             State(state.clone()),
             Json(ConfigPatch { vercel_relay_token: Some("   ".into()), ..Default::default() }),
         )
         .await
         .expect("сброс секрета");
         assert_eq!(
-            cloud_routers_core::load_config(&dir).vercel_relay_token, None,
+            cloud_routers_core::load_config(&dir).relay_token(),
+            None,
             "пустая строка — это сброс, а не «секрет из пробелов»"
         );
         let _ = std::fs::remove_dir_all(&dir);
@@ -2051,7 +2234,7 @@ mod tests {
     async fn relay_token_endpoint_creates_and_returns_secret() {
         let dir = tmp("relaytokenep");
         let state = AppState::new(&dir).expect("state");
-        assert!(state.config().vercel_relay_token.is_none());
+        assert!(state.config().relay_token().is_none());
 
         let r = relay_token(State(state)).await.expect("секрет выдаётся");
         let bytes = axum::body::to_bytes(r.into_response().into_body(), usize::MAX).await.expect("body");
@@ -2059,9 +2242,113 @@ mod tests {
         let token = v["token"].as_str().expect("token");
         assert_eq!(token.len(), 64, "ожидался 64 hex-символа: {}", token);
         assert_eq!(
-            cloud_routers_core::load_config(&dir).vercel_relay_token.as_deref(),
+            cloud_routers_core::load_config(&dir).relay_token().as_deref(),
             Some(token),
             "выданный секрет обязан сохраниться, а не жить только в ответе"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Активация слота обязана переключить путь доставки: геттер
+    /// `relay_url()` читает АКТИВНЫЙ слот, а не legacy/первый попавшийся.
+    /// Это контракта панели: кнопка «Сделать активным» реально переключает,
+    /// а не только красит карточку.
+    #[tokio::test]
+    async fn relay_slot_activate_switches_active_relay() {
+        let dir = tmp("slots_activate");
+        let state = AppState::new(&dir).expect("state");
+        state
+            .update_config(|c| {
+                c.relays.push(cloud_routers_core::config::RelaySlot {
+                    id: "vercel".into(),
+                    kind: "vercel".into(),
+                    url: Some("https://vercel-relay.vercel.app".into()),
+                    ..Default::default()
+                });
+                c.relays.push(cloud_routers_core::config::RelaySlot {
+                    id: "cloudflare".into(),
+                    kind: "cloudflare".into(),
+                    url: Some("https://cf-relay.workers.dev".into()),
+                    ..Default::default()
+                });
+                c.active_relay = Some("vercel".into());
+                Ok(())
+            })
+            .expect("seed");
+
+        let r = relay_slot_activate(
+            State(state.clone()),
+            Json(RelaySlotIdBody { id: "cloudflare".into() }),
+        )
+        .await
+        .expect("activate ok");
+        let bytes = axum::body::to_bytes(r.into_response().into_body(), usize::MAX).await.expect("body");
+        let v: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(v["active"], "cloudflare");
+
+        assert_eq!(
+            state.config().relay_url().as_deref(),
+            Some("https://cf-relay.workers.dev"),
+            "после активации доставка идёт через активированный слот"
+        );
+        assert_eq!(
+            cloud_routers_core::load_config(&dir).active_relay.as_deref(),
+            Some("cloudflare"),
+            "активация обязана пережить перезапуск шлюза"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Активация неизвестного слота — 404 (и middleware это событие
+    /// свалится в журнал отказов), конфиг не трогается.
+    #[tokio::test]
+    async fn relay_slot_activate_unknown_id_is_404() {
+        let dir = tmp("slots_unknown");
+        let state = AppState::new(&dir).expect("state");
+        let r = relay_slot_activate(
+            State(state.clone()),
+            Json(RelaySlotIdBody { id: "nope".into() }),
+        )
+        .await
+        .expect_err("must be 404");
+        assert_eq!(r.into_response().status(), StatusCode::NOT_FOUND);
+        assert!(state.config().active_relay.is_none(), "неудачная активация не должна менять конфиг");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Удаление активного слота снимает его с активного пути: доставка
+    /// честно пуста, а не указывает на несуществующий релей.
+    #[tokio::test]
+    async fn relay_slot_delete_removes_and_deactivates() {
+        let dir = tmp("slots_delete");
+        let state = AppState::new(&dir).expect("state");
+        state
+            .update_config(|c| {
+                c.relays.push(cloud_routers_core::config::RelaySlot {
+                    id: "cloudflare".into(),
+                    kind: "cloudflare".into(),
+                    url: Some("https://cf-relay.workers.dev".into()),
+                    ..Default::default()
+                });
+                c.active_relay = Some("cloudflare".into());
+                Ok(())
+            })
+            .expect("seed");
+
+        let _ = relay_slot_delete(
+            State(state.clone()),
+            Json(RelaySlotIdBody { id: "cloudflare".into() }),
+        )
+        .await
+        .expect("delete ok");
+
+        let cfg = state.config();
+        assert!(cfg.relays.is_empty(), "слот должен быть удалён");
+        assert!(cfg.active_relay.is_none(), "активный указатель обязан был сняться");
+        assert_eq!(
+            cfg.relay_url(),
+            None,
+            "удалённый слот больше не обслуживает доставку (а legacy без URL — тем более)"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2476,6 +2763,43 @@ mod tests {
             .map(|e| e["message"].as_str().expect("msg"))
             .collect();
         assert_eq!(msgs, vec!["третье"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn failing_admin_request_is_logged_to_event_log() {
+        // PRP 23.10.2026, шаг 2: отказ admin-API обязан попадать в журнал
+        // событий (и через `EventLog::push` в `gateway.log`). Кейс юзера:
+        // «Проверить ключи» упало тостом — а журнал молчал.
+        let dir = tmp("errors_logged");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        core_store::save(&dir, &GatewayConfig::default()).expect("save");
+        let state = AppState::new(&dir).expect("state");
+        let app = crate::server::build(state.clone());
+
+        let r = app
+            .oneshot(
+                Request::builder()
+                    .method(axum::http::Method::POST)
+                    .uri("/api/providers/unknown/keys/check")
+                    .body(Body::empty())
+                    .expect("req"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+
+        let events = state.events().tail(10);
+        let hit = events.iter().find(|e| {
+            e.level == "error"
+                && e.message.contains("/api/providers/unknown/keys/check")
+                && e.message.contains("404")
+        });
+        assert!(
+            hit.is_some(),
+            "404-отказ обязан быть в журнале; журнал: {:?}",
+            events
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

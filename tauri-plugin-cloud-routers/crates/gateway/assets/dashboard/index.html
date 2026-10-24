@@ -55,8 +55,9 @@
 <!-- ────────────────────────────── Релей ────────────────────────────── -->
 <section class="gw-page" id="page-relay" hidden>
   <div class="gw-note">
-    Релей — Edge-функция на Vercel. Она нужна, когда провайдер недоступен из вашей сети
-    (региональная блокировка или фильтрация трафика). Запросы выходят с территории Vercel.
+    Релей — воркер на Vercel или Cloudflare Workers. Он нужен, когда провайдер
+    недоступен из вашей сети (региональная блокировка или фильтрация трафика):
+    запросы выходят с территории платформы релея.
   </div>
 
   <div class="gw-card">
@@ -64,24 +65,47 @@
     <div class="gw-kv"><span>URL</span><b id="relay-url">—</b></div>
     <div class="gw-kv"><span>Секрет</span><b id="relay-token">—</b></div>
     <div class="gw-row">
-      <button id="btn-relay-test" class="gw-ghost">Проверить релей</button>
+      <button id="btn-relay-test" class="gw-ghost">Проверить активный релей</button>
       <a id="relay-worker-link" class="gw-ghost gw-btn" target="_blank" rel="noopener"
-         href="/api/relay/worker">Исходник воркера</a>
+         href="/api/relay/worker">Исходник воркера (Vercel)</a>
     </div>
     <div id="relay-test-result" class="gw-hint"></div>
   </div>
 
   <div class="gw-card">
+    <h3>Мои релеи</h3>
+    <div id="relay-slots" class="gw-cards"></div>
+    <div class="gw-hint">
+      Активный релей обслуживает провайдеров с галочкой «через релей».
+      Остальные хранятся напоследок — включаются кнопкой «Сделать активным».
+      Секрет <code>RELAY_TOKEN</code> общий для всех релеев.
+    </div>
+  </div>
+
+  <div class="gw-card">
     <h3>Развернуть автоматически</h3>
     <div class="gw-hint">
-      Нужен Vercel Access Token (vercel.com/account/tokens). Шлюз задеплоит
-      воркер сам и подставит URL автоматически.
+      Vercel: Access Token (vercel.com/account/tokens). Cloudflare: API-токен с
+      правом «Workers Scripts: Edit» (dash.cloudflare.com → My Profile → API Tokens).
+      Шлюз сам загрузит воркер, поставит секрет <code>RELAY_TOKEN</code> и подставит URL.
     </div>
-    <label>Токен Vercel
+    <label>Платформа
+      <select id="relay-kind">
+        <option value="vercel">Vercel</option>
+        <option value="cloudflare">Cloudflare Workers (workers.dev)</option>
+      </select>
+    </label>
+    <label>Токен платформы
       <input id="relay-token-input" type="password" placeholder="vercel_…" autocomplete="off">
     </label>
-    <label>Имя проекта (необязательно)
+    <label id="relay-vercel-only">Имя проекта (необязательно)
       <input id="relay-project-input" type="text" placeholder="cloud-routers-relay" autocomplete="off">
+    </label>
+    <label id="relay-cf-only" hidden>Имя воркера (необязательно)
+      <input id="relay-script-input" type="text" placeholder="cloud-routers-relay" autocomplete="off">
+    </label>
+    <label id="relay-cf-account" hidden>Account ID (только если токен видит несколько аккаунтов)
+      <input id="relay-account-input" type="text" placeholder="необязательно" autocomplete="off">
     </label>
     <div class="gw-row">
       <button id="btn-relay-deploy" class="gw-primary">Развернуть на Vercel</button>
@@ -92,7 +116,8 @@
   <div class="gw-card">
     <h3>Развернуть вручную</h3>
     <div class="gw-hint">
-      Надёжный путь, если авто-деплой недоступен. Скопируйте исходник воркера,
+      Ручной путь ниже — про Vercel (для Cloudflare проще авто-деплой выше).
+      Надёжный, если авто-деплой недоступен. Скопируйте исходник воркера,
       создайте на Vercel Edge-проект, задайте переменные окружения
       <code>RELAY_TOKEN</code> (обязательно — нажмите «Показать секрет», чтобы
       скопировать его здесь) и, по желанию,

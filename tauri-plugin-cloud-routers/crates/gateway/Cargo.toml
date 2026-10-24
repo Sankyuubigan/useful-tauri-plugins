@@ -26,6 +26,8 @@ reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "stream",
     "http2",
+    # CF Workers upload — multipart/form-data (metadata + модуль воркера).
+    "multipart",
     # rustls instead of the OS TLS stack: identical handshake for every host
     # regardless of Windows/MITM proxies in between.
     "rustls-tls-native-roots",

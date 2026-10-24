@@ -29,6 +29,7 @@ export async function refreshAll() {
     renderProviders();
     renderModels();
     renderRelay();
+    void loadRelaySlots();
   } catch (e) {
     fail('Не удалось загрузить настройки', e);
   }
@@ -121,33 +122,127 @@ async function testRelay() {
 async function deployRelay() {
   const btn = $('#btn-relay-deploy');
   const out = $('#relay-deploy-result');
+  const kind = $('#relay-kind').value;
   const token = $('#relay-token-input').value.trim();
   if (!token) {
-    out.textContent = 'Введите токен Vercel';
+    out.textContent = kind === 'cloudflare' ? 'Введите Cloudflare API-токен' : 'Введите токен Vercel';
     out.style.color = 'var(--warning)';
     return;
   }
   busy(btn, true);
   out.textContent = 'разворачиваем…';
   try {
-    const r = await api('/api/relay/deploy', {
-      method: 'POST',
-      body: JSON.stringify({
-        vercel_token: token,
-        project: $('#relay-project-input').value.trim() || null,
-      }),
-    });
+    const body = kind === 'cloudflare'
+      ? {
+          vercel_token: token,
+          kind,
+          script: $('#relay-script-input').value.trim() || null,
+          account_id: $('#relay-account-input').value.trim() || null,
+        }
+      : {
+          vercel_token: token,
+          kind,
+          project: $('#relay-project-input').value.trim() || null,
+        };
+    const r = await api('/api/relay/deploy', { method: 'POST', body: JSON.stringify(body) });
     out.textContent = `готово: ${r.url}`;
     out.style.color = 'var(--success)';
     $('#relay-token-input').value = '';
+    $('#relay-account-input').value = '';
     await refreshAll();
     notifyHost('relay-deployed');
   } catch (e) {
-    // Ошибку показываем целиком: в ней текст ответа Vercel API, по которому
-    // видно, что именно не так (нет прав, неверный токен, лимит).
+    // Ошибку показываем целиком: в ней текст ответа платформы (нет прав,
+    // неверный токен, «несколько аккаунтов»…), по которому видно, что не так.
     out.textContent = `не удалось: ${e.message}`;
     out.style.color = 'var(--danger)';
   } finally { busy(btn, false); }
+}
+
+/** Поля формы видны по выбранной платформе: пользователь деплоит на
+ *  Cloudflare — ему не говорят «имя проекта», а просят платформенный
+ *  Account ID/имя воркера. */
+function relayKindSync() {
+  const cf = $('#relay-kind')?.value === 'cloudflare';
+  const vercelOnly = $('#relay-vercel-only');
+  const cfOnly = $('#relay-cf-only');
+  if (!vercelOnly || !cfOnly) return; // разметка вкладки ещё не загружена
+  vercelOnly.hidden = cf;
+  cfOnly.hidden = !cf;
+  const cfAccount = $('#relay-cf-account');
+  if (cfAccount) cfAccount.hidden = !cf;
+  const tokenInput = $('#relay-token-input');
+  if (tokenInput) tokenInput.placeholder = cf ? 'Cloudflare API-токен…' : 'vercel_…';
+  const deployBtn = $('#btn-relay-deploy');
+  if (deployBtn) deployBtn.textContent = cf ? 'Развернуть на Cloudflare' : 'Развернуть на Vercel';
+}
+
+// ─────────────────────── слоты релеев ───────────────────────
+
+const SLOT_KIND_NAMES = { vercel: 'Vercel', cloudflare: 'Cloudflare Workers' };
+
+async function loadRelaySlots() {
+  try {
+    const r = await api('/api/relay/slots');
+    renderRelaySlots(r);
+  } catch (e) { /* слоты не блокируют остальную страницу */ }
+}
+
+function renderRelaySlots(r) {
+  const box = $('#relay-slots');
+  const slots = (r && r.slots) || [];
+  if (!slots.length) {
+    box.innerHTML =
+      '<div class="gw-empty">Релеев ещё нет — разверните авто-деплоем или вставьте URL вручную.</div>';
+    return;
+  }
+  box.innerHTML = slots.map((s) => {
+    const urlRow = s.url
+      ? `<div class="gw-kv"><span>URL</span><b class="gw-break"><a href="${esc(s.url)}" target="_blank" rel="noopener">${esc(s.url)}</a></b></div>`
+      : '';
+    const cfRows = s.kind === 'cloudflare'
+      ? (s.cf_script_name ? `<div class="gw-kv"><span>Воркер</span><b>${esc(s.cf_script_name)}</b></div>` : '') +
+        (s.cf_account_id ? `<div class="gw-kv"><span>Аккаунт</span><b>${esc(s.cf_account_id)}</b></div>` : '')
+      : '';
+    const secret = s.relay_secret_set ? 'задан' : 'не задан — релей отвечает 503 на каждый запрос';
+    return `<div class="gw-card">` +
+      `<div class="gw-card-head"><span class="gw-name">${esc(SLOT_KIND_NAMES[s.kind] || s.kind)}</span>` +
+      `<span class="gw-id">${esc(s.id)}</span>` +
+      `${s.active ? '<span class="gw-badge">активен</span>' : ''}</div>` +
+      urlRow + cfRows +
+      `<div class="gw-kv"><span>Секрет RELAY_TOKEN</span><b>${secret}</b></div>` +
+      `<div class="gw-row">` +
+      `${s.active ? '' : `<button class="gw-ghost" data-slot-activate="${esc(s.id)}">Сделать активным</button>`}` +
+      `<button class="gw-ghost" data-slot-delete="${esc(s.id)}">Удалить</button>` +
+      `</div></div>`;
+  }).join('');
+  $$('#relay-slots [data-slot-activate]').forEach(btn =>
+    btn.addEventListener('click', () => void activateRelaySlot(btn.dataset.slotActivate, btn)));
+  $$('#relay-slots [data-slot-delete]').forEach(btn =>
+    btn.addEventListener('click', () => void deleteRelaySlot(btn.dataset.slotDelete, btn)));
+}
+
+async function activateRelaySlot(id, btn) {
+  busy(btn, true);
+  try {
+    await api('/api/relay/slots/activate', { method: 'POST', body: JSON.stringify({ id }) });
+    toast(`Активный релей: ${id}`);
+    await refreshAll();
+    notifyHost('relay-slot-activated');
+  } catch (e) { fail('Не удалось переключить релей', e); }
+  finally { busy(btn, false); }
+}
+
+async function deleteRelaySlot(id, btn) {
+  if (!window.confirm(`Удалить релей «${id}»? Если он активен, провайдеры с галочкой «через релей» перестанут работать.`)) return;
+  busy(btn, true);
+  try {
+    await api('/api/relay/slots/delete', { method: 'POST', body: JSON.stringify({ id }) });
+    toast('Релей удалён');
+    await refreshAll();
+    notifyHost('relay-slot-deleted');
+  } catch (e) { fail('Не удалось удалить релей', e); }
+  finally { busy(btn, false); }
 }
 
 async function saveRelayUrl() {
@@ -320,6 +415,8 @@ function init() {
   $('#btn-relay-test').addEventListener('click', () => void testRelay());
   $('#btn-relay-deploy').addEventListener('click', () => void deployRelay());
   $('#btn-relay-save').addEventListener('click', () => void saveRelayUrl());
+  $('#relay-kind').addEventListener('change', relayKindSync);
+  relayKindSync();
   $('#btn-relay-show-token').addEventListener('click', (e) => {
     const out = $('#relay-token-manual');
     if (out.hidden) { void showRelayToken(); return; }

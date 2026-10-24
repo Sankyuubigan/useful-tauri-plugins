@@ -112,6 +112,18 @@ pub fn read_record(data_dir: &Path) -> Option<config::ServerRecord> {
     config::read_server_record(data_dir)
 }
 
+/// Версия для показа в панели: живой `server_record` приоритетнее запомненной
+/// при установке `RouterConfig.installed_version` (конфиг может отстать, если
+/// процесс заменён свежим бинарём). При остановке рекорд затёрт — остаётся
+/// конфиг; если и его нет, показывает `None` (build_status сам решает, спавнить
+/// ли `--version` — side-effect, поэтому в чистую функцию не входит).
+///
+/// Чистая формула выделена отдельно ради тестов (`stopped_status_shows_installed_
+/// version` в commands.rs).
+pub fn display_version(rec_version: Option<String>, installed: Option<String>) -> Option<String> {
+    rec_version.or(installed)
+}
+
 /// Ответ ли `/v1/models` наш шлюз: значит, процесс жив и отвечает.
 ///
 /// `401`/`403` тоже считаются «жив» — как и в `client::is_healthy`: сервер

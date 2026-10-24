@@ -95,6 +95,15 @@ pub fn load(data_dir: &Path) -> GatewayConfig {
     match serde_json::from_str::<GatewayConfig>(&raw) {
         Ok(mut cfg) => {
             migrate_legacy_presets_sync_url(&mut cfg, &path);
+            // 23.10.2026: vercel_relay_url/vercel_relay_token → слоты релея
+            // (`relays` + `active_relay`). В памяти, идемпотентно: файл будет
+            // переписан в новом формате при следующем сохранении.
+            if cfg.migrate_relay_slots() {
+                log::info!(
+                    "cloud-routers: {}: релей перенесён из vercel_relay_* в слоты (relays)",
+                    path.display()
+                );
+            }
             cfg
         }
         Err(e) => {
@@ -405,6 +414,30 @@ mod tests {
         let eff = cfg.effective_presets_sources();
         assert_eq!(eff.len(), crate::presets::sources::DEFAULT_SOURCES.len());
         assert_eq!(eff[0], crate::presets::sources::MODELS_DEV_API);
+    }
+
+    #[test]
+    fn load_migrates_legacy_relay_fields_into_slots() {
+        // 23.10.2026: старый конфиг с vercel_relay_* при загрузке получает
+        // слот «vercel» — и перестраивается каждый раз одинаково (миграция
+        // идемпотентна, write на диск произойдёт при очередном сохранении).
+        let d = tmp_dir("relmig");
+        write_raw(
+            &d,
+            r#"{"port":20131,"providers":[],"vercel_relay_url":"https://my-relay.vercel.app","vercel_relay_token":"tok"}"#,
+        );
+        let cfg = load(&d);
+        assert_eq!(cfg.relays.len(), 1, "{:?}", cfg.relays);
+        let slot = &cfg.relays[0];
+        assert_eq!(slot.id, "vercel");
+        assert_eq!(slot.kind, crate::config::RELAY_KIND_VERCEL);
+        assert_eq!(slot.url.as_deref(), Some("https://my-relay.vercel.app"));
+        assert_eq!(slot.relay_secret.as_deref(), Some("tok"));
+        assert_eq!(cfg.active_relay.as_deref(), Some("vercel"));
+        // Идемпотентность повторной загрузки того же файла.
+        let cfg2 = load(&d);
+        assert_eq!(cfg2.relays, cfg.relays);
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     fn sample_session() -> crate::protocol::OAuthSession {

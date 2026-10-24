@@ -63,18 +63,19 @@ const RELAY_TOKEN_ENV: &str = "RELAY_TOKEN";
 /// токен (пустой токен воркер примет как «не настроено» и отдаст `503`, а
 /// пользователь решил бы, что сломался релей, а не генератор).
 pub fn ensure_relay_token(state: &AppState) -> Result<String, String> {
-    if let Some(existing) = state
-        .config()
-        .vercel_relay_token
-        .as_deref()
-        .filter(|t| cloud_routers_core::is_usable_token(Some(t)))
-    {
-        return Ok(existing.to_string());
+    if let Some(existing) = state.config().relay_token().filter(|t| cloud_routers_core::is_usable_token(Some(t))) {
+        return Ok(existing);
     }
     let fresh = cloud_routers_core::generate_relay_token().map_err(|e| e.to_string())?;
     let for_config = fresh.clone();
+    // Секрет пишется в Vercel-слот, если он есть (миграция 23.10.2026);
+    // в конфигах без слотов — в legacy-поле (совместимая запись).
     state.update_config(move |c| {
-        c.vercel_relay_token = Some(for_config);
+        if let Some(slot) = c.vercel_slot_mut() {
+            slot.relay_secret = Some(for_config);
+        } else {
+            c.vercel_relay_token = Some(for_config);
+        }
         Ok(())
     })?;
     log::info!("создан новый секрет релея ({} символов)", fresh.len());
@@ -107,13 +108,13 @@ pub async fn probe_relay(state: &AppState) -> Result<RelayProbe, String> {
     // Единая проверка базы: негодная (без схемы) база релея иначе дала бы
     // reqwest Kind::Builder («builder error»), а не причину с текстом чинилки.
     let base = config
-        .vercel_relay_url
+        .relay_url()
         .as_deref()
         .filter(|s| !cloud_routers_core::config::trim_base_url(s).is_empty())
         .and_then(cloud_routers_core::config::relay_base_url)
         .ok_or_else(|| {
-            let raw = config
-                .vercel_relay_url
+            let relay_url_owned = config.relay_url();
+            let raw = relay_url_owned
                 .as_deref()
                 .map(|s| s.trim())
                 .unwrap_or_default();
@@ -523,7 +524,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let state = AppState::new(&dir).expect("state");
         assert!(
-            state.config().vercel_relay_token.is_none(),
+            state.config().relay_token().is_none(),
             "в свежем конфиге секрета быть не должно"
         );
 
@@ -531,7 +532,9 @@ mod tests {
         assert_eq!(token.len(), 64, "ожидался 64 hex-символа: {}", token);
         assert!(token.chars().all(|c| c.is_ascii_hexdigit()), "не hex: {}", token);
 
-        let on_disk = cloud_routers_core::load_config(&dir).vercel_relay_token;
+        // Читаем через геттер: конфиг без слотов → миграция на чтении переносит
+        // legacy-значение в слот, и геттер его возвращает (SSOT-чтение).
+        let on_disk = cloud_routers_core::load_config(&dir).relay_token();
         assert_eq!(
             on_disk.as_deref(),
             Some(token.as_str()),

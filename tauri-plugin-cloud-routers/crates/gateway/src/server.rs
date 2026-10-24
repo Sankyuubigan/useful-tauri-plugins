@@ -145,7 +145,7 @@ pub fn build(state: AppState) -> Router {
         .route("/style.css", get(dashboard_css))
         .route("/app.js", get(dashboard_js))
         .route("/", get(dashboard_html))
-        .merge(admin::router())
+        .merge(admin::router(state.clone()))
         .layer(
             CorsLayer::new()
                 .allow_origin(tower_http::cors::Any)

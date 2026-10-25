@@ -40,19 +40,19 @@
     "audio": false
   },
   {
-    "name": "bonsai-27b",
-    "size_gb": "3.6",
-    "download_url": "https://huggingface.co/prism-ml/Bonsai-27B-gguf/resolve/main/Bonsai-27B-Q1_0.gguf?download=true",
-    "mmproj_url": "https://huggingface.co/prism-ml/Bonsai-27B-gguf/resolve/main/Bonsai-27B-mmproj-Q8_0.gguf?download=true",
-    "tokenizer_id": "Qwen/Qwen3.6-27B",
+    "name": "ternary-bonsai-2-9b",
+    "size_gb": "2.56",
+    "download_url": "https://huggingface.co/prism-ml/Ternary-Bonsai-2-9B-gguf/resolve/main/Ternary-Bonsai-2-9B-Q2_0.gguf?download=true",
+    "mmproj_url": "https://huggingface.co/prism-ml/Ternary-Bonsai-2-9B-gguf/resolve/main/Ternary-Bonsai-2-9B-mmproj-Q8_0.gguf?download=true",
+    "tokenizer_id": "Qwen/Qwen3.5-9B",
     "uncen": false,
     "vision": true,
     "audio": false
   },
   {
-    "name": "bonsai-2-27b-crack",
-    "size_gb": "5.95",
-    "download_url": "https://huggingface.co/dealignai/Bonsai-2-27B-1bit-CRACK-GGUF/resolve/main/Bonsai-2-27B-PTQ1_0-CRACK.gguf?download=true",
+    "name": "bonsai-2-27b-heretic",
+    "size_gb": "7.21",
+    "download_url": "https://huggingface.co/OS-Software/Ternary-Bonsai-2-27B-Uncensored-Heretic-GGUF/resolve/main/Ternary-Bonsai-2-27B-Uncensored-Heretic-PQ2_0.gguf?download=true",
     "mmproj_url": "https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf/resolve/main/Ternary-Bonsai-2-27B-mmproj-Q8_0.gguf?download=true",
     "tokenizer_id": "Qwen/Qwen3.8-27B",
     "uncen": true,

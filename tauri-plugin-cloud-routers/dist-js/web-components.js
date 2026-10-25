@@ -1,4 +1,4 @@
-import { ensureStarted, getCombos, getStatus, installOrUpdate, onProgress, openDashboard, reinstall, ROUTER_IDS, setRouterDir, stop, } from './index';
+import { ensureStarted, getCombos, getStatus, installOrUpdate, onProgress, onStatusChange, openDashboard, reinstall, ROUTER_IDS, setRouterDir, stop, } from './index';
 import { checkUpdate, getUpdateState, onUpdateState, setUpdateState } from './updates';
 import { onLoginState } from './login_events';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
@@ -496,6 +496,7 @@ export class CloudRoutersPanel extends HTMLElement {
         this.states = new Map();
         this.combosByRouter = new Map();
         this.offProgress = null;
+        this.offStatus = null;
         this.visibilityObserver = null;
         this.refreshTimer = null;
         /**
@@ -546,11 +547,22 @@ export class CloudRoutersPanel extends HTMLElement {
         });
         this.observeVisibility();
         this.refreshTimer = window.setInterval(() => void this.refresh(), 15000);
+        // События жизни шлюза от супервизора (тик 3 с): смерть/подъём отражаются
+        // на пилюле немедленно, а не через 15-с опрос — 15-с интервал остаётся
+        // фолбэком (источник правды один: getStatus с живой пробой порта).
+        onStatusChange((p) => {
+            if (p.router === this.router)
+                void this.refresh(p.router);
+        }).then((off) => {
+            this.offStatus = off;
+        });
     }
     disconnectedCallback() {
         this.unsubUpdate?.();
         this.offProgress?.();
         this.offProgress = null;
+        this.offStatus?.();
+        this.offStatus = null;
         this.visibilityObserver?.disconnect();
         this.visibilityObserver = null;
         if (this.refreshTimer !== null) {

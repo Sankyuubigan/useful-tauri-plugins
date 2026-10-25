@@ -295,8 +295,25 @@ pub fn stop_server(dir: &Path, port: u16, data_dir: &Path) -> Result<(), String>
         //
         // Сверка идёт с `dir`, а не с папкой по умолчанию: пользователь мог
         // перенести установку через «Изменить путь», и сверка с дефолтом
-        // заставила бы отказаться убивать собственный же шлюз.
+        // заставила бы отказаться убивать собственный шлюз.
         //
+        // Исключение — протухшая запись с переиспользованным pid (реальный
+        // кейс 25.10.2026: шлюз умер, его pid 32884 отошёл браузеру thorium).
+        // Живой шлюз ВСЕГДА слушает свой порт; если порт свободен, нашего
+        // шлюза нет в принципе, и записью в чужой живой процесс является
+        // мусор, а не сирота — сирота держал бы порт. Чистим и считаем
+        // остановку успешной: удалять чужой процесс всё равно не требуется.
+        // Порт занят, но не нами — прежний отказ без снятия записи.
+        if !port_open(port, Duration::from_millis(200)) {
+            config::clear_server_record(data_dir);
+            log::warn!(
+                "🧹 запись шлюза указывала на pid {}, но это не наш бинарь, и порт {} свободен \
+                 — pid переиспользован ОС, запись протухла и убрана",
+                rec.pid,
+                port
+            );
+            return Ok(());
+        }
         // Запись при этом НЕ снимается: pid жив, и снеся её, мы оставили бы
         // процесс-сироту — записи нет, останавливать нечем, статус врёт. Раньше
         // запись стиралась, и шлюз, запущенный ДРУГИМ проектом (папка у него
@@ -485,11 +502,17 @@ mod tests {
         let my_pid = std::process::id();
         config::write_server_record(&data_dir, my_pid, 59998, Some("test".into()));
 
+        // Порт обязан быть ЗАНЯТ: сценарий теста — «порт держит чужой процесс».
+        // Со свободным портом это легальная протухшая запись (см. тест
+        // stale_record_with_reused_pid_and_free_port_is_cleared), а не отказ.
+        let occupant = std::net::TcpListener::bind("127.0.0.1:59998").expect("порт занят под оккупанта");
+
         // Вызов обязан завершиться отказом, не убив тестовый процесс. Если бы
         // проверки не было, `taskkill /F /T /PID <наш pid>` оборвал бы весь прогон.
         // Отказ (а не молчаливый Ok) — чтобы кнопка показала ошибку, а не
         // «остановлено» при живом процессе.
         let err = stop_server(&install_dir, 59998, &data_dir).expect_err("чужой pid убивать нельзя");
+        drop(occupant);
         assert!(err.contains("чужой"), "ошибка обязана называть причину: {}", err);
 
         // Запись остаётся: pid жив, и снеся её, мы превратили бы живой процесс
@@ -500,6 +523,35 @@ mod tests {
             rec.map(|r| r.pid),
             Some(my_pid),
             "запись о живом процессе обязана пережить отказ в остановке"
+        );
+        let _ = std::fs::remove_dir_all(&data_dir);
+        let _ = std::fs::remove_dir_all(&install_dir);
+    }
+
+    /// Регресс 25.10.2026: шлюз умер, его pid переиспользовала ОС (реально —
+    /// браузер thorium). Запись вела на чужой ЖИВОЙ процесс, порт шлюза был
+    /// свободен. Старый код вечными попытками «остановить» чужой pid блокировал
+    /// установку обновления. Теперь: чужой pid + свободный порт = запись мусор
+    /// (живой шлюз всегда слушает порт), она убирается, остановка — Ok.
+    #[test]
+    fn stale_record_with_reused_pid_and_free_port_is_cleared() {
+        static SEQ: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let data_dir = crate::router::test_scratch::scratch_dir(&format!("cr_gwproc_reusedpid_{}", seq));
+        let install_dir = crate::router::test_scratch::scratch_dir(&format!("cr_gwproc_reusedpid_inst_{}", seq));
+        let _ = std::fs::remove_dir_all(&data_dir);
+        std::fs::create_dir_all(&data_dir).expect("mkdir");
+
+        // Плежём запись на СВОЙ живой процесс (тестовый pid) — заведомо не шлюз,
+        // как браузер в реальном кейсе. Порт фиксированно свободный (как 59998/59999
+        // в соседних тестах).
+        let my_pid = std::process::id();
+        config::write_server_record(&data_dir, my_pid, 59997, Some("0.1.7".into()));
+
+        stop_server(&install_dir, 59997, &data_dir).expect("свободный порт — останавливать нечего");
+        assert!(
+            !config::server_record_path(&data_dir).exists(),
+            "протухшая запись обязана быть убрана, иначе установка обновления блокируется навсегда"
         );
         let _ = std::fs::remove_dir_all(&data_dir);
         let _ = std::fs::remove_dir_all(&install_dir);

@@ -168,12 +168,27 @@ fn is_noisy_http_debug(metadata: &Metadata) -> bool {
         .any(|prefix| metadata.target().starts_with(prefix))
 }
 
+/// Итоговое решение «пишем ли запись». Единая точка для `log()` и `enabled()`.
+fn writes(record: &Record) -> bool {
+    !is_noisy_http_debug(record.metadata())
+}
+
 impl Log for AppLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
         !is_noisy_http_debug(metadata)
     }
 
     fn log(&self, record: &Record) {
+        // Фильтр шума обязан стоять ЗДЕСЬ, а не только в `enabled()`:
+        // `log!`-макрос крейта `log` вызывает только `Log::log`
+        // (log-0.4 `__private_api::log_impl`), метод `enabled()` на этом пути
+        // НЕ вызывается вовсе. Фильтр в одном `enabled()` не удержал ни одной
+        // строки — тест проверял его прямым вызовом и дал ложную уверенность
+        // (инцидент 25.10.2026: «starting new connection» часами сыпался в
+        // файл при зелёном тесте).
+        if !writes(record) {
+            return;
+        }
         let msg = bounded_message(&record.args().to_string());
         write_regular(record.level().as_str(), &msg);
         if record.level() == Level::Error {

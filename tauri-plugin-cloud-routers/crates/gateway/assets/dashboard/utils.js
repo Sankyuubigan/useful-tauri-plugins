@@ -22,10 +22,20 @@ export const state = {
 };
 
 export async function api(path, options = {}) {
-  const res = await fetch(path, {
-    headers: { 'content-type': 'application/json' },
-    ...options,
-  });
+  let res;
+  try {
+    res = await fetch(path, {
+      headers: { 'content-type': 'application/json' },
+      ...options,
+    });
+  } catch (e) {
+    // Сетевой отказ (упавший шлюз) ≠ HTTP-ошибка: страница больше не может
+    // спросить сервер ни о чём, поэтому единственный честный выход — офлайн-
+    // режим с автоперезагрузкой (зомби-страница стала возможной ровно из-за
+    // отсутствия этого различия: инцидент «отказано в подключении» 25.10.26).
+    markOffline();
+    throw new Error('шлюз недоступен');
+  }
   const text = await res.text();
   let body = null;
   if (text) {
@@ -35,6 +45,46 @@ export async function api(path, options = {}) {
     throw new Error((body && body.error) || `HTTP ${res.status}`);
   }
   return body;
+}
+
+let offlineTimer = null;
+
+/** Офлайн-режим: баннер + проба /api/health раз в 2 с → автоперезагрузка.
+ *
+ * Загруженный дашборд обязан восстанавливаться сам: JS на странице ошибки
+ * браузера не исполняется, а перезагрузка сбрасывает курсор журнала и весь
+ * локальный стейт — единственный источник правды (REST API) перечитывается
+ * целиком. Повторный вызов идемпотентен. */
+export function markOffline() {
+  const el = $('#offline-banner');
+  if (el) el.hidden = false;
+  if (offlineTimer) return;
+  offlineTimer = setInterval(async () => {
+    try {
+      const r = await fetch('/api/health', { cache: 'no-store' });
+      if (r.ok) {
+        clearInterval(offlineTimer);
+        offlineTimer = null;
+        window.location.reload();
+      }
+    } catch { /* шлюз всё ещё мёртв — ждём следующей пробы */ }
+  }, 2000);
+}
+
+/** Отправить ошибку JS дашборда в журнал шлюза (POST /api/ui-error).
+ *
+ * Best-effort: ошибки сети здесь глотаются всегда — репортёр не имеет права
+ * породить новую ошибку или цикл (фактически запись дублируется в журнал
+ * через зеркалирование /api/events → лог хоста, E2 25.10.26). */
+export function reportUiError(where, e) {
+  const message = String((e && (e.stack || e.message)) || e).slice(0, 500);
+  try {
+    fetch('/api/ui-error', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ where: String(where).slice(0, 120), message }),
+    }).catch(() => { /* шлюз может быть мёртв — репортёр молчит */ });
+  } catch { /* и синхронно тоже */ }
 }
 
 export function toast(message, kind = 'ok') {
@@ -48,6 +98,7 @@ export function toast(message, kind = 'ok') {
 
 export function fail(where, e) {
   console.error(where, e);
+  reportUiError(where, e);
   toast(`${where}: ${e.message || e}`, 'err');
 }
 

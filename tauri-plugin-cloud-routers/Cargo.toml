@@ -1,6 +1,9 @@
 [package]
 name = "tauri-plugin-cloud-routers"
-version = "0.1.0"
+# Версия в локстепе с crates/core и crates/gateway: reconcile() сверяет версию
+# работающего бинаря шлюза (core VERSION) с этой. Рассинхрон (плагин 0.1.0 при
+# шлюзе 0.1.8) давал ложный warn «версии не совпадают» при каждом старте хоста.
+version = "0.1.9"
 edition = "2021"
 links = "tauri-plugin-cloud-routers"
 description = "Reusable cloud router gateway: self-contained install (portable node.exe + npm tgz), lazy start with persistent background process, combos list, web dashboard and OpenAI-compatible chat completion (SSOT for King Orch and other hosts)"

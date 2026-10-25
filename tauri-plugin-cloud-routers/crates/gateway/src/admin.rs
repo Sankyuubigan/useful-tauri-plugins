@@ -1629,6 +1629,67 @@ async fn get_events(State(state): State<AppState>, axum::extract::Query(q): axum
     Json(serde_json::json!({ "events": events, "last_seq": last_seq })).into_response()
 }
 
+/// Тело `POST /api/ui-error`: отчёт дашборда об ошибке JS/сети.
+#[derive(Debug, Deserialize)]
+struct UiErrorBody {
+    /// Где случилось (имя функции или `window.onerror`). Ключевое слово Rust,
+    /// поэтому поле переименовано через serde.
+    #[serde(default, rename = "where")]
+    where_text: String,
+    #[serde(default)]
+    message: String,
+}
+
+/// Отчёт об ошибке JS дашборда → RAM-журнал шлюза.
+///
+/// Сетевой отказ fetch не порождает HTTP-ответа, серверная middleware его не
+/// видит — до 25.10.2026 такой отказ дашборда («отказано в подключении») не
+/// попадал ни в журнал, ни в логи хоста. Дашборд репортит сюда сам
+/// (`utils.js reportUiError`), записи уходят зеркалом (`gateway_events.rs`)
+/// в лог приложения с префиксом `gateway:`.
+///
+/// Кривое/пустое тело — 400 по контракту `check_keys_gemini`: молчаливый
+/// откат к дефолту маскировал бы сломанного репортёра.
+async fn report_ui_error(State(state): State<AppState>, body: axum::body::Bytes) -> Response {
+    if body.is_empty() {
+        return bad_request("тело запроса — ожидается JSON {\"where\": \"…\", \"message\": \"…\"}");
+    }
+    let parsed: UiErrorBody = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            return bad_request(format!(
+                "тело запроса — ожидается JSON {{\"where\": \"…\", \"message\": \"…\"}}: {e}"
+            ));
+        }
+    };
+    let where_text = parsed.where_text.trim();
+    let message = parsed.message.trim();
+    if message.is_empty() {
+        return bad_request("поле message обязательно");
+    }
+    // Хвост как у journal-строк проверки ключей (≤300): stack-trace целиком
+    // журналу не нужен, полезные события он вытеснять не должен.
+    state.events().push(
+        "warn",
+        format!("ui: {}: {}", where_text, tail_chars(message, 300)),
+    );
+    StatusCode::OK.into_response()
+}
+
+/// Хвост строки длиной ≤ `max` символов (граница символов, не байт —
+/// сообщения дашборда содержат кириллицу).
+fn tail_chars(s: &str, max: usize) -> &str {
+    let total = s.chars().count();
+    if total <= max {
+        return s;
+    }
+    let skip = total - max;
+    s.char_indices()
+        .nth(skip)
+        .map(|(i, _)| &s[i..])
+        .unwrap_or("")
+}
+
 /// Сообщить хосту (панели настроек), что конфигурация изменилась.
 ///
 /// Хост держит свой список комбо для выпадающих списков. Без уведомления он
@@ -1700,18 +1761,43 @@ async fn health_check(State(state): State<AppState>) -> Response {
     .into_response()
 }
 
+/// Тело запроса проверки ключей. Оба поля опциональны: дашборд шлёт тело
+/// только когда пользователь выбрал модели.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct CheckKeysBody {
+    /// Модели, по которым проверить ключи (санитайзит `key_check`).
+    models: Vec<String>,
+}
+
 /// Проверить все активные Gemini-ключи провайдера через `:countTokens`
 /// (лимит генерации не расходуется). Логику исполняет [`crate::key_check`],
 /// обработчик — только разбор зависимостей и код ответа: диагностическая
 /// причина («не Gemini», «релей без URL») приходит в тост дашборда как 400.
+/// Тело опционально: `{"models": [...]}` — проверка по выбранным моделям,
+/// пустое тело — по дефолтному кандидату провайдера.
 async fn check_keys_gemini(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    body: axum::body::Bytes,
 ) -> ApiResult<Json<serde_json::Value>> {
+    // Bytes не отклоняет запрос без тела (в отличие от Json) — пусто значит
+    // «без явного списка»; кривой JSON — 400 с читаемой причиной, а не
+    // молчаливый откат к дефолту.
+    let requested = if body.is_empty() {
+        None
+    } else {
+        let parsed: CheckKeysBody = serde_json::from_slice(&body).map_err(|e| {
+            bad_request(format!(
+                "тело запроса — ожидается JSON {{\"models\": [\"…\"]}}: {e}"
+            ))
+        })?;
+        Some(parsed.models)
+    };
     let Some(provider) = state.config().provider(&id).cloned() else {
         return Err(not_found(format!("Провайдер «{}» не найден", id)));
     };
-    let summary = key_check::check_provider_keys(&state, &provider)
+    let summary = key_check::check_provider_keys(&state, &provider, requested.as_deref())
         .await
         .map_err(bad_request)?;
     Ok(Json(serde_json::to_value(&summary).expect("сводка проверки сериализуется")))
@@ -1765,6 +1851,7 @@ pub fn router(state: AppState) -> axum::Router<AppState> {
         .route("/api/relay/slots/activate", axum::routing::post(relay_slot_activate))
         .route("/api/relay/slots/delete", axum::routing::post(relay_slot_delete))
         .route("/api/events", axum::routing::get(get_events))
+        .route("/api/ui-error", axum::routing::post(report_ui_error))
         .route("/api/restart", axum::routing::post(restart))
         .route("/api/shutdown", axum::routing::post(shutdown))
         .layer(axum::middleware::from_fn_with_state(
@@ -2799,6 +2886,123 @@ mod tests {
             hit.is_some(),
             "404-отказ обязан быть в журнале; журнал: {:?}",
             events
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `POST /api/ui-error` (запрос 25.10.2026, E2): отчёт дашборда об ошибке
+    /// JS/сети попадает в RAM-журнал с префиксом `ui:` (дальше его унесёт
+    /// зеркало в лог хоста). Пустое/кривое тело — 400 с читаемой причиной:
+    /// молчаливый откат маскировал бы сломанного репортёра.
+    #[tokio::test]
+    async fn ui_error_report_lands_in_event_log() {
+        let dir = tmp("ui_error");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let state = AppState::new(&dir).expect("state");
+
+        // Валидный отчёт.
+        let r = report_ui_error(
+            State(state.clone()),
+            axum::body::Bytes::from(
+                r#"{"where":"loadEvents","message":"шлюз недоступен: TypeError: Failed to fetch"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let events = state.events().tail(10);
+        let hit = events
+            .iter()
+            .find(|e| e.level == "warn" && e.message.contains("ui: loadEvents:"));
+        assert!(hit.is_some(), "ui-отчёт обязан быть в журнале: {:?}", events);
+        assert!(
+            hit.unwrap().message.contains("Failed to fetch"),
+            "текст ошибки обязан попасть в журнал: {}",
+            hit.unwrap().message
+        );
+
+        // Пустое тело — 400.
+        let r = report_ui_error(State(state.clone()), axum::body::Bytes::new()).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+        // Кривой JSON — 400.
+        let r = report_ui_error(State(state.clone()), axum::body::Bytes::from("не-json")).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+        // Пустой message — 400.
+        let r = report_ui_error(
+            State(state.clone()),
+            axum::body::Bytes::from(r#"{"where":"x","message":"  "}"#),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Хвост строки — на границе символов, не байт: сообщения дашборда
+    /// содержат кириллицу, байтовый срез дал бы панику или мусор.
+    #[test]
+    fn tail_chars_slices_on_char_boundary() {
+        assert_eq!(tail_chars("короткое", 300), "короткое");
+        assert_eq!(tail_chars("абвгд", 3), "вгд");
+        assert_eq!(tail_chars("абв", 0), "");
+        // Многосимвольная юникод-строка: 🚀 — 4 байта, байтовый срез паниковал бы.
+        assert_eq!(tail_chars("🚀🚀🚀🚀", 2), "🚀🚀");
+    }
+
+    /// Тело `{"models": [...]}` (запрос 25.10.2026): кривой JSON — 400 с
+    /// читаемой причиной (не молчаливый откат к дефолту), валидный JSON
+    /// доходит до планировщика — отказ «не Gemini» доказывает, что список
+    /// распарсился и был передан в key_check.
+    #[tokio::test]
+    async fn keys_check_accepts_models_body_or_rejects_bad_json() {
+        let dir = tmp("keys_check_body");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let mut cfg = GatewayConfig::default();
+        // Не-Gemini провайдер: планировщик обязан отказать ДО сети.
+        cfg.providers.push(ProviderConfig {
+            id: "mock".into(),
+            name: "Mock".into(),
+            base_url: "https://upstream.example/v1".into(),
+            keys: vec![AccountKey { id: "k1".into(), key: "sk-1".into(), is_active: true, name: None }],
+            ..Default::default()
+        });
+        core_store::save(&dir, &cfg).expect("save");
+        let state = AppState::new(&dir).expect("state");
+        let app = crate::server::build(state);
+
+        let r = app
+            .oneshot(
+                Request::builder()
+                    .method(axum::http::Method::POST)
+                    .uri("/api/providers/mock/keys/check")
+                    .header("content-type", "application/json")
+                    .body(Body::from("не json вовсе"))
+                    .expect("req"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "кривой JSON — 400");
+        let bytes = axum::body::to_bytes(r.into_body(), usize::MAX).await.expect("body");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(text.contains("тело запроса"), "причина называет проблему тела: {text}");
+
+        let state2 = AppState::new(&dir).expect("state");
+        let app2 = crate::server::build(state2);
+        let r = app2
+            .oneshot(
+                Request::builder()
+                    .method(axum::http::Method::POST)
+                    .uri("/api/providers/mock/keys/check")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"models":["gemini-3.8-flash"]}"#))
+                    .expect("req"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "не-Gemini апстрим отклоняется планом");
+        let bytes = axum::body::to_bytes(r.into_body(), usize::MAX).await.expect("body");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("не Gemini"),
+            "валидное тело дошло до планировщика (отказ про апстрим, не про JSON): {text}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

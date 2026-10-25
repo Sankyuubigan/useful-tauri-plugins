@@ -30,10 +30,8 @@ const HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 /// («starting new connection: https://eu.aptabase.com/») — строки сыпались в
 /// файл-лог каждые ~10–20 с. Общий клиент переиспользует keep-alive пул:
 /// коннект открывается только после простоя пула, а не на каждый флаш.
-/// строки сыпались в файл-лог каждые ~10–20 с. Общий клиент переиспользует
-/// keep-alive пул: коннект открывается только после простоя пула, а не на
-/// каждый флаш. Единичные остаточные коннект-строки дожимает фильтр таргетов
-/// в logger.rs (hyper и co. на WARN+ — их диагностика сбоев сети не теряется).
+/// Единичные остаточные коннект-строки дожимает фильтр таргетов в logger.rs
+/// (hyper и co. на WARN+ — их диагностика сбоев сети не теряется).
 fn http_client() -> Option<&'static reqwest::Client> {
     HTTP_SHARE
         .get_or_init(|| reqwest::Client::builder().timeout(HTTP_TIMEOUT).build().ok())
@@ -146,6 +144,18 @@ pub async fn flush_periodic() {
     FLUSHING.store(false, Ordering::SeqCst);
 }
 
+/// Сколько неудачных попыток отправки подряд переживаем, прежде чем отбросить
+/// очередь. Инцидент 25.10.2026: при недоступности aptabase (TCP до
+/// eu.aptabase.com:443 молча дропался) батч вечно возвращался в очередь —
+/// флашер каждые ~20 с (сон 10 с + таймаут коннекта 10 с) строил новую
+/// TCP-коннекцию, и «starting new connection» сыпались в файл-лог часами.
+/// Кап делает такой вечный долбёж структурно невозможным, а сам отказ —
+/// видимым в логе (core rules §2.2: тихое глотание ошибок запрещено).
+const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+
+/// Неудачные попытки отправки подряд; успех сбрасывает в 0.
+static SEND_FAILURES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 async fn try_flush() {
     let Some(cfg) = CONFIG.get() else { return };
     let Some(cfg) = cfg.as_ref() else { return };
@@ -156,7 +166,12 @@ async fn try_flush() {
     // Клиент строится лениво и переиспользуется (см. http_client).
     let Some(client) = http_client() else { return };
     let url = format!("{}/api/v0/events", region_base(&cfg.app_key));
+    try_flush_with(client, &url, &cfg.app_key).await;
+}
 
+/// Тело флаша, отделённое от конфига ради тестов: тест гоняет его против
+/// локального «отказного» порта, не трогая CONFIG.
+async fn try_flush_with(client: &reqwest::Client, url: &str, app_key: &str) {
     loop {
         let batch: Vec<Value> = {
             let mut q = lock(queue());
@@ -169,27 +184,63 @@ async fn try_flush() {
 
         let body = json!(batch);
         match client
-            .post(&url)
-            .header("App-Key", &cfg.app_key)
+            .post(url)
+            .header("App-Key", app_key)
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
             .await
         {
-            Ok(resp) if resp.status().is_success() => {}
+            Ok(resp) if resp.status().is_success() => {
+                SEND_FAILURES.store(0, Ordering::SeqCst);
+            }
+            // 5xx и сеть — один класс отказа: «сейчас не ушло, виноват не батч».
+            // Каждая попытка видна в логе (требование 25.10.2026: сетевая ошибка
+            // обязана быть в логе), после капа очередь отбрасывается.
             Ok(resp) if resp.status().is_server_error() => {
+                let status = resp.status().as_u16();
                 requeue_front(batch);
+                register_send_failure(format!("сервер aptabase ответил HTTP {status}")).await;
                 break;
             }
-            Ok(_) => {
-                // 4xx — отбрасываем, чтобы не зациклиться
+            Ok(resp) => {
+                // 4xx — батч невалиден для сервера: ретрай того же тела бессмыслен.
+                let status = resp.status().as_u16();
+                log::warn!(
+                    "телеметрия: батч из {} событий отклонён (HTTP {status}) — отброшен",
+                    batch.len()
+                );
+                SEND_FAILURES.store(0, Ordering::SeqCst);
             }
-            Err(_) => {
+            Err(e) => {
                 requeue_front(batch);
+                register_send_failure(format!("сеть: {e}")).await;
                 break;
             }
         }
     }
+}
+
+/// Учёт одной неудачной попытки: warn с причиной, а по достижении капа —
+/// отброс очереди с итоговой строкой (сколько событий потеряно и почему).
+async fn register_send_failure(reason: String) {
+    let n = SEND_FAILURES.fetch_add(1, Ordering::SeqCst) + 1;
+    log::warn!(
+        "телеметрия: события не отправлены (попытка {n}/{MAX_CONSECUTIVE_FAILURES}): {reason}"
+    );
+    if n < MAX_CONSECUTIVE_FAILURES {
+        return;
+    }
+    let dropped = {
+        let mut q = lock(queue());
+        let n = q.len();
+        q.clear();
+        n
+    };
+    log::warn!(
+        "телеметрия: {dropped} событий отброшено — отправка не удалась {n} раз подряд ({reason})"
+    );
+    SEND_FAILURES.store(0, Ordering::SeqCst);
 }
 
 fn requeue_front(items: Vec<Value>) {
@@ -218,13 +269,21 @@ pub fn send_error(cfg: ReportingConfig, report: ErrorReport) {
     tauri::async_runtime::spawn(async move {
         // Единый ленивый клиент (см. http_client) — без новой коннекции на каждую ошибку.
         let Some(client) = http_client() else { return };
-        let _ = client
+        let result = client
             .post(&url)
             .header("App-Key", &app_key)
             .header("Content-Type", "application/json")
             .json(&body)
             .send()
             .await;
+        match result {
+            Ok(resp) if resp.status().is_success() => {}
+            Ok(resp) => log::warn!(
+                "телеметрия: отчёт об ошибке не принят (HTTP {})",
+                resp.status()
+            ),
+            Err(e) => log::warn!("телеметрия: отчёт об ошибке не отправлен: {e}"),
+        }
     });
 }
 
@@ -261,5 +320,119 @@ mod tests {
         assert!(second.is_some(), "клиент не построился");
         // …и это ровно та же статическая ссылка, без перестроения.
         assert!(std::ptr::eq(first.unwrap(), second.unwrap()));
+    }
+
+    /// Очередь — глобальная статика, а cargo гоняет тесты параллельно:
+    /// `clear()` одного теста съедал батч другого. Сериализуем тесты,
+    /// трогающие очередь, одним мьютексом.
+    fn queue_lock() -> std::sync::MutexGuard<'static, ()> {
+        static TEST_QUEUE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        lock(&TEST_QUEUE_LOCK)
+    }
+
+    /// Локальный сервер постоянных отказов (HTTP 599): детерминированная
+    /// ветка server-error с тем же requeue+кап, что и сетевой Err. Слушатель
+    /// живёт до конца теста — порт нельзя «украсть» параллельному тесту
+    /// (первая версия с dropped-слушателем гонялась за ephemeral-портом).
+    fn failure_server() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                use std::io::Read;
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    b"HTTP/1.1 599 Upstream Unavailable\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                );
+            }
+        });
+        port
+    }
+
+    /// Инцидент 25.10.2026: недоставляемый батч вечно возвращался в очередь,
+    /// и флашер долбился в aptabase каждые ~20 с часами. После капа из трёх
+    /// неудач подряд очередь обязана очиститься, а счётчик — обнулиться:
+    /// новых попыток (и коннект-строк в логе) больше не будет.
+    #[test]
+    fn queue_is_dropped_after_three_consecutive_failures() {
+        let _guard = queue_lock();
+        let port = failure_server();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(1500))
+            .build()
+            .expect("client");
+        let url = format!("http://127.0.0.1:{port}/api/v0/events");
+
+        lock(queue()).clear();
+        SEND_FAILURES.store(0, Ordering::SeqCst);
+        lock(queue()).push_back(build_event("test_event", None));
+
+        // Попытки 1 и 2: батч возвращается в очередь, счётчик растёт.
+        tauri::async_runtime::block_on(try_flush_with(&client, &url, "A-EU-test"));
+        assert_eq!(lock(queue()).len(), 1, "батч обязан вернуться в очередь");
+        assert_eq!(SEND_FAILURES.load(Ordering::SeqCst), 1);
+
+        tauri::async_runtime::block_on(try_flush_with(&client, &url, "A-EU-test"));
+        assert_eq!(lock(queue()).len(), 1);
+        assert_eq!(SEND_FAILURES.load(Ordering::SeqCst), 2);
+
+        // Попытка 3: кап достигнут — очередь очищена, счётчик сброшен.
+        tauri::async_runtime::block_on(try_flush_with(&client, &url, "A-EU-test"));
+        assert!(lock(queue()).is_empty(), "после капа очередь обязана очиститься");
+        assert_eq!(SEND_FAILURES.load(Ordering::SeqCst), 0, "счётчик обязан сброситься");
+    }
+
+    /// Пустая очередь — ни одной попытки отправки, счётчик не растёт.
+    #[test]
+    fn empty_queue_makes_no_attempts() {
+        let _guard = queue_lock();
+        let port = failure_server();
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(1500))
+            .build()
+            .expect("client");
+        let url = format!("http://127.0.0.1:{port}/api/v0/events");
+
+        lock(queue()).clear();
+        SEND_FAILURES.store(0, Ordering::SeqCst);
+        tauri::async_runtime::block_on(try_flush_with(&client, &url, "A-EU-test"));
+        assert_eq!(SEND_FAILURES.load(Ordering::SeqCst), 0, "попыток быть не должно");
+    }
+
+    /// Успешный ответ сервера сбрасывает счётчик неудач.
+    #[test]
+    fn success_resets_failure_counter() {
+        let _guard = queue_lock();
+        // Локальный приёмник: отвечаем 200 на всё.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                // Читаем заголовки до конца (пустая строка), отвечаем 200.
+                use std::io::Read;
+                let mut buf = [0u8; 4096];
+                let _ = stream.read(&mut buf);
+                let _ = std::io::Write::write_all(
+                    &mut stream,
+                    b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                );
+            }
+        });
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(1500))
+            .build()
+            .expect("client");
+        let url = format!("http://127.0.0.1:{port}/api/v0/events");
+
+        lock(queue()).clear();
+        SEND_FAILURES.store(2, Ordering::SeqCst);
+        lock(queue()).push_back(build_event("test_event", None));
+        tauri::async_runtime::block_on(try_flush_with(&client, &url, "A-EU-test"));
+        assert!(lock(queue()).is_empty(), "батч ушёл — очередь пуста");
+        assert_eq!(SEND_FAILURES.load(Ordering::SeqCst), 0, "успех обязан сбросить счётчик");
     }
 }

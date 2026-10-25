@@ -3,6 +3,7 @@ export declare class CloudRoutersPanel extends HTMLElement {
     private states;
     private combosByRouter;
     private offProgress;
+    private offStatus;
     private visibilityObserver;
     private refreshTimer;
     private root;

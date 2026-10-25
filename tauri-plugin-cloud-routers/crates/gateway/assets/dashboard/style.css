@@ -217,6 +217,30 @@ textarea { font-family: var(--mono); resize: vertical; }
   font-size: 11px;
 }
 
+/* ── Выбор моделей проверки ключей (gw-check-models) ────────────────── */
+.gw-check-models {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 10px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.gw-check-models label.gw-inline {
+  font-family: var(--mono);
+  font-size: 12px;
+}
+.gw-check-models input { width: auto; margin: 0; }
+.gw-check-model-title {
+  margin: 10px 0 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--bg-hover);
+  padding-bottom: 3px;
+}
+.gw-check-model-title:first-child { margin-top: 0; }
+
 /* ── Журнал ──────────────────────────────────────────────────────────── */
 
 .gw-log {
@@ -250,6 +274,25 @@ textarea { font-family: var(--mono); resize: vertical; }
 }
 .gw-toast.gw-ok { background: var(--primary); }
 .gw-toast.gw-err { background: var(--danger); }
+
+/* ── Офлайн-режим (gw-offline) ────────────────────────────────────────── */
+
+/* Страница жива, шлюз мёртв (utils.js markOffline): баннер поверх контента,
+ * чтобы состояние было видно с любой вкладки, а не только там, где юзер
+ * кликнул. Убирается перезагрузкой страницы при ответе /api/health. */
+.gw-offline {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 60;
+  padding: 10px 16px;
+  background: var(--danger);
+  color: #fff;
+  font: 13px var(--font);
+  text-align: center;
+  box-shadow: 0 3px 16px rgba(0,0,0,.45);
+}
 
 /* ── Окно (gw-modal) ─────────────────────────────────────────────────── */
 

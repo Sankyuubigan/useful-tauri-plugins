@@ -11,6 +11,14 @@
 //! [`tests::target_url_is_count_tokens_only`]: по адресу, отличному от
 //! `…:countTokens`, запрос построить нельзя.
 //!
+//! ## Модели проверки
+//!
+//! Смысл проверки — «сколько у ключа осталось рабочих лимитов» на конкретной
+//! модели, поэтому модель выбирает пользователь в дашборде (запрос 25.10.2026).
+//! Без явного списка берётся первый `gemini…` из моделей провайдера, а при
+//! пустом списке — [`GEMINI_CHECK_FALLBACK_MODEL`] (страховка, не источник
+//! правды: правильный список даёт кнопка «Обновить модели»).
+//!
 //! ## Правила
 //!
 //! - Провайдер считается Gemini по host'у `generativelanguage.googleapis.com`
@@ -24,7 +32,7 @@
 //!   прямого запроса нет.
 //! - Проверка — диагностика, **не ротация**: конфиг не мутируется, кулдауны
 //!   и `is_active` остаются как были.
-//! - Запросы последовательные (по ключу за раз), таймаут 15 c на ключ,
+//! - Запросы последовательные (ключ × модель за раз), таймаут 15 c на запрос,
 //!   вердикты классифицирует чистая [`classify_key_check`].
 
 use cloud_routers_core::config::{AccountKey, GatewayConfig, ProviderConfig};
@@ -34,11 +42,15 @@ use crate::app::AppState;
 use crate::logbuf::mask_secret;
 use crate::upstream::{HDR_RELAY_TOKEN, HDR_TARGET_URL, RELAY_PATH_PREFIX, relay_route_base};
 
-/// Модель по умолчанию для проверки, если у провайдера список моделей пуст.
+/// Запасная модель для проверки, если выбранного/найденного списка нет.
 ///
-/// Это страховка, а не источник правды: правильную модель провайдеру даёт
-/// кнопка «Обновить модели», а именно её результат затем выбирается.
-pub const GEMINI_CHECK_FALLBACK_MODEL: &str = "gemini-2.0-flash";
+/// Обновлена на `gemini-3.8-flash` (инцидент 25.10.2026): `gemini-2.0-flash`
+/// отключён upstream — Google в теле 404 прямо рекомендует `gemini-3.8-flash`,
+/// и все ключи получали «неизвестно» по вине этой константы, а не ключей.
+pub const GEMINI_CHECK_FALLBACK_MODEL: &str = "gemini-3.8-flash";
+
+/// Максимум моделей в одном прогоне проверки (защита от «проверить всё»).
+pub const MAX_CHECK_MODELS: usize = 10;
 
 /// Таймаут одного HTTP-запроса.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
@@ -46,7 +58,7 @@ const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 /// Хвост, до которого обрезается текст неудачного ответа в `detail`.
 const DETAIL_MAX_CHARS: usize = 300;
 
-/// Итог проверки одного ключа.
+/// Итог проверки одного ключа по одной модели.
 #[derive(Debug, Clone, Serialize)]
 pub struct KeyCheckResult {
     pub key_id: String,
@@ -54,6 +66,8 @@ pub struct KeyCheckResult {
     pub name: Option<String>,
     /// Маска секрета (`AQ.Ab8…`) — секрет целиком наружу не уходит.
     pub masked: String,
+    /// Модель, по которой шёл запрос (`models/`-префикс снят).
+    pub model: String,
     pub status: Option<u16>,
     pub verdict: CheckVerdict,
     /// Причина по-человечески (начало тела ответа либо ошибка сети).
@@ -77,8 +91,8 @@ pub enum CheckVerdict {
 /// Свод проверки по провайдеру.
 #[derive(Debug, Serialize)]
 pub struct KeyCheckSummary {
-    /// Модель, по которой шёл запрос (лог).
-    pub model: String,
+    /// Модели, по которым шёл запрос (в порядке прогона).
+    pub models: Vec<String>,
     /// Запросы шли через релей (`use_relay` провайдера).
     pub via_relay: bool,
     pub results: Vec<KeyCheckResult>,
@@ -106,7 +120,7 @@ pub fn gemini_native_root(base_url: &str) -> String {
     }
 }
 
-/// Кандидат модели для проверки: первый `gemini…` из списка провайдера,
+/// Кандидат модели по умолчанию: первый `gemini…` из списка провайдера,
 /// префикс `models/` отрезается; списка нет — `GEMINI_CHECK_FALLBACK_MODEL`.
 pub fn model_candidate(p: &ProviderConfig) -> String {
     p.models
@@ -118,6 +132,25 @@ pub fn model_candidate(p: &ProviderConfig) -> String {
         .find(|id| id.starts_with("gemini"))
         .map(str::to_string)
         .unwrap_or_else(|| GEMINI_CHECK_FALLBACK_MODEL.to_string())
+}
+
+/// Санитайзинг пользовательского списка моделей: трим, снятие префикса
+/// `models/`, пустые отбрасываются, дубли схлопываются, кап
+/// [`MAX_CHECK_MODELS`] (лишнее молча не теряем — тест закрепляет порядок).
+pub fn sanitize_check_models(raw: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(raw.len());
+    for m in raw {
+        let trimmed = m.trim();
+        let id = trimmed.strip_prefix("models/").unwrap_or(trimmed);
+        if id.is_empty() || out.iter().any(|x| x == id) {
+            continue;
+        }
+        out.push(id.to_string());
+        if out.len() >= MAX_CHECK_MODELS {
+            break;
+        }
+    }
+    out
 }
 
 /// Чистый классификатор ответа → вердикт.
@@ -141,41 +174,48 @@ pub fn classify_key_check(status: Option<u16>, body: &str) -> CheckVerdict {
     }
 }
 
-/// Маршрут и цель проверки — всё, что вычисляется ДО сети.
+/// Маршрут и цели проверки — всё, что вычисляется ДО сети.
 #[derive(Debug, Clone)]
 pub struct CheckPlan {
-    pub model: String,
+    pub models: Vec<String>,
     pub via_relay: bool,
-    /// Абсолютный URL цели: `{root}/models/{model}:countTokens`.
-    pub target_url: String,
+    /// Абсолютные URL целей: `{root}/models/{model}:countTokens` — по одному
+    /// на модель, в том же порядке, что и `models`.
+    pub target_urls: Vec<String>,
 }
 
-/// URL цели проверки для провайдера (модульный тест закрепляет его форму).
-fn check_target_url(provider: &ProviderConfig) -> Result<(String, String), String> {
-    let base = provider.base_url.trim();
+/// URL цели проверки для одной модели (модульный тест закрепляет его форму).
+fn check_target_url(base: &str, model: &str) -> Result<String, String> {
+    let base = base.trim();
     if base.is_empty() {
-        return Err(format!(
-            "у провайдера «{}» нет адреса — проверять нечего",
-            provider.name
-        ));
+        return Err("у провайдера нет адреса — проверять нечего".to_string());
     }
-    let model = model_candidate(provider);
-    Ok((
-        format!("{}/models/{model}:countTokens", gemini_native_root(base)),
-        model,
-    ))
+    Ok(format!("{}/models/{model}:countTokens", gemini_native_root(base)))
 }
 
-/// Проверка маршрута и цели ДО сети. Все причины отказа — понятные строки,
+/// Проверка маршрута и целей ДО сети. Все причины отказа — понятные строки,
 /// которые попадают в тост дашборда без доработок.
-pub fn build_check_plan(provider: &ProviderConfig, config: &GatewayConfig) -> Result<CheckPlan, String> {
+pub fn build_check_plan(
+    provider: &ProviderConfig,
+    config: &GatewayConfig,
+    requested: Option<&[String]>,
+) -> Result<CheckPlan, String> {
     if !is_gemini_provider(provider) {
         return Err(format!(
             "«{}» — не Gemini-провайдер (апстрим не generativelanguage.googleapis.com): проверка через countTokens не подходит",
             provider.name
         ));
     }
-    let (target, model) = check_target_url(provider)?;
+    // Список моделей: явный выбор пользователя; пустой после санитайзинга или
+    // не заданный — дефолтный кандидат провайдера.
+    let models = match requested.map(sanitize_check_models) {
+        Some(list) if !list.is_empty() => list,
+        _ => vec![model_candidate(provider)],
+    };
+    let target_urls = models
+        .iter()
+        .map(|model| check_target_url(&provider.base_url, model))
+        .collect::<Result<Vec<_>, _>>()?;
     let via_relay = provider.use_relay;
     if via_relay {
         // Общий helper релея: «настроен, но не задан / задан без схемы» —
@@ -191,7 +231,7 @@ pub fn build_check_plan(provider: &ProviderConfig, config: &GatewayConfig) -> Re
             );
         }
     }
-    Ok(CheckPlan { model, via_relay, target_url: target })
+    Ok(CheckPlan { models, via_relay, target_urls })
 }
 
 /// Выполнить готовый [`CheckPlan`] против активных ключей провайдера.
@@ -199,7 +239,11 @@ pub fn build_check_plan(provider: &ProviderConfig, config: &GatewayConfig) -> Re
 /// Поднят в отдельную функцию ради интеграционных тестов: mock-апстрим живёт
 /// на 127.0.0.1, а значит host-проверку [`is_gemini_provider`] он не проходит;
 /// тест свободен собрать план на мок-URL и прогнать реальную сеть.
-pub async fn run_plan(state: &AppState, provider: &ProviderConfig, plan: CheckPlan) -> Result<KeyCheckSummary, String> {
+pub async fn run_plan(
+    state: &AppState,
+    provider: &ProviderConfig,
+    plan: CheckPlan,
+) -> Result<KeyCheckSummary, String> {
     let keys: Vec<AccountKey> = provider
         .keys
         .iter()
@@ -211,11 +255,11 @@ pub async fn run_plan(state: &AppState, provider: &ProviderConfig, plan: CheckPl
     }
 
     let config = state.config();
-    let request_url = if plan.via_relay {
+    let relay_url = if plan.via_relay {
         let relay = relay_route_base(provider, &config)?;
-        format!("{relay}{RELAY_PATH_PREFIX}")
+        Some(format!("{relay}{RELAY_PATH_PREFIX}"))
     } else {
-        plan.target_url.clone()
+        None
     };
     let relay_token = config.relay_token().filter(|t| !t.trim().is_empty());
 
@@ -224,62 +268,75 @@ pub async fn run_plan(state: &AppState, provider: &ProviderConfig, plan: CheckPl
         .build()
         .map_err(|e| format!("не удалось собрать HTTP-клиент: {e}"))?;
 
-    let mut results = Vec::with_capacity(keys.len());
+    let mut results = Vec::with_capacity(keys.len() * plan.models.len());
     for item in &keys {
-        // Последовательно по одному ключу: спешки нет, а «выстрелы пачкой» для релея и лимитов лишние.
-        let (status, body) = send_one(&client, &request_url, plan.via_relay, &plan.target_url, relay_token.as_deref(), &item.key).await;
-        let verdict = classify_key_check(status, &body);
-        let masked = mask_secret(&item.key);
-        // Логгер возвращает порядковый номер сообщения — значение не используется.
-        let _ = match verdict {
-            CheckVerdict::Valid => state.events().info(format!(
-                "ключ {} {}: валиден (HTTP {})",
-                provider.id,
-                &masked,
-                status.unwrap_or(0)
-            )),
-            CheckVerdict::ValidLimited => state.events().info(format!(
-                "ключ {} {}: валиден, сейчас в лимите (HTTP 429)",
-                provider.id, &masked
-            )),
-            CheckVerdict::Invalid => state.events().warn(format!(
-                "ключ {} {}: отвергнут (HTTP {})",
-                provider.id, &masked,
-                status.unwrap_or(0)
-            )),
-            CheckVerdict::Unknown => state.events().warn(format!(
-                "ключ {} {}: непонятный ответ (HTTP {}) — ключ не осуждён",
-                provider.id,
-                &masked,
-                status.unwrap_or(0)
-            )),
-        };
-        results.push(KeyCheckResult {
-            key_id: item.id.clone(),
-            name: item.name.clone(),
-            masked,
-            status,
-            verdict,
-            detail: truncate_detail(&body),
-        });
+        for (model, target) in plan.models.iter().zip(&plan.target_urls) {
+            // Последовательно по одному запросу: спешки нет, а «выстрелы
+            // пачкой» для релея и лимитов лишние.
+            let request_url = relay_url.clone().unwrap_or_else(|| target.clone());
+            let (status, body) =
+                send_one(&client, &request_url, plan.via_relay, target, relay_token.as_deref(), &item.key)
+                    .await;
+            let verdict = classify_key_check(status, &body);
+            let masked = mask_secret(&item.key);
+            let detail = truncate_detail(&body);
+            // Тело ошибки апстрима (например, 404 «model … is no longer
+            // available») обязано доживать в журнале — только по вердиктам,
+            // где оно объясняет причину (запрос 25.10.2026).
+            let _ = match verdict {
+                CheckVerdict::Valid => state.events().info(format!(
+                    "ключ {} {}: модель {model}: валиден (HTTP {})",
+                    provider.id,
+                    &masked,
+                    status.unwrap_or(0)
+                )),
+                CheckVerdict::ValidLimited => state.events().info(format!(
+                    "ключ {} {}: модель {model}: валиден, сейчас в лимите (HTTP 429)",
+                    provider.id, &masked
+                )),
+                CheckVerdict::Invalid => state.events().warn(format!(
+                    "ключ {} {}: модель {model}: отвергнут (HTTP {}) — {detail}",
+                    provider.id,
+                    &masked,
+                    status.unwrap_or(0)
+                )),
+                CheckVerdict::Unknown => state.events().warn(format!(
+                    "ключ {} {}: модель {model}: непонятный ответ (HTTP {}) — ключ не осуждён — {detail}",
+                    provider.id,
+                    &masked,
+                    status.unwrap_or(0)
+                )),
+            };
+            results.push(KeyCheckResult {
+                key_id: item.id.clone(),
+                name: item.name.clone(),
+                masked,
+                model: model.clone(),
+                status,
+                verdict,
+                detail,
+            });
+        }
     }
 
     let (valid, limited, invalid, unknown) = counts(&results);
     state.events().info(format!(
-        "проверка ключей «{}» через {}: валидных {valid}, в лимите {limited}, невалидных {invalid}, неизвестно {unknown}",
+        "проверка ключей «{}» (моделей {}) через {}: валидных {valid}, в лимите {limited}, невалидных {invalid}, неизвестно {unknown}",
         provider.name,
+        plan.models.len(),
         if plan.via_relay { "релей" } else { "напрямую" }
     ));
 
-    Ok(KeyCheckSummary { model: plan.model, via_relay: plan.via_relay, results })
+    Ok(KeyCheckSummary { models: plan.models, via_relay: plan.via_relay, results })
 }
 
 /// Полная проверка провайдера: план → запуск. Её вызывает хендлер админки.
 pub async fn check_provider_keys(
     state: &AppState,
     provider: &ProviderConfig,
+    requested: Option<&[String]>,
 ) -> Result<KeyCheckSummary, String> {
-    let plan = build_check_plan(provider, &state.config())?;
+    let plan = build_check_plan(provider, &state.config(), requested)?;
     run_plan(state, provider, plan).await
 }
 
@@ -413,20 +470,69 @@ mod tests {
         assert_eq!(model_candidate(&p), "gemini-3.8-flash");
     }
 
+    /// Санитайзинг пользовательского списка: трим, снятие `models/`, пустые
+    /// и дубли отбрасываются, порядок сохраняется, кап — MAX_CHECK_MODELS.
+    #[test]
+    fn sanitize_check_models_trims_strips_dedups_caps() {
+        let raw: Vec<String> = vec![
+            "  gemini-3.8-flash  ".into(),
+            "models/gemini-2.5-pro".into(),
+            "".into(),
+            "   ".into(),
+            "gemini-3.8-flash".into(), // дубль после снятия префикса/трима
+        ];
+        assert_eq!(sanitize_check_models(&raw), vec!["gemini-3.8-flash", "gemini-2.5-pro"]);
+
+        let many: Vec<String> = (0..25).map(|i| format!("gemini-m{i}")).collect();
+        let got = sanitize_check_models(&many);
+        assert_eq!(got.len(), MAX_CHECK_MODELS, "кап обязателен");
+        assert_eq!(got.first().map(String::as_str), Some("gemini-m0"), "порядок сохранён");
+    }
+
     /// Кодовая гарантия нулевого расхода лимита: построить цель, отличную
     /// от `…:countTokens`, нельзя — ни `generateContent`, ни `embedContent`.
     #[test]
     fn target_url_is_count_tokens_only() {
         let base = "https://generativelanguage.googleapis.com/v1beta/openai";
-        let (target, _) = check_target_url(&provider(base, &["gemini-2.5-flash"])).expect("plan");
-        assert!(
-            target.ends_with(":countTokens"),
-            "цель обязана быть ровно countTokens: {target}"
+        for model in ["gemini-2.5-flash", "gemini-3.8-flash"] {
+            let target = check_target_url(base, model).expect("plan");
+            assert!(
+                target.ends_with(":countTokens"),
+                "цель обязана быть ровно countTokens: {target}"
+            );
+            assert!(target.contains("generativelanguage.googleapis.com"), "{target}");
+            assert!(!target.contains("generateContent"), "{target}");
+            assert!(!target.contains("embedContent"), "{target}");
+            assert!(!target.contains("openai"), "нативный путь без /openai: {target}");
+        }
+    }
+
+    /// Явный список пользователя попадает в план по одному URL на модель;
+    /// без списка работает прежний кандидат провайдера.
+    #[test]
+    fn build_check_plan_uses_requested_models_and_defaults_to_candidate() {
+        let config = GatewayConfig::default();
+        let p = provider(
+            "https://generativelanguage.googleapis.com/v1beta/openai",
+            &["models/gemini-9.9-pro", "gemini-3.8-flash"],
         );
-        assert!(target.contains("generativelanguage.googleapis.com"), "{target}");
-        assert!(!target.contains("generateContent"), "{target}");
-        assert!(!target.contains("embedContent"), "{target}");
-        assert!(!target.contains("openai"), "нативный путь без /openai: {target}");
+
+        let requested = vec!["models/gemini-3.8-flash".to_string(), " gemini-2.5-pro ".to_string()];
+        let plan = build_check_plan(&p, &config, Some(&requested)).expect("plan");
+        assert_eq!(plan.models, vec!["gemini-3.8-flash", "gemini-2.5-pro"]);
+        assert_eq!(plan.target_urls.len(), plan.models.len());
+        for (url, model) in plan.target_urls.iter().zip(&plan.models) {
+            assert!(url.ends_with(&format!("/models/{model}:countTokens")), "{url}");
+        }
+
+        // Санитайзинг съел всё явное (пустые строки) — дефолтный кандидат.
+        let empty: Vec<String> = vec!["   ".into(), String::new()];
+        let plan = build_check_plan(&p, &config, Some(&empty)).expect("plan");
+        assert_eq!(plan.models, vec!["gemini-9.9-pro"], "первый gemini из списка провайдера");
+
+        // Тела нет вовсе — прежнее поведение.
+        let plan = build_check_plan(&p, &config, None).expect("plan");
+        assert_eq!(plan.models, vec!["gemini-9.9-pro"]);
     }
 
     #[test]
@@ -457,18 +563,18 @@ mod tests {
         let config = GatewayConfig::default();
         // Не-Gemini апстрим — отказ до сети.
         let wrong = provider("https://api.groq.com/openai/v1", &[]);
-        assert!(build_check_plan(&wrong, &config).is_err());
+        assert!(build_check_plan(&wrong, &config, None).is_err());
 
         // Gemini без ключей: план строится (ключевые условия проверяет
         // run_plan перед сетью), отказ планирования — только про маршрут.
         let mut no_keys = provider("https://generativelanguage.googleapis.com/v1beta/openai", &[]);
         no_keys.keys[0].is_active = false;
-        assert!(build_check_plan(&no_keys, &config).is_ok());
+        assert!(build_check_plan(&no_keys, &config, None).is_ok());
 
         // Релей установлен, но URL релея не настроен — жёсткая ошибка.
         let mut relayed = provider("https://generativelanguage.googleapis.com/v1beta/openai", &[]);
         relayed.use_relay = true;
-        let err = build_check_plan(&relayed, &config).expect_err("релей без URL обязан не пустить");
+        let err = build_check_plan(&relayed, &config, None).expect_err("релей без URL обязан не пустить");
         assert!(err.contains("релей"), "{err}");
     }
 

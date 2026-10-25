@@ -4,6 +4,7 @@ import {
   getStatus,
   installOrUpdate,
   onProgress,
+  onStatusChange,
   openDashboard,
   reinstall,
   ROUTER_IDS,
@@ -521,6 +522,7 @@ export class CloudRoutersPanel extends HTMLElement {
   private states = new Map<RouterId, RouterState>()
   private combosByRouter = new Map<RouterId, ComboInfo[]>()
   private offProgress: (() => void) | null = null
+  private offStatus: (() => void) | null = null
   private visibilityObserver: MutationObserver | null = null
   private refreshTimer: number | null = null
   private root: ShadowRoot
@@ -581,12 +583,22 @@ export class CloudRoutersPanel extends HTMLElement {
     })
     this.observeVisibility()
     this.refreshTimer = window.setInterval(() => void this.refresh(), 15000)
+    // События жизни шлюза от супервизора (тик 3 с): смерть/подъём отражаются
+    // на пилюле немедленно, а не через 15-с опрос — 15-с интервал остаётся
+    // фолбэком (источник правды один: getStatus с живой пробой порта).
+    onStatusChange((p) => {
+      if (p.router === this.router) void this.refresh(p.router)
+    }).then((off) => {
+      this.offStatus = off
+    })
   }
 
   disconnectedCallback() {
     this.unsubUpdate?.()
     this.offProgress?.()
     this.offProgress = null
+    this.offStatus?.()
+    this.offStatus = null
     this.visibilityObserver?.disconnect()
     this.visibilityObserver = null
     if (this.refreshTimer !== null) {

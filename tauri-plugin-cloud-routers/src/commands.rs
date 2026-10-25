@@ -484,6 +484,12 @@ pub async fn get_combos(app: AppHandle, router: String) -> Result<Vec<combos::Co
 pub const OPEN_DASHBOARD_EVENT: &str = "cloud-routers-open-dashboard";
 
 /// Открыть веб-дашборд роутера вкладкой внутри приложения-хоста.
+///
+/// ГАТ: событие хосту уходит ТОЛЬКО на проверенно живой адрес. Раньше
+/// `start_server` возвращал `Ok(pid)` даже когда порт так и не открылся
+/// (`wait_port` истёк — антивирус, падение бинаря), событие улетало на
+/// мёртвый порт, и вкладка навсегда показывала страницу ошибки браузера
+/// «127.0.0.1 отказано в подключении» (инцидент 25.10.2026).
 #[tauri::command]
 pub async fn open_dashboard(app: AppHandle, router: String) -> Result<(), String> {
     let router_id = router.parse::<RouterId>()?;
@@ -509,6 +515,27 @@ pub async fn open_dashboard(app: AppHandle, router: String) -> Result<(), String
             .map_err(|e| format!("start task join error: {}", e))??;
         }
     }
+    // Верификация с ограниченными повторами: TCP-порт мог открыться только что
+    // (bind-лаг после `wait_port`), а у только что запущенного — догонять нечего,
+    // старт уже потратил свои 25 с. Не отвечает и после окна — честная ошибка
+    // вместо события на мёртвый порт.
+    let verify_url = base_url.clone();
+    let verified = tauri::async_runtime::spawn_blocking(move || wait_health(&verify_url, HEALTH_VERIFY_TIMEOUT))
+        .await
+        .map_err(|e| format!("health task join error: {}", e))?;
+    if !verified {
+        let port = cfg.port_or_default(router_id);
+        log::error!(
+            "{}: дашборд не открыт — {} не отвечает (порт {}), событие хосту не отправлено",
+            router_id,
+            base_url,
+            port
+        );
+        return Err(format!(
+            "{} не отвечает на {} — вкладка не открыта. Проверьте статус роутера и логи.",
+            router_id, base_url
+        ));
+    }
     // Дашборд открывает ХОСТ, вкладкой внутри приложения: внешний браузер
     // отдавал дашборд пользователю в стороннем окне, где он терял контекст
     // приложения (и не был виден в списке вкладок). Поэтому наружу уходит
@@ -519,6 +546,26 @@ pub async fn open_dashboard(app: AppHandle, router: String) -> Result<(), String
         json!({ "router": router_id.as_str(), "base_url": base_url }),
     );
     Ok(())
+}
+
+/// Окно верификации адреса перед открытием вкладки: порт локальный, если
+/// процесса нет — это констатируется быстро; окно нужно только чтобы
+/// перекрыть bind-лаг живого старта.
+const HEALTH_VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Опрашивать `is_healthy` до успеха или истечения окна. Одна точка правды
+/// «адрес жив» — та же `combos::is_healthy`, что у панельного статуса.
+fn wait_health(base_url: &str, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if combos::is_healthy(base_url) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+    }
 }
 
 /// Проверить наличие обновления роутера.

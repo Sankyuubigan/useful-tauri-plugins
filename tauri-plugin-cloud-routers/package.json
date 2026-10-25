@@ -1,6 +1,6 @@
 {
   "name": "@my-tauri-plugins/plugin-cloud-routers",
-  "version": "0.1.0",
+  "version": "0.1.9",
   "description": "Reusable cloud router gateway for Tauri apps — self-contained install (portable node.exe + npm bundle), lazy on-demand start, combos list, web dashboard and OpenAI-compatible streaming chat. TS API + Web Components.",
   "type": "module",
   "main": "dist-js/index.js",

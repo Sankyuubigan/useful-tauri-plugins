@@ -31,6 +31,13 @@
 
 <div id="toast" class="gw-toast" hidden></div>
 
+<!-- Офлайн-режим: страница загружена, шлюз умер. api() при сетевом отказе
+     показывает баннер и опрашивает /api/health — при ответе страница
+     перезагружается сама (utils.js markOffline). -->
+<div id="offline-banner" class="gw-offline" hidden>
+  Шлюз недоступен — ожидаем подъёма (страница перезагрузится сама)…
+</div>
+
 <!-- ─────────────────────────── Провайдеры ─────────────────────────── -->
 <section class="gw-page" id="page-providers">
   <div class="gw-row">
@@ -220,6 +227,23 @@
     <div class="gw-row gw-modal-actions">
       <button id="btn-keys-cancel" class="gw-ghost">Отмена</button>
       <button id="btn-keys-save" class="gw-primary">Добавить</button>
+    </div>
+  </div>
+</div>
+
+<!-- ───────────────────── Модалка проверки ключей ───────────────────── -->
+<!-- Пользователь выбирает модели, по которым проверить ключи (запрос
+     25.10.2026): остаток лимитов зависит от модели, поэтому проверять по
+     одной захардкоженной — вотчина устаревших ответов «неизвестно». -->
+<div class="gw-modal-backdrop" id="checkkeys-modal" hidden>
+  <div class="gw-modal">
+    <h3>Проверка ключей<span id="checkkeys-provider" class="gw-id"></span></h3>
+    <div class="gw-hint">Выберите модели, по которым проверить ключи. Запросы идут
+      через `:countTokens` — дневной лимит генерации не расходуется.</div>
+    <div id="checkkeys-models" class="gw-check-models"></div>
+    <div class="gw-row gw-modal-actions">
+      <button id="btn-checkkeys-cancel" class="gw-ghost">Отмена</button>
+      <button id="btn-checkkeys-run" class="gw-primary">Проверить</button>
     </div>
   </div>
 </div>

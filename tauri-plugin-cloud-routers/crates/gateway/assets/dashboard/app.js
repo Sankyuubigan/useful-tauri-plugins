@@ -12,7 +12,7 @@
 // свой список комбо без ожидания собственного таймера.
 
 import {
-  $, $$, state, api, toast, fail, busy, esc, plural, notifyHost,
+  $, $$, state, api, toast, fail, busy, esc, plural, notifyHost, reportUiError,
 } from './utils.js';
 // Циклический импорт безопасен: это function-декларации в providers.js,
 // к моменту любого вызова модуль с ними уже вычислен.
@@ -385,8 +385,23 @@ function renderLog() {
     // один класс нашей страницы нацеливаться — в том числе на «warn»/«error».
     const lvl = e.level === 'warn' || e.level === 'error' ? `gw-${esc(e.level)}` : '';
     return `<div class="gw-line ${lvl}"><span class="gw-time">${hh}:${mm}:${ss}</span>${esc(e.message)}</div>`;
-  }).join('') || '<div class="gw-hint">Журнал пуст.</div>';
+  }).join('') || logEmptyHint();
   if ($('#log-autoscroll').checked) box.scrollTop = box.scrollHeight;
+}
+
+/** Пустой журнал — не молчание, а факт «сессия с ЧЧ:ММ» (журнал RAM-овый,
+ * очищается при рестарте шлюза; запрос 25.10.26 E4: пустота неотличима от
+ * поломки). Старт сессии считаем из uptime статуса шлюза. */
+function logEmptyHint() {
+  const s = state.status;
+  if (s && typeof s.uptime_sec === 'number') {
+    const started = new Date(Date.now() - s.uptime_sec * 1000);
+    const hh = String(started.getHours()).padStart(2, '0');
+    const mm = String(started.getMinutes()).padStart(2, '0');
+    return `<div class="gw-hint">Журнал пуст: сессия шлюза с ${hh}:${mm} ` +
+      `(журнал сессионный, очищается при перезапуске шлюза).</div>`;
+  }
+  return '<div class="gw-hint">Журнал пуст.</div>';
 }
 
 function startLogPolling() {
@@ -443,3 +458,9 @@ function init() {
 }
 
 document.addEventListener('DOMContentLoaded', init);
+
+// Любая JS-ошибка дашборда уходит в журнал шлюза (→ зеркалом в лог хоста):
+// раньше отказ дашборда был невидим нигде, кроме консоли, которую никто не
+// открывает (E2 25.10.26). Репортёр best-effort и цикл породить не может.
+window.addEventListener('error', (e) => reportUiError('window.onerror', e.error || e.message));
+window.addEventListener('unhandledrejection', (e) => reportUiError('unhandledrejection', e.reason));

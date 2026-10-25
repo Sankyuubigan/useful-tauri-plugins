@@ -172,6 +172,23 @@ export declare function onChunk(cb: (c: ChunkPayload) => void): Promise<() => vo
  * Событие шлёт плагин после того, как роутер поднят и адрес проверен; хосту
  * остаётся показать вкладку. Возвращает функцию отписки. */
 export declare function onOpenDashboard(cb: (p: OpenDashboardPayload) => void): Promise<() => void>;
+/** Tauri-событие «состояние жизни шлюза изменилось» (супервизор плагина,
+ * тик 3 с, события только на переходах): `{ router, running, port, base_url }`. */
+export declare const STATUS_EVENT = "cloud-routers-status";
+/** Payload события статуса жизни. `running:false` приходит и на смерть
+ * (запись процесса была, порт умер), и на штатную остановку. */
+export interface StatusPayload {
+    router: RouterId;
+    running: boolean;
+    port?: number;
+    base_url: string;
+}
+/** Подписка на события жизни шлюза от супервизора.
+ *
+ * Получатели: панель (немедленный refresh пилюли вместо 15-с опроса) и хост
+ * (перезагрузка застрявших на странице ошибки вкладок дашборда при
+ * `running:true`). Возвращает функцию отписки. */
+export declare function onStatusChange(cb: (p: StatusPayload) => void): Promise<() => void>;
 import './web-components';
 export { getUpdateState, onUpdateState, setUpdateState, checkUpdate, initUpdateWatcher, } from './updates';
 export type { PluginUpdateState } from './updates';

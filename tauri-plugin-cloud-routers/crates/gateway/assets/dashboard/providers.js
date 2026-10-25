@@ -166,7 +166,7 @@ function bindProviderButtons() {
 
   $$('.gw-btn-models').forEach(el => el.addEventListener('click', () => refreshModels(el)));
   $$('.gw-btn-test').forEach(el => el.addEventListener('click', () => testProvider(el)));
-  $$('.gw-btn-keys-check').forEach(el => el.addEventListener('click', () => checkProviderKeys(el)));
+  $$('.gw-btn-keys-check').forEach(el => el.addEventListener('click', () => openCheckKeysModal(el.dataset.provider)));
   $$('.gw-btn-prov-del').forEach(el => el.addEventListener('click', () => deleteProvider(el)));
   $$('.gw-btn-key-del').forEach(el => el.addEventListener('click', () => deleteKey(el)));
   $$('.gw-btn-key-reset').forEach(el => el.addEventListener('click', () => resetKey(el)));
@@ -211,40 +211,95 @@ async function testProvider(btn) {
 // ─────────────────────── проверка Gemini-ключей ───────────────────────
 
 /**
- * Проверить ключи провайдера через бэкенд (`:countTokens`, лимит генерации
- * не расходуется). Конфиг от проверки не меняется — refreshAll не нужен;
- * результат рисуется в блоке карточки `gw-check-results` и дублируется тостом.
+ * Клик «Проверить ключи» открывает модалку выбора моделей (запрос 25.10.2026):
+ * остаток лимитов зависит от модели, поэтому модель выбирает пользователь.
+ * Предвыбран первый `gemini…`; пустой список моделей — подсказка про
+ * «Обновить модели» и запасную модель бэкенда.
  */
-async function checkProviderKeys(btn) {
-  const id = btn.dataset.provider;
+let checkKeysFor = null;
+
+function openCheckKeysModal(providerId) {
+  const p = state.config.providers.find(x => x.id === providerId);
+  if (!p) return;
+  checkKeysFor = providerId;
+  $('#checkkeys-provider').textContent = ` — ${p.name}`;
+  const box = $('#checkkeys-models');
+  if (p.models.length) {
+    const first = p.models.find(m => String(m).startsWith('gemini')) || p.models[0];
+    const shown = p.models.slice(0, 40);
+    box.innerHTML = shown.map(m =>
+      `<label class="gw-inline"><input type="checkbox" class="gw-checkkeys-model"` +
+      ` value="${esc(m)}"${m === first ? ' checked' : ''}> ${esc(m)}</label>`
+    ).join('') +
+    (p.models.length > shown.length
+      ? `<div class="gw-hint">…и ещё ${p.models.length - shown.length} — самые первые в списке</div>`
+      : '');
+  } else {
+    box.innerHTML = '<div class="gw-hint">Список моделей пуст — закройте окно и нажмите ' +
+      '«Обновить модели» в карточке. Иначе проверка пойдёт по запасной модели бэкенда.</div>';
+  }
+  $('#checkkeys-modal').hidden = false;
+}
+
+function closeCheckKeysModal() {
+  $('#checkkeys-modal').hidden = true;
+  checkKeysFor = null;
+}
+
+/** Бейдж вердикта и строка результата (общие для всех секций моделей). */
+function checkRowHtml(x) {
+  const badge = x.verdict === 'valid'
+    ? '<span class="gw-badge gw-ok">валиден</span>'
+    : x.verdict === 'invalid'
+      ? '<span class="gw-badge gw-err">невалиден</span>'
+      : x.verdict === 'valid_limited'
+        ? '<span class="gw-badge gw-warn">в лимите</span>'
+        : '<span class="gw-badge gw-warn">неизвестно</span>';
+  const label = x.name ? `${esc(x.name)} — ${esc(x.masked)}` : esc(x.masked);
+  return `<div class="gw-key"><span class="gw-val">${label}</span>${badge}</div>` +
+    (x.detail ? `<div class="gw-hint gw-check-detail">${esc(x.detail)}</div>` : '');
+}
+
+/**
+ * Проверить ключи по выбранным моделям (`:countTokens`, лимит генерации
+ * не расходуется). Конфиг от проверки не меняется — refreshAll не нужен;
+ * результат группируется по моделям в блоке `gw-check-results` карточки.
+ */
+async function runCheckKeys() {
+  if (!checkKeysFor) return;
+  const id = checkKeysFor;
+  const models = $$('.gw-checkkeys-model').filter(el => el.checked).map(el => el.value);
+  closeCheckKeysModal();
+
   const out = $(`#check-results-${CSS.escape(id)}`);
+  const btn = document.querySelector(`.gw-btn-keys-check[data-provider="${CSS.escape(id)}"]`);
   busy(btn, true);
   if (out) {
     out.hidden = false;
     out.innerHTML = '<div class="gw-hint">проверяем ключи…</div>';
   }
   try {
-    const r = await api(`/api/providers/${encodeURIComponent(id)}/keys/check`, { method: 'POST' });
+    const body = models.length ? JSON.stringify({ models }) : undefined;
+    const r = await api(`/api/providers/${encodeURIComponent(id)}/keys/check`, { method: 'POST', body });
     const nValid = r.results.filter(x => x.verdict === 'valid').length;
     const nLimited = r.results.filter(x => x.verdict === 'valid_limited').length;
     const nBad = r.results.filter(x => x.verdict === 'invalid').length;
     const nUnknown = r.results.filter(x => x.verdict === 'unknown').length;
     if (out) {
-      out.innerHTML = r.results.map((x) => {
-        const badge = x.verdict === 'valid'
-          ? '<span class="gw-badge gw-ok">валиден</span>'
-          : x.verdict === 'invalid'
-            ? '<span class="gw-badge gw-err">невалиден</span>'
-            : x.verdict === 'valid_limited'
-              ? '<span class="gw-badge gw-warn">в лимите</span>'
-              : '<span class="gw-badge gw-warn">неизвестно</span>';
-        const label = x.name ? `${esc(x.name)} — ${esc(x.masked)}` : esc(x.masked);
-        return `<div class="gw-key"><span class="gw-val">${label}</span>${badge}</div>` +
-          (x.detail ? `<div class="gw-hint gw-check-detail">${esc(x.detail)}</div>` : '');
-      }).join('') || '<div class="gw-hint">Проверять было нечего — активных ключей нет.</div>';
+      // Секции по моделям в порядке ответа бэкенда.
+      const byModel = new Map();
+      r.results.forEach((x) => {
+        if (!byModel.has(x.model)) byModel.set(x.model, []);
+        byModel.get(x.model).push(x);
+      });
+      out.innerHTML = [...byModel.entries()].map(([model, rows]) =>
+        `<div class="gw-check-model-title">${esc(model)}</div>` +
+        rows.map(checkRowHtml).join('')
+      ).join('') || '<div class="gw-hint">Проверять было нечего — активных ключей нет.</div>';
     }
     toast(
-      `Проверка ключей: валидных ${nValid}, невалидных ${nBad}, в лимите ${nLimited}, неизвестно ${nUnknown}` +
+      `Проверка ключей (${r.models.length} ${plural(r.models.length, 'модель', 'модели', 'моделей')}): ` +
+      `валидных ${nValid}, невалидных ${nBad}, в лимите ${nLimited}, неизвестно ${nUnknown}` +
       `${r.via_relay ? ' (через релей)' : ''}`,
       (nValid + nLimited) === r.results.length ? 'ok' : 'err',
     );
@@ -498,4 +553,8 @@ export function bindProviderExtras() {
   $('#btn-keys-cancel').addEventListener('click', closeKeysModal);
   $('#btn-keys-save').addEventListener('click', () => void saveKeys());
   $('#keys-modal').addEventListener('click', (e) => { if (e.target.id === 'keys-modal') closeKeysModal(); });
+
+  $('#btn-checkkeys-cancel').addEventListener('click', closeCheckKeysModal);
+  $('#btn-checkkeys-run').addEventListener('click', () => void runCheckKeys());
+  $('#checkkeys-modal').addEventListener('click', (e) => { if (e.target.id === 'checkkeys-modal') closeCheckKeysModal(); });
 }

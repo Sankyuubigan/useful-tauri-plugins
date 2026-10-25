@@ -804,9 +804,9 @@ async fn ping_provider_reports_latency_and_model_count() {
 
 fn gemini_check_plan(base: &str) -> crate::key_check::CheckPlan {
     crate::key_check::CheckPlan {
-        model: "gemini-2.0-flash".into(),
+        models: vec!["gemini-2.0-flash".into()],
         via_relay: false,
-        target_url: format!("{base}/v1beta/models/gemini-2.0-flash:countTokens"),
+        target_urls: vec![format!("{base}/v1beta/models/gemini-2.0-flash:countTokens")],
     }
 }
 
@@ -846,7 +846,8 @@ async fn key_check_run_plan_verdicts_each_key_without_losing_any() {
         .expect("run plan");
 
     assert!(!summary.via_relay);
-    assert_eq!(summary.model, "gemini-2.0-flash");
+    assert_eq!(summary.models, vec!["gemini-2.0-flash".to_string()]);
+    assert_eq!(summary.results[0].model, "gemini-2.0-flash", "модель дублируется в результате");
     assert_eq!(summary.results.len(), 2, "оба ключа обязаны попасть в свод: никакой ключ не теряется");
     assert_eq!(summary.results[0].key_id, "k1");
     assert_eq!(summary.results[0].verdict, crate::key_check::CheckVerdict::Invalid, "первый вызов — 401");

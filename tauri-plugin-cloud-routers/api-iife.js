@@ -559,6 +559,7 @@
       this.states = /* @__PURE__ */ new Map();
       this.combosByRouter = /* @__PURE__ */ new Map();
       this.offProgress = null;
+      this.offStatus = null;
       this.visibilityObserver = null;
       this.refreshTimer = null;
       /**
@@ -608,11 +609,18 @@
       });
       this.observeVisibility();
       this.refreshTimer = window.setInterval(() => void this.refresh(), 15e3);
+      onStatusChange((p) => {
+        if (p.router === this.router) void this.refresh(p.router);
+      }).then((off) => {
+        this.offStatus = off;
+      });
     }
     disconnectedCallback() {
       this.unsubUpdate?.();
       this.offProgress?.();
       this.offProgress = null;
+      this.offStatus?.();
+      this.offStatus = null;
       this.visibilityObserver?.disconnect();
       this.visibilityObserver = null;
       if (this.refreshTimer !== null) {
@@ -1199,6 +1207,10 @@
   }
   function onOpenDashboard(cb) {
     return listen(OPEN_DASHBOARD_EVENT, (e) => cb(e.payload));
+  }
+  var STATUS_EVENT = "cloud-routers-status";
+  function onStatusChange(cb) {
+    return listen(STATUS_EVENT, (e) => cb(e.payload));
   }
 
   // guest-js/iife-entry.ts

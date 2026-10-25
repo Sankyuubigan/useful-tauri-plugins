@@ -106,6 +106,15 @@ pub fn init() -> TauriPlugin<Wry, Config> {
                     }
                 }
             }
+            // Зеркало журнала шлюза в лог приложения (запрос 25.10.2026):
+            // отказы и проверки ключей из процесса шлюза видны во вкладке
+            // «Логи», а не только в gateway.log и дашборде.
+            router::gateway_events::spawn_mirror(&handle);
+            // Супервизор жизни шлюза: смерть/воскресение становятся событиями
+            // (лог хоста + `cloud-routers-status`), а не тишиной, которую
+            // замечают через 15-секундный опрос или страницу ошибки в iframe
+            // (инцидент 25.10.2026: тихая смерть 0.1.7 + застрявшая вкладка).
+            router::gateway_supervisor::spawn_supervisor(&handle);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

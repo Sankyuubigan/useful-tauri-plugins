@@ -246,6 +246,28 @@ export function onOpenDashboard(cb: (p: OpenDashboardPayload) => void): Promise<
   return listen<OpenDashboardPayload>(OPEN_DASHBOARD_EVENT, (e) => cb(e.payload))
 }
 
+/** Tauri-событие «состояние жизни шлюза изменилось» (супервизор плагина,
+ * тик 3 с, события только на переходах): `{ router, running, port, base_url }`. */
+export const STATUS_EVENT = 'cloud-routers-status'
+
+/** Payload события статуса жизни. `running:false` приходит и на смерть
+ * (запись процесса была, порт умер), и на штатную остановку. */
+export interface StatusPayload {
+  router: RouterId
+  running: boolean
+  port?: number
+  base_url: string
+}
+
+/** Подписка на события жизни шлюза от супервизора.
+ *
+ * Получатели: панель (немедленный refresh пилюли вместо 15-с опроса) и хост
+ * (перезагрузка застрявших на странице ошибки вкладок дашборда при
+ * `running:true`). Возвращает функцию отписки. */
+export function onStatusChange(cb: (p: StatusPayload) => void): Promise<() => void> {
+  return listen<StatusPayload>(STATUS_EVENT, (e) => cb(e.payload))
+}
+
 // onLoginState переехал в ./login_events (реэкспорт стоит выше по файлу).
 // Side-effect: импорт пакета регистрирует Web Component <cloud-routers-panel>.
 import './web-components'

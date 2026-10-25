@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-validate-video-bundle-dir"
+description = "Enables the validate_video_bundle_dir command without any pre-configured scope."
+commands.allow = ["validate_video_bundle_dir"]
+
+[[permission]]
+identifier = "deny-validate-video-bundle-dir"
+description = "Denies the validate_video_bundle_dir command without any pre-configured scope."
+commands.deny = ["validate_video_bundle_dir"]

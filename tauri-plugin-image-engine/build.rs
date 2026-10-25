@@ -16,9 +16,18 @@ const COMMANDS: &[&str] = &[
     "remove_image_bundle",
     "remove_image_bundle_from_list",
     "estimate_image_memory",
+    // ── Видео бандлы ──
+    "get_video_bundles",
+    "get_video_bundle_info",
+    "set_selected_video_bundle",
+    "validate_video_bundle_dir",
+    "set_video_bundle_dir",
+    "download_video_bundle",
+    "remove_video_bundle_files",
     // ── Генерация ──
     "generate_image",
     "edit_image",
+    "generate_video",
 ];
 
 fn main() {

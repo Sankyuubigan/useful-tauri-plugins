@@ -22,6 +22,14 @@ Default permissions for the image-engine plugin.
 - `allow-estimate-image-memory`
 - `allow-generate-image`
 - `allow-edit-image`
+- `allow-get-video-bundles`
+- `allow-get-video-bundle-info`
+- `allow-set-selected-video-bundle`
+- `allow-validate-video-bundle-dir`
+- `allow-set-video-bundle-dir`
+- `allow-download-video-bundle`
+- `allow-remove-video-bundle-files`
+- `allow-generate-video`
 
 ## Permission Table
 
@@ -80,6 +88,32 @@ Enables the download_image_bundle command without any pre-configured scope.
 <td>
 
 Denies the download_image_bundle command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-download-video-bundle`
+
+</td>
+<td>
+
+Enables the download_video_bundle command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:deny-download-video-bundle`
+
+</td>
+<td>
+
+Denies the download_video_bundle command without any pre-configured scope.
 
 </td>
 </tr>
@@ -165,6 +199,32 @@ Denies the generate_image command without any pre-configured scope.
 <tr>
 <td>
 
+`image-engine:allow-generate-video`
+
+</td>
+<td>
+
+Enables the generate_video command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:deny-generate-video`
+
+</td>
+<td>
+
+Denies the generate_video command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `image-engine:allow-get-image-bundle-info`
 
 </td>
@@ -236,6 +296,58 @@ Enables the get_image_models_catalog command without any pre-configured scope.
 <td>
 
 Denies the get_image_models_catalog command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-get-video-bundle-info`
+
+</td>
+<td>
+
+Enables the get_video_bundle_info command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:deny-get-video-bundle-info`
+
+</td>
+<td>
+
+Denies the get_video_bundle_info command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-get-video-bundles`
+
+</td>
+<td>
+
+Enables the get_video_bundles command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:deny-get-video-bundles`
+
+</td>
+<td>
+
+Denies the get_video_bundles command without any pre-configured scope.
 
 </td>
 </tr>
@@ -373,6 +485,32 @@ Denies the remove_image_engine command without any pre-configured scope.
 <tr>
 <td>
 
+`image-engine:allow-remove-video-bundle-files`
+
+</td>
+<td>
+
+Enables the remove_video_bundle_files command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:deny-remove-video-bundle-files`
+
+</td>
+<td>
+
+Denies the remove_video_bundle_files command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `image-engine:allow-set-image-bundle-dir`
 
 </td>
@@ -451,6 +589,58 @@ Denies the set_image_engine_variant command without any pre-configured scope.
 <tr>
 <td>
 
+`image-engine:allow-set-selected-video-bundle`
+
+</td>
+<td>
+
+Enables the set_selected_video_bundle command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:deny-set-selected-video-bundle`
+
+</td>
+<td>
+
+Denies the set_selected_video_bundle command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-set-video-bundle-dir`
+
+</td>
+<td>
+
+Enables the set_video_bundle_dir command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:deny-set-video-bundle-dir`
+
+</td>
+<td>
+
+Denies the set_video_bundle_dir command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `image-engine:allow-validate-image-bundle-dir`
 
 </td>
@@ -470,6 +660,32 @@ Enables the validate_image_bundle_dir command without any pre-configured scope.
 <td>
 
 Denies the validate_image_bundle_dir command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-validate-video-bundle-dir`
+
+</td>
+<td>
+
+Enables the validate_video_bundle_dir command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:deny-validate-video-bundle-dir`
+
+</td>
+<td>
+
+Denies the validate_video_bundle_dir command without any pre-configured scope.
 
 </td>
 </tr>
@@ -691,6 +907,110 @@ Allow text-to-image generation via sd-server.
 <td>
 
 Allow image editing via sd-server (reference images).
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-get-video-bundles`
+
+</td>
+<td>
+
+Allow listing the video model bundles catalog.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-get-video-bundle-info`
+
+</td>
+<td>
+
+Allow reading download proposal/state for a video bundle.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-set-selected-video-bundle`
+
+</td>
+<td>
+
+Allow selecting the active video bundle (catalog entry).
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-validate-video-bundle-dir`
+
+</td>
+<td>
+
+Allow validating an existing video bundle directory.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-set-video-bundle-dir`
+
+</td>
+<td>
+
+Allow pointing the video bundle to an existing valid directory.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-download-video-bundle`
+
+</td>
+<td>
+
+Allow downloading all files of a video bundle.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-remove-video-bundle-files`
+
+</td>
+<td>
+
+Allow deleting the downloaded video bundle files.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-generate-video`
+
+</td>
+<td>
+
+Allow video generation via sd-server (T2VA/I2VA/FL2VA/Ref2VA).
 
 </td>
 </tr>

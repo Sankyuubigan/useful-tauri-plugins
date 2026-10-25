@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-set-selected-video-bundle"
+description = "Enables the set_selected_video_bundle command without any pre-configured scope."
+commands.allow = ["set_selected_video_bundle"]
+
+[[permission]]
+identifier = "deny-set-selected-video-bundle"
+description = "Denies the set_selected_video_bundle command without any pre-configured scope."
+commands.deny = ["set_selected_video_bundle"]

@@ -319,6 +319,18 @@
           "markdownDescription": "Denies the download_image_bundle command without any pre-configured scope."
         },
         {
+          "description": "Enables the download_video_bundle command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-download-video-bundle",
+          "markdownDescription": "Enables the download_video_bundle command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the download_video_bundle command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-download-video-bundle",
+          "markdownDescription": "Denies the download_video_bundle command without any pre-configured scope."
+        },
+        {
           "description": "Enables the edit_image command without any pre-configured scope.",
           "type": "string",
           "const": "allow-edit-image",
@@ -355,6 +367,18 @@
           "markdownDescription": "Denies the generate_image command without any pre-configured scope."
         },
         {
+          "description": "Enables the generate_video command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-generate-video",
+          "markdownDescription": "Enables the generate_video command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the generate_video command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-generate-video",
+          "markdownDescription": "Denies the generate_video command without any pre-configured scope."
+        },
+        {
           "description": "Enables the get_image_bundle_info command without any pre-configured scope.",
           "type": "string",
           "const": "allow-get-image-bundle-info",
@@ -389,6 +413,30 @@
           "type": "string",
           "const": "deny-get-image-models-catalog",
           "markdownDescription": "Denies the get_image_models_catalog command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_video_bundle_info command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-video-bundle-info",
+          "markdownDescription": "Enables the get_video_bundle_info command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_video_bundle_info command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-video-bundle-info",
+          "markdownDescription": "Denies the get_video_bundle_info command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the get_video_bundles command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-get-video-bundles",
+          "markdownDescription": "Enables the get_video_bundles command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the get_video_bundles command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-get-video-bundles",
+          "markdownDescription": "Denies the get_video_bundles command without any pre-configured scope."
         },
         {
           "description": "Enables the install_image_engine command without any pre-configured scope.",
@@ -451,6 +499,18 @@
           "markdownDescription": "Denies the remove_image_engine command without any pre-configured scope."
         },
         {
+          "description": "Enables the remove_video_bundle_files command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-remove-video-bundle-files",
+          "markdownDescription": "Enables the remove_video_bundle_files command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the remove_video_bundle_files command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-remove-video-bundle-files",
+          "markdownDescription": "Denies the remove_video_bundle_files command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_image_bundle_dir command without any pre-configured scope.",
           "type": "string",
           "const": "allow-set-image-bundle-dir",
@@ -487,6 +547,30 @@
           "markdownDescription": "Denies the set_image_engine_variant command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_selected_video_bundle command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-selected-video-bundle",
+          "markdownDescription": "Enables the set_selected_video_bundle command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_selected_video_bundle command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-selected-video-bundle",
+          "markdownDescription": "Denies the set_selected_video_bundle command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the set_video_bundle_dir command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-set-video-bundle-dir",
+          "markdownDescription": "Enables the set_video_bundle_dir command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the set_video_bundle_dir command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-set-video-bundle-dir",
+          "markdownDescription": "Denies the set_video_bundle_dir command without any pre-configured scope."
+        },
+        {
           "description": "Enables the validate_image_bundle_dir command without any pre-configured scope.",
           "type": "string",
           "const": "allow-validate-image-bundle-dir",
@@ -499,10 +583,22 @@
           "markdownDescription": "Denies the validate_image_bundle_dir command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the image-engine plugin.\n#### This default permission set includes:\n\n- `allow-get-image-engine-status`\n- `allow-install-image-engine`\n- `allow-set-image-engine-variant`\n- `allow-check-image-engine-update`\n- `allow-install-image-engine-update`\n- `allow-remove-image-engine`\n- `allow-set-image-engine-dir`\n- `allow-get-image-models-catalog`\n- `allow-get-image-bundle-info`\n- `allow-set-selected-image-bundle`\n- `allow-download-image-bundle`\n- `allow-validate-image-bundle-dir`\n- `allow-set-image-bundle-dir`\n- `allow-remove-image-bundle`\n- `allow-remove-image-bundle-from-list`\n- `allow-estimate-image-memory`\n- `allow-generate-image`\n- `allow-edit-image`",
+          "description": "Enables the validate_video_bundle_dir command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-validate-video-bundle-dir",
+          "markdownDescription": "Enables the validate_video_bundle_dir command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the validate_video_bundle_dir command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-validate-video-bundle-dir",
+          "markdownDescription": "Denies the validate_video_bundle_dir command without any pre-configured scope."
+        },
+        {
+          "description": "Default permissions for the image-engine plugin.\n#### This default permission set includes:\n\n- `allow-get-image-engine-status`\n- `allow-install-image-engine`\n- `allow-set-image-engine-variant`\n- `allow-check-image-engine-update`\n- `allow-install-image-engine-update`\n- `allow-remove-image-engine`\n- `allow-set-image-engine-dir`\n- `allow-get-image-models-catalog`\n- `allow-get-image-bundle-info`\n- `allow-set-selected-image-bundle`\n- `allow-download-image-bundle`\n- `allow-validate-image-bundle-dir`\n- `allow-set-image-bundle-dir`\n- `allow-remove-image-bundle`\n- `allow-remove-image-bundle-from-list`\n- `allow-estimate-image-memory`\n- `allow-generate-image`\n- `allow-edit-image`\n- `allow-get-video-bundles`\n- `allow-get-video-bundle-info`\n- `allow-set-selected-video-bundle`\n- `allow-validate-video-bundle-dir`\n- `allow-set-video-bundle-dir`\n- `allow-download-video-bundle`\n- `allow-remove-video-bundle-files`\n- `allow-generate-video`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the image-engine plugin.\n#### This default permission set includes:\n\n- `allow-get-image-engine-status`\n- `allow-install-image-engine`\n- `allow-set-image-engine-variant`\n- `allow-check-image-engine-update`\n- `allow-install-image-engine-update`\n- `allow-remove-image-engine`\n- `allow-set-image-engine-dir`\n- `allow-get-image-models-catalog`\n- `allow-get-image-bundle-info`\n- `allow-set-selected-image-bundle`\n- `allow-download-image-bundle`\n- `allow-validate-image-bundle-dir`\n- `allow-set-image-bundle-dir`\n- `allow-remove-image-bundle`\n- `allow-remove-image-bundle-from-list`\n- `allow-estimate-image-memory`\n- `allow-generate-image`\n- `allow-edit-image`"
+          "markdownDescription": "Default permissions for the image-engine plugin.\n#### This default permission set includes:\n\n- `allow-get-image-engine-status`\n- `allow-install-image-engine`\n- `allow-set-image-engine-variant`\n- `allow-check-image-engine-update`\n- `allow-install-image-engine-update`\n- `allow-remove-image-engine`\n- `allow-set-image-engine-dir`\n- `allow-get-image-models-catalog`\n- `allow-get-image-bundle-info`\n- `allow-set-selected-image-bundle`\n- `allow-download-image-bundle`\n- `allow-validate-image-bundle-dir`\n- `allow-set-image-bundle-dir`\n- `allow-remove-image-bundle`\n- `allow-remove-image-bundle-from-list`\n- `allow-estimate-image-memory`\n- `allow-generate-image`\n- `allow-edit-image`\n- `allow-get-video-bundles`\n- `allow-get-video-bundle-info`\n- `allow-set-selected-video-bundle`\n- `allow-validate-video-bundle-dir`\n- `allow-set-video-bundle-dir`\n- `allow-download-video-bundle`\n- `allow-remove-video-bundle-files`\n- `allow-generate-video`"
         },
         {
           "description": "Allow reading the image engine status (installed variants, gpu).",
@@ -605,6 +701,54 @@
           "type": "string",
           "const": "allow-edit-image",
           "markdownDescription": "Allow image editing via sd-server (reference images)."
+        },
+        {
+          "description": "Allow listing the video model bundles catalog.",
+          "type": "string",
+          "const": "allow-get-video-bundles",
+          "markdownDescription": "Allow listing the video model bundles catalog."
+        },
+        {
+          "description": "Allow reading download proposal/state for a video bundle.",
+          "type": "string",
+          "const": "allow-get-video-bundle-info",
+          "markdownDescription": "Allow reading download proposal/state for a video bundle."
+        },
+        {
+          "description": "Allow selecting the active video bundle (catalog entry).",
+          "type": "string",
+          "const": "allow-set-selected-video-bundle",
+          "markdownDescription": "Allow selecting the active video bundle (catalog entry)."
+        },
+        {
+          "description": "Allow validating an existing video bundle directory.",
+          "type": "string",
+          "const": "allow-validate-video-bundle-dir",
+          "markdownDescription": "Allow validating an existing video bundle directory."
+        },
+        {
+          "description": "Allow pointing the video bundle to an existing valid directory.",
+          "type": "string",
+          "const": "allow-set-video-bundle-dir",
+          "markdownDescription": "Allow pointing the video bundle to an existing valid directory."
+        },
+        {
+          "description": "Allow downloading all files of a video bundle.",
+          "type": "string",
+          "const": "allow-download-video-bundle",
+          "markdownDescription": "Allow downloading all files of a video bundle."
+        },
+        {
+          "description": "Allow deleting the downloaded video bundle files.",
+          "type": "string",
+          "const": "allow-remove-video-bundle-files",
+          "markdownDescription": "Allow deleting the downloaded video bundle files."
+        },
+        {
+          "description": "Allow video generation via sd-server (T2VA/I2VA/FL2VA/Ref2VA).",
+          "type": "string",
+          "const": "allow-generate-video",
+          "markdownDescription": "Allow video generation via sd-server (T2VA/I2VA/FL2VA/Ref2VA)."
         }
       ]
     }

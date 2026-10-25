@@ -91,6 +91,48 @@ identifier = "allow-edit-image"
 description = "Allow image editing via sd-server (reference images)."
 commands.allow = ["edit_image"]
 
+# ── Видео бандлы ──
+
+[[permission]]
+identifier = "allow-get-video-bundles"
+description = "Allow listing the video model bundles catalog."
+commands.allow = ["get_video_bundles"]
+
+[[permission]]
+identifier = "allow-get-video-bundle-info"
+description = "Allow reading download proposal/state for a video bundle."
+commands.allow = ["get_video_bundle_info"]
+
+[[permission]]
+identifier = "allow-set-selected-video-bundle"
+description = "Allow selecting the active video bundle (catalog entry)."
+commands.allow = ["set_selected_video_bundle"]
+
+[[permission]]
+identifier = "allow-validate-video-bundle-dir"
+description = "Allow validating an existing video bundle directory."
+commands.allow = ["validate_video_bundle_dir"]
+
+[[permission]]
+identifier = "allow-set-video-bundle-dir"
+description = "Allow pointing the video bundle to an existing valid directory."
+commands.allow = ["set_video_bundle_dir"]
+
+[[permission]]
+identifier = "allow-download-video-bundle"
+description = "Allow downloading all files of a video bundle."
+commands.allow = ["download_video_bundle"]
+
+[[permission]]
+identifier = "allow-remove-video-bundle-files"
+description = "Allow deleting the downloaded video bundle files."
+commands.allow = ["remove_video_bundle_files"]
+
+[[permission]]
+identifier = "allow-generate-video"
+description = "Allow video generation via sd-server (T2VA/I2VA/FL2VA/Ref2VA)."
+commands.allow = ["generate_video"]
+
 [default]
 description = "Default permissions for the image-engine plugin."
 permissions = [
@@ -112,4 +154,12 @@ permissions = [
   "allow-estimate-image-memory",
   "allow-generate-image",
   "allow-edit-image",
+  "allow-get-video-bundles",
+  "allow-get-video-bundle-info",
+  "allow-set-selected-video-bundle",
+  "allow-validate-video-bundle-dir",
+  "allow-set-video-bundle-dir",
+  "allow-download-video-bundle",
+  "allow-remove-video-bundle-files",
+  "allow-generate-video",
 ]

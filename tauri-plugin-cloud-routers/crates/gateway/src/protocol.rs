@@ -104,6 +104,10 @@ impl VendorProtocol for OpenAiProtocol {
             HeaderName::from_static("authorization"),
             Self::bearer(credential),
         );
+        // Релей без этих заголовков отвечает 401 «missing or invalid
+        // x-relay-token» (кейс 25.10.2026 — «Обновить модели» у Google): чат
+        // ставит их через chat_request, а этот путь был единственным без них.
+        crate::upstream::apply_route_headers(&route, &mut headers);
         Ok(UpstreamRequest {
             route,
             method: reqwest::Method::GET,
@@ -204,6 +208,40 @@ mod tests {
             "Bearer gsk-1"
         );
         assert!(req.body.is_empty(), "у GET /models тела быть не должно");
+    }
+
+    #[test]
+    fn openai_models_request_carries_relay_headers() {
+        // Регресс 25.10.2026: models_request строил relay-URL без
+        // x-relay-token/x-target-url, и воркер отвечал 401 «missing or invalid
+        // x-relay-token» на «Обновить модели» любого relay-провайдера.
+        let p = OpenAiProtocol;
+        let mut provider = provider();
+        provider.use_relay = true;
+        let cfg = GatewayConfig {
+            vercel_relay_url: Some("https://relay.workers.dev".into()),
+            vercel_relay_token: Some("s3cret".into()),
+            ..Default::default()
+        };
+        let req = p.models_request(&provider, &cfg, "gsk-1").expect("req");
+        assert!(req.route.is_relay());
+        assert_eq!(req.route.request_url(), "https://relay.workers.dev/api/gateway/models");
+        assert_eq!(
+            req.headers
+                .get(crate::upstream::HDR_RELAY_TOKEN)
+                .expect("token")
+                .to_str()
+                .expect("str"),
+            "s3cret"
+        );
+        assert_eq!(
+            req.headers
+                .get(crate::upstream::HDR_TARGET_URL)
+                .expect("target")
+                .to_str()
+                .expect("str"),
+            "https://api.groq.com/openai/v1/models"
+        );
     }
 
     #[test]

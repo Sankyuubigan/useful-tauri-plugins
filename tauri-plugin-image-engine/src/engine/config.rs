@@ -71,7 +71,11 @@ pub fn engine_dir_early() -> PathBuf {
     crate::engine::sdcpp_installer::default_dir(&exe_dir)
 }
 
-/// Папка бандла без AppHandle: явная из конфига, иначе `<exe>/image_models/<name>`.
+/// Папка бандлов без AppHandle: явная из конфига, иначе `<exe>/image_models`.
+/// Одна папка-пул для ВСЕХ бандлов (имена общих ролей совпадают, downloader
+/// пропускает существующее) — per-bundle подпапки убрали 25.10.2026: они
+/// порождали перекачку общих файлов и «3 файла есть, 1 нет» при переключении
+/// активного бандла.
 pub fn bundle_dir_early() -> PathBuf {
     let cfg = load_image_config_early();
     if let Some(p) = &cfg.image_bundle_dir {
@@ -79,17 +83,16 @@ pub fn bundle_dir_early() -> PathBuf {
             return PathBuf::from(p);
         }
     }
-    let name = crate::engine::models_catalog::default_bundle_entry()
-        .map(|e| e.name.clone())
-        .unwrap_or_else(|| "qwen-image-2.1-turbo-unsloth-q5_ks".to_string());
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
-    exe_dir.join("image_models").join(name)
+    exe_dir.join("image_models")
 }
 
-/// Папка видео-бандла без AppHandle: явная из конфига, иначе `<exe>/video_models/<name>`.
+/// Папка видео-бандлов без AppHandle: явная из конфига, иначе `<exe>/video_models`.
+/// Тот же пул-принцип, что у image: diffusion-файлы разных бандлов имеют
+/// разные имена, общие роли (llm/vae/audio_vae) — одинаковые.
 pub fn video_bundle_dir_early() -> PathBuf {
     let cfg = load_image_config_early();
     if let Some(p) = &cfg.video_bundle_dir {
@@ -97,14 +100,11 @@ pub fn video_bundle_dir_early() -> PathBuf {
             return PathBuf::from(p);
         }
     }
-    let name = crate::engine::models_catalog::default_video_bundle_entry()
-        .map(|e| e.name.clone())
-        .unwrap_or_else(|| "minimax_h3_fl2va_pruned-q4km".to_string());
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.to_path_buf()))
         .unwrap_or_else(|| PathBuf::from("."));
-    exe_dir.join("video_models").join(name)
+    exe_dir.join("video_models")
 }
 
 /// Читает ТОЛЬКО image-ключи (остальное игнорируется serde по умолчанию).

@@ -14,6 +14,9 @@ export class BundleTabElement extends HTMLElement {
         super(...arguments);
         this.busy = false;
         this.appliedBundle = '';
+        /** Статусы бандлов из последнего refresh (fully_downloaded и файлы) —
+         * источник гейта кнопки «Активировать». */
+        this.statuses = new Map();
     }
     connectedCallback() {
         if (this.root)
@@ -117,13 +120,13 @@ export class BundleTabElement extends HTMLElement {
         }
         catch { /* каталог встроен — просто без списка */ }
         sel.innerHTML = '';
-        const statuses = new Map();
-        statuses.set(info.bundle_name, info);
+        this.statuses = new Map();
+        this.statuses.set(info.bundle_name, info);
         for (const entry of entries) {
-            if (statuses.has(entry.name))
+            if (this.statuses.has(entry.name))
                 continue;
             try {
-                statuses.set(entry.name, await svc.info(entry.name));
+                this.statuses.set(entry.name, await svc.info(entry.name));
             }
             catch { /* нет на диске — метка ниже */ }
         }
@@ -135,7 +138,7 @@ export class BundleTabElement extends HTMLElement {
         }
         else {
             for (const entry of entries) {
-                const st = statuses.get(entry.name);
+                const st = this.statuses.get(entry.name);
                 const o = document.createElement('option');
                 o.value = entry.name;
                 if (!st) {
@@ -190,8 +193,15 @@ export class BundleTabElement extends HTMLElement {
     }
     onBundleChange() {
         const sel = this.root.getElementById('bundle');
-        this.root.getElementById('activate').style.display =
-            sel.value !== this.appliedBundle ? 'inline-block' : 'none';
+        if (sel.value === this.appliedBundle) {
+            this.root.getElementById('activate').style.display = 'none';
+            return;
+        }
+        // Гейт активации (решение юзера 25.10.2026): недокачанный бандл нельзя
+        // активировать — бэкенд это запрещает, кнопка честно не появляется.
+        const st = this.statuses.get(sel.value);
+        const activatable = !st || st.fully_downloaded;
+        this.root.getElementById('activate').style.display = activatable ? 'inline-block' : 'none';
     }
     async onActivate() {
         const svc = this.service;
@@ -214,8 +224,11 @@ export class BundleTabElement extends HTMLElement {
             await this.refresh();
         }
     }
-    /** Сборка целевой папки скачивания (логика ImageBundlePanel): если хоть один
-     * файл уже на диске — продолжаем в текущей папке; иначе диалог. */
+    /** Сборка целевой папки скачивания: если хоть один файл уже на диске —
+     * продолжаем в текущей папке; иначе диалог. Выбранная папка = ПУЛ для всех
+     * наборов (25.10.2026): подпапка `${base}/${bundle_name}` больше не создаётся —
+     * она порождала перекачку общих файлов и «3 файла есть, 1 нет» при
+     * переключении активного бандла (инцидент 25.10.2026). */
     async onDownload() {
         const svc = this.service;
         if (!svc || this.busy)
@@ -236,9 +249,7 @@ export class BundleTabElement extends HTMLElement {
                 const base = Array.isArray(sel) ? sel[0] : sel;
                 if (!base)
                     return;
-                const sep = base.includes('\\') ? '\\' : '/';
-                const tail = base.split(/[\\/]/).pop() ?? '';
-                target = tail === cur.bundle_name ? base : (base.endsWith(sep) ? `${base}${cur.bundle_name}` : `${base}${sep}${cur.bundle_name}`);
+                target = base;
             }
             await svc.download(target, cur.bundle_name);
             notifyBundleChanged();

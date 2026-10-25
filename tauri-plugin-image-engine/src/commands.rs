@@ -50,7 +50,11 @@ pub fn get_image_engine_dir(app: &AppHandle) -> PathBuf {
     engine_dir(app)
 }
 
-/// Папка бандла: явная из конфига, иначе `<exe>/image_models/<bundle_name>`.
+/// Папка бандлов: явная из конфига, иначе `<exe>/image_models`. Одна
+/// папка-пул для ВСЕХ бандлов (имена общих ролей совпадают → downloader
+/// пропускает существующее); per-bundle подпапки убраны 25.10.2026 —
+/// они порождали перекачку общих файлов и «3 файла есть, 1 нет» при
+/// переключении активного бандла.
 fn bundle_dir(app: &AppHandle) -> PathBuf {
     let cfg = engine::load_image_config(app);
     if let Some(p) = &cfg.image_bundle_dir {
@@ -58,10 +62,7 @@ fn bundle_dir(app: &AppHandle) -> PathBuf {
             return PathBuf::from(p);
         }
     }
-    let name = engine::default_bundle_entry()
-        .map(|e| e.name.clone())
-        .unwrap_or_else(|| "qwen-image-2.1-turbo-unsloth-q5_ks".to_string());
-    exe_dir(app).join("image_models").join(name)
+    exe_dir(app).join("image_models")
 }
 
 fn preferred_variant(app: &AppHandle) -> Option<String> {
@@ -344,6 +345,23 @@ pub fn set_selected_image_bundle(
     let entry = engine::bundle_by_name(&bundle_name).ok_or_else(|| {
         format!("Бандл «{}» отсутствует в каталоге плагина.", bundle_name)
     })?;
+    // Гейт активации (решение юзера 25.10.2026): неполный бандл нельзя
+    // сделать активным — иначе generate_image честно упадёт с «скачан
+    // не полностью». Ошибка называет недостающие файлы.
+    let dir = bundle_dir(&app);
+    let missing: Vec<&str> = entry
+        .files
+        .iter()
+        .filter(|f| !dir.join(&f.filename).exists())
+        .map(|f| f.filename.as_str())
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "Бандл «{}» скачан не полностью: нет файлов {}. Сначала нажмите «Скачать набор» / «Докачать файлы» — активация недокачанного набора запрещена.",
+            entry.name,
+            missing.join(", ")
+        ));
+    }
     let mut cfg = engine::load_image_config(&app);
     cfg.selected_bundle = Some(bundle_name.clone());
     engine::save_image_config(&app, &cfg)?;
@@ -426,6 +444,34 @@ pub async fn download_image_bundle(
                 continue;
             }
         }
+        // Adoption: файл из легаси per-bundle подпапки пула (установки вида
+        // «каждый бандл — своя папка») переносится в пул вместо перекачки.
+        if let Some(src) =
+            crate::pool::find_adoptable(&dir, &entry.name, &f.filename, f.size_bytes)
+        {
+            match crate::pool::adopt_into_pool(&src, &dest) {
+                Ok(how) => {
+                    on_log(format!(
+                        "Найден существующий файл {} ({}), {} в пул без перекачки",
+                        f.filename,
+                        src.display(),
+                        match how {
+                            crate::pool::AdoptHow::Moved => "перемещён",
+                            crate::pool::AdoptHow::Linked => "жёсткая ссылка",
+                        }
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    on_log(format!(
+                        "Adoption {} из {} не удался ({}): качаю заново",
+                        f.filename,
+                        src.display(),
+                        e
+                    ));
+                }
+            }
+        }
         tauri_plugin_downloader::download(
             &f.download_url,
             &dest,
@@ -440,6 +486,14 @@ pub async fn download_image_bundle(
         .await
         .map_err(|e| format!("Не удалось скачать {}: {}", f.filename, e))?;
     }
+    // Верификация ПОСЛЕ цикла (идея юзера): «скачан целиком» — только когда
+    // каждый файл каталога на диске и совпадает размером.
+    let refs: Vec<(&str, Option<u64>)> = entry
+        .files
+        .iter()
+        .map(|f| (f.filename.as_str(), f.size_bytes))
+        .collect();
+    crate::pool::verify_files(&refs, &dir)?;
     let mut cfg = engine::load_image_config(&app);
     cfg.image_bundle_dir = Some(save_dir);
     engine::save_image_config(&app, &cfg)?;
@@ -615,17 +669,18 @@ pub struct VideoBundleValidate {
     pub missing: Vec<String>,
 }
 
-/// Папка видео-бандла: явная из конфига, иначе `<exe>/video_models/<bundle_name>`
-/// (каждый бандл — своя подпапка: diffusion-файлы разных квантов имеют разные
-/// имена, но складывать вперемешку их нельзя).
-fn video_bundle_dir(app: &AppHandle, entry: &engine::VideoBundleEntry) -> PathBuf {
+/// Папка видео-бандлов: явная из конфига, иначе `<exe>/video_models`. Тот же
+/// пул-принцип, что у image (25.10.2026): diffusion-файлы разных бандлов
+/// имеют разные имена, общие роли (llm/vae/audio_vae) — одинаковые, downloader
+/// пропускает существующее. Per-bundle подпапки порождали перекачку.
+fn video_bundle_dir(app: &AppHandle) -> PathBuf {
     let cfg = engine::load_image_config(app);
     if let Some(p) = &cfg.video_bundle_dir {
         if !p.is_empty() {
             return PathBuf::from(p);
         }
     }
-    exe_dir(app).join("video_models").join(&entry.name)
+    exe_dir(app).join("video_models")
 }
 
 /// Взять запись: имя → каталог; без имени → selected_video_bundle → дефолт.
@@ -659,7 +714,7 @@ fn video_entry_from_name(name: Option<&str>) -> Result<engine::VideoBundleEntry,
 }
 
 fn video_bundle_info_for(app: &AppHandle, entry: &engine::VideoBundleEntry) -> VideoBundleInfo {
-    let save_dir = video_bundle_dir(app, entry);
+    let save_dir = video_bundle_dir(app);
     let mut files = Vec::with_capacity(entry.files.len());
     let mut fully = true;
     for f in &entry.files {
@@ -739,6 +794,21 @@ pub fn set_selected_video_bundle(
     let entry = engine::video_bundle_by_name(&bundle_name).ok_or_else(|| {
         format!("Видео-бандл «{}» отсутствует в каталоге плагина.", bundle_name)
     })?;
+    // Гейт активации (зеркало image): неполный видео-бандл не активируется.
+    let dir = video_bundle_dir(&app);
+    let missing: Vec<&str> = entry
+        .files
+        .iter()
+        .filter(|f| !dir.join(&f.filename).exists())
+        .map(|f| f.filename.as_str())
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "Видео-бандл «{}» скачан не полностью: нет файлов {}. Сначала нажмите «Скачать набор» / «Докачать файлы» — активация недокачанного набора запрещена.",
+            entry.name,
+            missing.join(", ")
+        ));
+    }
     let mut cfg = engine::load_image_config(&app);
     cfg.selected_video_bundle = Some(bundle_name.clone());
     engine::save_image_config(&app, &cfg)?;
@@ -779,7 +849,7 @@ pub fn set_video_bundle_dir(app: AppHandle, path: Option<String>) -> Result<Vide
 #[tauri::command]
 pub fn remove_video_bundle_files(app: AppHandle, bundle_name: Option<String>) -> Result<VideoBundleInfo, String> {
     let entry = video_entry(&app, bundle_name.as_deref())?;
-    let dir = video_bundle_dir(&app, &entry);
+    let dir = video_bundle_dir(&app);
     for f in &entry.files {
         let p = dir.join(&f.filename);
         if p.exists() {
@@ -830,6 +900,33 @@ pub async fn download_video_bundle(
                 continue;
             }
         }
+        // Adoption легаси per-bundle подпапок — как у image-бандлов.
+        if let Some(src) =
+            crate::pool::find_adoptable(&dir, &entry.name, &f.filename, f.size_bytes)
+        {
+            match crate::pool::adopt_into_pool(&src, &dest) {
+                Ok(how) => {
+                    on_log(format!(
+                        "Найден существующий файл {} ({}), {} в пул без перекачки",
+                        f.filename,
+                        src.display(),
+                        match how {
+                            crate::pool::AdoptHow::Moved => "перемещён",
+                            crate::pool::AdoptHow::Linked => "жёсткая ссылка",
+                        }
+                    ));
+                    continue;
+                }
+                Err(e) => {
+                    on_log(format!(
+                        "Adoption {} из {} не удался ({}): качаю заново",
+                        f.filename,
+                        src.display(),
+                        e
+                    ));
+                }
+            }
+        }
         tauri_plugin_downloader::download(
             &f.download_url,
             &dest,
@@ -844,6 +941,13 @@ pub async fn download_video_bundle(
         .await
         .map_err(|e| format!("Не удалось скачать {}: {}", f.filename, e))?;
     }
+    // Верификация после цикла — зеркало image-ветки.
+    let refs: Vec<(&str, Option<u64>)> = entry
+        .files
+        .iter()
+        .map(|f| (f.filename.as_str(), f.size_bytes))
+        .collect();
+    crate::pool::verify_files(&refs, &dir)?;
     let mut cfg = engine::load_image_config(&app);
     cfg.video_bundle_dir = Some(save_dir);
     engine::save_image_config(&app, &cfg)?;
@@ -906,7 +1010,7 @@ pub async fn generate_video(
     bundle_name: Option<String>,
 ) -> Result<engine::VideoGenResult, String> {
     let entry = video_entry(&app, bundle_name.as_deref())?;
-    let bdir = video_bundle_dir(&app, &entry);
+    let bdir = video_bundle_dir(&app);
     let edir = engine_dir(&app);
     let variant = preferred_variant(&app);
 

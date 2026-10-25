@@ -32,6 +32,7 @@
 
 pub mod commands;
 pub mod engine;
+pub mod pool;
 
 use tauri::plugin::{Builder, TauriPlugin};
 use tauri::{RunEvent, Wry};

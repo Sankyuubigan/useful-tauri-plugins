@@ -25,7 +25,23 @@ fn is_bing_blocked(text: &str) -> bool {
     hits >= 2 || (lower.contains("captcha") && !text.contains("<li class=\"b_algo\""))
 }
 
+/// Buffer.from(b64, 'base64url') прощает паддинг и мусор; в Rust
+/// уравниваем: выкидываем неалфавитные символы и паддинг перед декодом.
+fn decode_b64url(b64: &str) -> Option<String> {
+    let alphabet: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let cleaned: String = b64
+        .chars()
+        .filter(|c| alphabet.contains(&(*c as u8)))
+        .collect();
+    let cleaned = cleaned.trim_end_matches('=');
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(cleaned).ok()?;
+    String::from_utf8(bytes).ok()
+}
+
 /// Порт `bingRealUrl`: внутри bing.com цель лежит в base64url-параметре `u`.
+/// Реальный Bing ставит перед телом префикс версии «a1» — декодируем сначала
+/// со срезанным префиксом, при неудаче значение «как есть» (старый формат).
+/// Принимается только результат, похожий на абсолютный URL.
 fn bing_real_url(href: &str) -> String {
     let Ok(u) = url::Url::parse(href)
         .or_else(|_| url::Url::parse("https://www.bing.com/").and_then(|b| b.join(href)))
@@ -41,18 +57,13 @@ fn bing_real_url(href: &str) -> String {
             // Как в TS: до bing-редиректа без параметра u добраться нечем.
             return String::new();
         };
-        // Buffer.from(b64, 'base64url') прощает паддинг и мусор; в Rust
-        // уравниваем: выкидываем неалфавитные символы и паддинг перед декодом.
-        let alphabet: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-        let cleaned: String = b64
-            .chars()
-            .filter(|c| alphabet.contains(&(*c as u8)))
-            .collect();
-        let cleaned = cleaned.trim_end_matches('=');
-        let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(cleaned)
-            .ok()
-            .and_then(|bytes| String::from_utf8(bytes).ok())
+        let looks_like_url =
+            |s: &str| s.starts_with("http://") || s.starts_with("https://");
+        let decoded = b64
+            .strip_prefix("a1")
+            .and_then(decode_b64url)
+            .filter(|d| looks_like_url(d))
+            .or_else(|| decode_b64url(&b64).filter(|d| looks_like_url(d)))
             .unwrap_or_default();
         return http::normalize_http_url(&decoded, Some("https://www.bing.com/")).unwrap_or_default();
     }
@@ -143,23 +154,27 @@ mod tests {
     }
 
     #[test]
-    fn real_url_decodes_base64url_param_and_ignores_plain_bing_refs() {
-        // u= закодированный base64url от "https://target.test/page"
+    fn real_url_decodes_base64url_param_with_a1_prefix() {
+        // u= закодированный base64url от "https://target.test/page".
         let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .encode(b"https://target.test/page");
-        assert_eq!(bing_real_url(&format!("https://www.bing.com/ck/a?!&u=a1{b64}")), "");
-        // Всё же: настоящий Bing префиксует u значением «на всё подряд» — TS
-        // декодирует «как есть», поэтому префикс «a1a2» расшифровался бы в
-        // мусор и normalizeHttpUrl вернул ''. Проверяем честное поведение:
+        // Реальный Bing префиксует тело меткой «a1» — раскодируется в URL.
         assert_eq!(
             bing_real_url(&format!("https://www.bing.com/ck/a?u=a1{b64}")),
-            ""
+            "https://target.test/page"
         );
-        // Идеальный кейс без префикса — раскодируется в реальный URL.
+        assert_eq!(
+            bing_real_url(&format!("https://www.bing.com/ck/a?!&u=a1{b64}")),
+            "https://target.test/page"
+        );
+        // Префикс «a1» может быть частью настоящего тела — декод «как есть».
         assert_eq!(
             bing_real_url(&format!("https://www.bing.com/ck/a?u={b64}")),
             "https://target.test/page"
         );
+        // Мусор вместо base64 (не декодируется в URL) — пусто, блок пропускается.
+        assert_eq!(bing_real_url("https://www.bing.com/ck/a?u=verybadbase64"), "");
+        assert_eq!(bing_real_url("https://www.bing.com/ck/a?u=a1zzzzz"), "");
         // Внешняя ссылка без u — нормализуется как есть.
         assert_eq!(
             bing_real_url("https://example.com/docs"),

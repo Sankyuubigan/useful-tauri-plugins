@@ -109,6 +109,13 @@ pub fn default_chain() -> Vec<String> {
     engine_ranking::current_default_chain()
 }
 
+/// Дефолтная цепочка под конкретный батч запросов: статистический фильтр
+/// (мёртвые/cooldown) + языковой гейт — без CJK китайские платформы
+/// (juejin/csdn/baidu/sogou) уходят в хвост, после западных движков.
+pub fn default_chain_for_queries(queries: &[String]) -> Vec<String> {
+    engine_ranking::demote_cjk_engines(default_chain(), queries)
+}
+
 /// Дверь текстовых утилит (PRP Шаг 5): движки зовут `super::clip_chars`,
 /// а не чужой модуль.
 pub use text_util::clip_chars;
@@ -212,23 +219,32 @@ pub fn dedupe_by_domain(results: Vec<SearchResult>) -> Vec<SearchResult> {
         .collect()
 }
 
-/// Оценка релевантности: доля результатов со значимым словом запроса
-/// (порт `relevantScore`: слова ≥4 символов, порог 0.3 в runChain).
+/// Оценка релевантности: доля результатов, в которых совпало достаточное
+/// число РАЗЛИЧНЫХ слов запроса (слова ≥4 символов, дубли схлопываются).
+/// «Достаточно» — ≥2 слов, для коротких запросов (1–2 слова) — ≥50% слов.
+/// Одиночное совпадение в длинном запросе не считается релевантностью:
+/// боевая выдача (окт 2026) набирала «релевантность 100%» на одном токене —
+/// `upright` в CSS-статье, порт `9001` в статье про MinIO.
 pub fn relevant_score(query: &str, results: &[SearchResult]) -> f64 {
     let word_chars = Regex::new(r"[^\p{L}\p{N}]").expect("константная регулярка");
-    let words: Vec<String> = query
+    let mut words: Vec<String> = query
         .to_lowercase()
         .split_whitespace()
         .map(|w| word_chars.replace_all(w, "").into_owned())
         .filter(|w| w.chars().count() >= 4)
         .collect();
+    words.sort();
+    words.dedup();
     if words.is_empty() || results.is_empty() {
         return 1.0;
     }
+    let half = (words.len() + 1) / 2; // ≥50% слов
+    let min_hits = half.max(if words.len() <= 2 { 1 } else { 2 });
     let mut hit = 0usize;
     for r in results {
         let hay = format!("{} {}", r.title, r.snippet).to_lowercase();
-        if words.iter().any(|w| hay.contains(w.as_str())) {
+        let matched = words.iter().filter(|w| hay.contains(w.as_str())).count();
+        if matched >= min_hits {
             hit += 1;
         }
     }
@@ -301,7 +317,9 @@ pub async fn run_chain(
                     let score = relevant_score(query, &found);
                     stats::record_engine_call(name, true, t0.elapsed().as_millis() as u64, None);
                     let pct = (score * 100.0).round() as i64;
-                    if score >= 0.3 {
+                    // Порог 0.5: при наивном 0.3 мусорный движок, набравший
+                    // лимит, обрывал цепочку до DDG/brave (боевая регрессия).
+                    if score >= 0.5 {
                         let n = found.len();
                         engine_log(
                             name,
@@ -461,6 +479,57 @@ mod tests {
         assert_eq!(relevant_score("ау", &[a.clone()]), 1.0);
         // Пустые результаты не делят на ноль.
         assert_eq!(relevant_score("rust", &[]), 1.0);
+    }
+
+    #[test]
+    fn single_token_match_in_long_query_is_not_relevant() {
+        // Боевые кейсы окт 2026: одно совпадение токена не делает результат
+        // релевантным.
+        let css = SearchResult {
+            title: "数字滚动效果实现 text-orientation: upright".into(),
+            url: "https://juejin.cn/post/1".into(),
+            snippet: "CSS свойство".into(),
+            source: "".into(),
+        };
+        // CSS-статья со словом `upright` из запроса про tarot dataset.
+        let score =
+            relevant_score("tarot card dataset upright reversed meanings github", &[css]);
+        assert_eq!(score, 0.0);
+        // MinIO-статья с портом `9001` из запроса про RFC QUIC.
+        let minio = SearchResult {
+            title: "MinIO console default port 9001".into(),
+            url: "https://min.io/x".into(),
+            snippet: "secret key setup".into(),
+            source: "".into(),
+        };
+        let score = relevant_score("RFC 9001 QUIC initial secret derivation", &[minio]);
+        assert_eq!(score, 0.0);
+    }
+
+    #[test]
+    fn multi_word_match_is_relevant() {
+        let gh = SearchResult {
+            title: "GitHub - tarot deck JSON dataset".into(),
+            url: "https://github.com/x".into(),
+            snippet: "78 cards upright reversed keywords".into(),
+            source: "".into(),
+        };
+        let score = relevant_score("tarot card dataset upright reversed meanings github", &[gh]);
+        assert_eq!(score, 1.0);
+    }
+
+    #[test]
+    fn short_query_needs_half_words() {
+        let rust_only = SearchResult {
+            title: "Rust book".into(),
+            url: "u".into(),
+            snippet: String::new(),
+            source: "".into(),
+        };
+        // 2 слова: 50% — одного совпадения достаточно.
+        assert_eq!(relevant_score("rust tokio", &[rust_only.clone()]), 1.0);
+        // 3 слова: нужно ≥2 различных.
+        assert_eq!(relevant_score("rust tokio server", &[rust_only]), 0.0);
     }
 
     #[test]

@@ -201,6 +201,10 @@ pub(crate) async fn handle(args: &Value) -> Result<String, HandlerError> {
         .map(|a| !a.is_empty())
         .unwrap_or(false);
     if !explicit_engines {
+        // Языковой гейт: без CJK в запросах китайские платформы уходят
+        // в хвост дефолтной цепочки (иначе juejin/csdn монополизируют
+        // выдачу латинских запросов — боевая регрессия окт 2026).
+        engines = engines::default_chain_for_queries(&queries);
         match engines::api_search::apply_prefixes(&mut queries) {
             Ok(Some(name)) => {
                 // Префикс однозначен: рулит ТОЛЬКО адресный движок
@@ -213,7 +217,10 @@ pub(crate) async fn handle(args: &Value) -> Result<String, HandlerError> {
         }
     }
 
-    let cache_key_str = cache::cache_key("web", &engines, parallel, &queries.join("|"));
+    // JSON-массив вместо join("|"): одиночный запрос "a|b" не должен
+    // коллидировать с queries=["a","b"] в кеше на 30 минут.
+    let queries_key = serde_json::to_string(&queries).unwrap_or_else(|_| queries.join("|"));
+    let cache_key_str = cache::cache_key("web", &engines, parallel, &queries_key);
     if let Some(cached) = cache::cache_get(&cache_key_str) {
         engines::engine_log(
             "web_search",

@@ -43,22 +43,29 @@ pub fn format_results(
     lines.join("\n")
 }
 
-/// Формат multi-query — порт `formatMultiResults` байт-в-байт: секции по
-/// каждому запросу, сквозная нумерация, дедуп по домену МЕЖДУ запросами
-/// (рукописный цикл TS, не `dedupeByDomain`: без dedupe по URL — URL уже
-/// вычищены в обработчике).
+/// Формат multi-query: секции по каждому запросу, сквозная нумерация.
+/// Дедуп по домену — ПЕР-ЗАПРОСНЫЙ: домен «занят» только результатами того
+/// же запроса. Сквозной (между запросами) домен-дедуп из TS опустошал секции
+/// до голых заголовков, когда все запросы обслуживало одно доменное
+/// семейство (боевой кейс окт 2026: три запроса — все результаты с juejin.cn).
+/// Между запросами дедуп только по точному URL.
 pub fn format_multi_results(
     per_query: &[(&str, Vec<SearchResult>, Vec<Failure>)],
     limit: usize,
 ) -> String {
     let mut out: Vec<String> = Vec::new();
-    let mut seen_domains: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut index = 1usize;
     for (query, all, failures) in per_query {
         out.push(format!("=== Запрос: {query} ==="));
+        let mut seen_domains: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut printed = 0usize;
         for r in all {
             if index > limit {
                 break;
+            }
+            if !seen_urls.insert(r.url.clone()) {
+                continue;
             }
             let domain = extract_domain(&r.url);
             if !domain.is_empty() {
@@ -77,6 +84,17 @@ pub fn format_multi_results(
                 if r.snippet.is_empty() { "—".to_string() } else { r.snippet.clone() }
             ));
             index += 1;
+            printed += 1;
+        }
+        if printed == 0 {
+            let note = if index > limit {
+                "(лимит результатов исчерпан — секция пропущена)".to_string()
+            } else if all.is_empty() {
+                "(нет результатов — движки вернули пусто)".to_string()
+            } else {
+                "(нет уникальных результатов — всё совпало с предыдущими запросами)".to_string()
+            };
+            out.push(note);
         }
         if !failures.is_empty() {
             out.push(format!(
@@ -143,16 +161,49 @@ mod tests {
     #[test]
     fn multi_format_numbers_across_queries_and_dedups_domains() {
         let q1 = vec![hit("https://a.com/1"), hit("https://b.com/2")];
-        let q2 = vec![hit("https://a.com/3"), hit("https://c.com/4")];
+        let q2 = vec![hit("https://a.com/3"), hit("https://a.com/4")];
         let failures1 = vec![Failure { name: "bing".into(), message: "HTTP 429".into() }];
         let text = format_multi_results(&[("первый", q1, failures1), ("второй", q2, vec![])], 8);
         assert!(text.contains("=== Запрос: первый ==="));
         assert!(text.contains("[1] t"));
         assert!(text.contains("https://a.com/1"));
         assert!(text.contains("https://b.com/2"));
-        // Домен a.com во втором запросе уже занят — остаётся только c.com.
-        assert!(text.contains("https://c.com/4"));
-        assert!(!text.contains("https://a.com/3"));
+        // Домен a.com во втором запросе НЕ занят первым: дедуп пер-запросный.
+        assert!(text.contains("https://a.com/3"), "a.com/3 показывается во втором запросе");
+        // Внутри второго запроса домен уже занят a.com/3 → a.com/4 скрыт.
+        assert!(!text.contains("https://a.com/4"));
         assert!(text.contains("⚠️ Движки с ошибками: bing (HTTP 429)"));
+    }
+
+    #[test]
+    fn multi_format_honest_note_when_section_is_empty() {
+        // Второй запрос принёс только URL, уже показанный первым — секция
+        // получает честную пометку вместо голого заголовка.
+        let text = format_multi_results(
+            &[
+                ("первый", vec![hit("https://a.com/1"), hit("https://b.com/2")], vec![]),
+                ("второй", vec![hit("https://a.com/1")], vec![]),
+                ("третий", Vec::new(), vec![]),
+            ],
+            8,
+        );
+        assert!(text.contains("(нет уникальных результатов — всё совпало с предыдущими запросами)"));
+        assert!(text.contains("(нет результатов — движки вернули пусто)"));
+        // Сквозная нумерация не съехала: третий результат — b.com.
+        assert!(text.contains("[2] t") && text.contains("https://b.com/2"));
+    }
+
+    #[test]
+    fn multi_format_limit_note_for_skipped_sections() {
+        let text = format_multi_results(
+            &[
+                ("первый", vec![hit("https://a.com/1")], vec![]),
+                ("второй", vec![hit("https://b.com/2")], vec![]),
+            ],
+            1,
+        );
+        assert!(text.contains("[1] t"));
+        assert!(text.contains("(лимит результатов исчерпан — секция пропущена)"));
+        assert!(!text.contains("b.com"));
     }
 }

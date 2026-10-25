@@ -139,16 +139,22 @@ pub(crate) fn parse(args: &[String]) -> Result<Intent, String> {
     }
 
     let mut final_queries = queries.unwrap_or_default();
-    if final_queries.is_empty() {
+    // Позиционный запрос не теряется при наличии --queries: идёт первым
+    // элементом списка (боевой кейс: модель передавала и то, и другое,
+    // а основной запрос молча выбрасывался).
+    if !positional.is_empty() {
         let q = positional.join(" ");
-        if q.trim().is_empty() {
-            if stats {
-                return Ok(Intent::Stats);
-            }
-            return Err(USAGE.to_string());
+        if !q.trim().is_empty() {
+            final_queries.insert(0, q.trim().to_string());
         }
-        final_queries.push(q.trim().to_string());
     }
+    if final_queries.is_empty() {
+        if stats {
+            return Ok(Intent::Stats);
+        }
+        return Err(USAGE.to_string());
+    }
+    final_queries.truncate(5);
 
     Ok(Intent::Ask(Options {
         queries: final_queries,
@@ -230,6 +236,22 @@ mod tests {
         assert_eq!(opts.queries, vec!["купить ржаную муку с доставкой"]);
         assert_eq!(opts.limit, 8);
         assert!(opts.engines.is_none());
+    }
+
+    #[test]
+    fn positional_query_goes_first_when_queries_flag_present() {
+        // Боевой кейс: модель передавала и позиционный запрос, и --queries —
+        // позиционный терялся. Теперь он первый элемент списка.
+        let parsed = parse(&args(&["главный запрос", "--queries", "второй, третий"])).unwrap();
+        let Intent::Ask(opts) = parsed else { panic!("not ask") };
+        assert_eq!(opts.queries, vec!["главный запрос", "второй", "третий"]);
+        // Ограничение 5 запросов соблюдается и на объединённом списке.
+        let parsed = parse(&args(&[
+            "a", "--queries", "b,c,d,e,f",
+        ]))
+        .unwrap();
+        let Intent::Ask(opts) = parsed else { panic!("not ask") };
+        assert_eq!(opts.queries, vec!["a", "b", "c", "d", "e"]);
     }
 
     #[test]

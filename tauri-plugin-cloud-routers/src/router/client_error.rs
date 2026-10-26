@@ -14,6 +14,16 @@ use std::fmt;
 /// finish_reason. Единственный источник маркера — эта константа.
 pub const CLOUD_EMPTY_STREAM_MARKER: &str = "[cloud_empty_stream]";
 
+/// Контент пришёл частично, но стрим закрылся БЕЗ признака конца — ни `[DONE]`,
+/// ни finish_reason: провайдер/канал оборвал ответ на середине (инцидент
+/// 25.10.2026: «terminated» стримов 9router на gemini — тихо обрезанный текст
+/// больше не может пройти как полный ответ). Единственный источник маркера.
+pub const CLOUD_TRUNCATED_MARKER: &str = "[cloud_truncated]";
+
+/// Фрагмент текста ошибки при грубом обрыве тела ответа (connect жив, тело
+/// читается — и соединение рвётся). SSOT для детектора повторяемого сбоя.
+pub const STREAM_INTERRUPTED_PHRASE: &str = "стрим не дочитан";
+
 /// В HTTP 200 пришёл кадр `{"error": {...}}` — провайдер/роутер сообщает об
 /// ошибке при формально успешном статусе.
 pub const CLOUD_ERROR_FRAME_MARKER: &str = "[cloud_error_frame]";
@@ -51,8 +61,13 @@ pub enum CloudStreamError {
     UnparseableFrame { raw_frame: String },
     /// HTTP 200, стрим закрыт, но ни контента, ни размышлений, ни tool-вызовов,
     /// ни полезного finish_reason — «пустой успех». Возвращать его как Ok
-    /// запрещено (инцидент 18.10.2026).
-    EmptySuccess,
+    /// запрещено (инцидент 18.10.2026). `frames` — сколько кадров `data:` было
+    /// в стриме: честная диагностика обязана показать, что именно произошло.
+    EmptySuccess { frames: usize },
+    /// Ответ оборван на середине: контент пришёл частично, но стрим закрылся
+    /// без признака конца — ни `[DONE]`, ни finish_reason. Тихо обрезанный
+    /// текст как полный ответ запрещён (инцидент 25.10.2026).
+    Truncated { partial_chars: usize },
     /// Запрос собран с нарушенной формой (инцидент 20.10.2026:
     /// `tool_choice:"required"` без `tools[]`). Это дефект приложения, а не
     /// провайдера — квота не расходуется, счётчик не растёт.
@@ -84,9 +99,18 @@ impl fmt::Display for CloudStreamError {
                 f,
                 "Ответ облака содержит кадр, который не удалось разобрать: «{raw_frame}» {CLOUD_UNPARSEABLE_FRAME_MARKER}"
             ),
-            Self::EmptySuccess => write!(
+            Self::EmptySuccess { frames } => write!(
                 f,
-                "Облако вернуло пустой ответ: HTTP 200 без контента, размышлений и tool-вызовов (подробности — в кадрах лога) {CLOUD_EMPTY_STREAM_MARKER}"
+                "Причина неизвестна: роутер закрыл соединение (HTTP 200), не передав ни одной \
+дельты ответа, ни ошибки, ни объяснения (кадров в стриме: {frames}). Обычно это обрыв \
+канала до провайдера — повтор запроса, как правило, помогает {CLOUD_EMPTY_STREAM_MARKER}"
+            ),
+            Self::Truncated { partial_chars } => write!(
+                f,
+                "Провайдер оборвал ответ на середине: успело прийти {partial_chars} симв., \
+но признак конца стрима ([DONE]/finish_reason) не пришёл. Причину обрыва провайдер \
+не передал — это транспортный сбой, повтор запроса, как правило, помогает \
+{CLOUD_TRUNCATED_MARKER}"
             ),
             Self::InvalidRequest { message } => write!(
                 f,
@@ -108,7 +132,7 @@ impl fmt::Display for CloudStreamError {
 
 /// Инвариант формы запроса: `tool_choice` имеет смысл только при непустой
 /// корзине инициализации `tools[]`. Проверяется на границе плагина — запрос
-/// с нарушенной формой структурно не может покинуть приложение.
+/// с нарушенной формой структурально не может покинуть приложение.
 pub fn validate_request_shape(req: &super::client::ChatRequest) -> Result<(), CloudStreamError> {
     if let Some(choice) = &req.tool_choice {
         let tools_present = req.tools.as_ref().is_some_and(|t| !t.is_empty());
@@ -121,6 +145,29 @@ pub fn validate_request_shape(req: &super::client::ChatRequest) -> Result<(), Cl
         }
     }
     Ok(())
+}
+
+/// Повторяемый транспортный сбой облака: HTTP 5xx (провайдер/шлюз перегружен
+/// или недоступен) или обрыв тела ответа (`STREAM_INTERRUPTED_PHRASE`).
+/// Именно эти классы хост обязан ретраить («Google рвётся — это норма»).
+/// 4xx — дефект запроса/конфигурации, ретрай бессмыслен и запрещён.
+///
+/// Разбор идёт по готовому тексту ошибки (формат `Http`:
+/// `"/v1/chat/completions: HTTP 502 {body}"`) — хосты получают ошибки
+/// строками, поэтому SSOT-детектор живёт рядом с источником формата.
+pub fn is_retryable_transport_error(err: &str) -> bool {
+    if err.contains(STREAM_INTERRUPTED_PHRASE) {
+        return true;
+    }
+    let Some(pos) = err.find("HTTP ") else {
+        return false;
+    };
+    let code: String = err[pos + 5..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .take(3)
+        .collect();
+    matches!(code.parse::<u16>(), Ok(status) if (500..=599).contains(&status))
 }
 
 #[cfg(test)]
@@ -145,6 +192,51 @@ mod display_tests {
         let text = CloudStreamError::Cancelled { phase: "body" }.to_string();
         assert!(text.contains("Прервано пользователем"), "текст: {text}");
         assert!(text.contains(CLOUD_CANCELLED_MARKER), "текст: {text}");
+    }
+
+    /// Честность (инцидент 25.10.2026): юзер обязан видеть, что причина
+    /// неизвестна, а не загадочный «пустой ответ 200».
+    #[test]
+    fn empty_success_display_admits_unknown_cause() {
+        let text = CloudStreamError::EmptySuccess { frames: 3 }.to_string();
+        assert!(text.contains(CLOUD_EMPTY_STREAM_MARKER), "текст: {text}");
+        assert!(text.contains("Причина неизвестна"), "текст: {text}");
+        assert!(text.contains("3"), "текст обязан нести число кадров: {text}");
+        assert!(!text.contains("пустой ответ"), "текст: {text}");
+    }
+
+    /// Оборванный ответ обязан называть и объём успевшего, и отсутствие
+    /// причины — без ложной определённости.
+    #[test]
+    fn truncated_display_carries_marker_and_partial_chars() {
+        let text = CloudStreamError::Truncated { partial_chars: 872 }.to_string();
+        assert!(text.contains(CLOUD_TRUNCATED_MARKER), "текст: {text}");
+        assert!(text.contains("872"), "текст: {text}");
+        assert!(text.contains("оборвал"), "текст: {text}");
+        assert!(text.contains("не передал"), "текст: {text}");
+    }
+
+    /// Классификация ретраебельных сбоев: 5xx и обрыв тела — да; 4xx и
+    /// произвольный текст — нет.
+    #[test]
+    fn retryable_transport_error_detection() {
+        assert!(is_retryable_transport_error(
+            "/v1/chat/completions: HTTP 502 fetch failed (ECONNRESET)"
+        ));
+        assert!(is_retryable_transport_error(
+            "/v1/chat/completions: HTTP 503 {\"error\":{\"code\":503}}"
+        ));
+        assert!(is_retryable_transport_error(
+            "9router /v1/chat/completions (стрим не дочитан): connection reset"
+        ));
+        assert!(!is_retryable_transport_error(
+            "/v1/chat/completions: HTTP 401 Unauthorized"
+        ));
+        assert!(!is_retryable_transport_error(
+            "/v1/chat/completions: HTTP 429 Too Many Requests"
+        ));
+        assert!(!is_retryable_transport_error("Bad JSON ответа"));
+        assert!(!is_retryable_transport_error("HTTP 5")); // недописанный код — не статус
     }
 }
 

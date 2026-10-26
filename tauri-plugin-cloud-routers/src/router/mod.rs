@@ -15,6 +15,7 @@ pub mod postinstall_contract;
 
 pub mod process;
 pub mod reinstall;
+pub mod server_log_mirror;
 pub mod sse;
 #[cfg(test)]
 pub mod test_scratch;

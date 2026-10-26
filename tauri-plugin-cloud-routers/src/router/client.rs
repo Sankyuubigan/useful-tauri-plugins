@@ -232,7 +232,10 @@ async fn stream_engine(
             }
             Err(e) => {
                 return Err(CloudStreamError::Http {
-                    message: format!("9router /v1/chat/completions (стрим не дочитан): {e}"),
+                    message: format!(
+                        "9router /v1/chat/completions ({}): {e}",
+                        super::client_error::STREAM_INTERRUPTED_PHRASE
+                    ),
                 });
             }
         }
@@ -448,7 +451,10 @@ pub(crate) fn classify_sse_result(
     if let Some((raw_frame, message)) = scan.error_frame {
         return Err(CloudStreamError::InStreamError { raw_frame, message });
     }
-    if result.content.is_empty() && result.reasoning.is_empty() && result.tool_calls.is_empty() {
+    let has_payload = !result.content.is_empty()
+        || !result.reasoning.is_empty()
+        || !result.tool_calls.is_empty();
+    if !has_payload {
         if let Some(raw_frame) = scan.unparseable {
             return Err(CloudStreamError::UnparseableFrame { raw_frame });
         }
@@ -460,7 +466,7 @@ pub(crate) fn classify_sse_result(
                 "SSE 200: пустой успех — {} кадр(ов) без дельт, finish_reason отсутствует",
                 scan.frames
             );
-            return Err(CloudStreamError::EmptySuccess);
+            return Err(CloudStreamError::EmptySuccess { frames: scan.frames });
         }
         // finish_reason назван (content_filter/length/…): провайдер формально
         // объяснил отсутствие контента. Ok остаётся возможным, но телеметрия
@@ -470,6 +476,21 @@ pub(crate) fn classify_sse_result(
             scan.frames,
             result.finish_reason
         );
+        return Ok(result);
+    }
+    // Контент есть. Обрыв = стрим закрылся, не доложив признака конца: ни
+    // `[DONE]`, ни finish_reason (инцидент 25.10.2026: terminated-стримы
+    // роутера). Тихо обрезанный Ok запрещён — downstream получает либо
+    // полный ответ, либо Err. `[DONE]` при пустом finish_reason остаётся
+    // валидным концом: часть провайдеров не шлёт finish_reason вовсе.
+    if !scan.done_seen && result.finish_reason.trim().is_empty() {
+        log::warn!(
+            "SSE 200: стрим оборван — контент пришёл частично ({} кадр(ов)), ни [DONE], ни finish_reason",
+            scan.frames
+        );
+        return Err(CloudStreamError::Truncated {
+            partial_chars: result.content.chars().count() + result.reasoning.chars().count(),
+        });
     }
     Ok(result)
 }

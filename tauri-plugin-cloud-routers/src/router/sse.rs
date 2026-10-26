@@ -30,6 +30,10 @@ pub(crate) struct SseScan {
     pub(crate) error_frame: Option<(String, Option<String>)>,
     /// Первый неотпарсable кадр `data:`.
     pub(crate) unparseable: Option<String>,
+    /// Встречен ли `[DONE]` — признак нормального конца стрима. Обрыв
+    /// (соединение закрылось без `[DONE]`) при непустом контенте — это
+    /// недописанный ответ; классификатор различает их только по этому полю.
+    pub(crate) done_seen: bool,
 }
 
 /// Инкрементальный накапливатель SSE-кадров.
@@ -88,6 +92,7 @@ impl SseReducer {
             .map(|(id, name, arguments)| CloudToolCall { id, name, arguments })
             .filter(|call| !call.name.is_empty())
             .collect();
+        self.scan.done_seen = self.done;
         (self.result, self.scan)
     }
 
@@ -371,10 +376,14 @@ mod tests {
         for body in ["data: [DONE]\n\n", ""] {
             let (result, scan) = accumulate(body);
             assert_eq!(scan.frames, 0);
+            assert!(scan.done_seen == !body.is_empty(), "done_seen: {}", scan.done_seen);
             match super::super::client::classify_sse_result(result, scan) {
                 Err(e) => {
                     assert!(
-                        matches!(e, super::super::client_error::CloudStreamError::EmptySuccess),
+                        matches!(
+                            e,
+                            super::super::client_error::CloudStreamError::EmptySuccess { .. }
+                        ),
                         "для «{body}» ждём EmptySuccess, получено: {e:?}"
                     );
                     assert!(e.to_string().contains(CLOUD_EMPTY_STREAM_MARKER));
@@ -382,6 +391,47 @@ mod tests {
                 Ok(_) => panic!("«{body}» обязан вернуть Err («пустой успех» запрещён)"),
             }
         }
+    }
+
+    /// Обрыв после частичного контента (инцидент 25.10.2026): дельты пришли,
+    /// но стрим закрылся без `[DONE]` и без finish_reason — тихо обрезанный
+    /// Ok запрещён, ошибка несёт объём успевшего текста.
+    #[test]
+    fn truncated_after_partial_content_is_error() {
+        use super::super::client_error::{CloudStreamError, CLOUD_TRUNCATED_MARKER};
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"поло\"}}]}\n\n\
+                    data: {\"choices\":[{\"delta\":{\"content\":\"вина\"}}]}\n\n";
+        let (result, scan) = accumulate(body);
+        assert_eq!(result.content, "половина");
+        assert!(!scan.done_seen);
+        assert!(result.finish_reason.is_empty());
+
+        match super::super::client::classify_sse_result(result, scan) {
+            Err(e) => {
+                let text = e.to_string();
+                assert!(text.contains(CLOUD_TRUNCATED_MARKER), "текст: {text}");
+                match e {
+                    CloudStreamError::Truncated { partial_chars } => {
+                        assert_eq!(partial_chars, "половина".chars().count());
+                    }
+                    other => panic!("ожидался Truncated, получено: {other:?}"),
+                }
+            }
+            Ok(_) => panic!("обрыв без признака конца обязан запретить Ok"),
+        }
+    }
+
+    /// `[DONE]` без finish_reason при непустом контенте — валидный конец:
+    /// часть провайдеров не шлёт finish_reason, но завершает стрим честно.
+    #[test]
+    fn done_without_finish_reason_is_ok() {
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"полный\"}}]}\n\n\
+                    data: [DONE]\n\n";
+        let (result, scan) = accumulate(body);
+        assert!(scan.done_seen);
+        assert_eq!(result.content, "полный");
+        assert!(result.finish_reason.is_empty());
+        assert!(super::super::client::classify_sse_result(result, scan).is_ok());
     }
 
     /// G5: инвариант Ok — обязан быть непустой payload: либо контент/reasoning/
@@ -398,14 +448,19 @@ mod tests {
         );
 
         // Ни payload, ни finish_reason → Err EmptySuccess.
-        match super::super::client::classify_sse_result(ChatCompletionResult::default(), SseScan::default()) {
-            Err(super::super::client_error::CloudStreamError::EmptySuccess) => {}
+        match super::super::client::classify_sse_result(
+            ChatCompletionResult::default(),
+            SseScan::default(),
+        ) {
+            Err(super::super::client_error::CloudStreamError::EmptySuccess { .. }) => {}
             other => panic!("ожидался EmptySuccess, получено: {other:?}"),
         }
 
-        // Контент восстановлен + finish_reason отсутствует → Ok валиден.
-        let body_ok = "data: {\"choices\":[{\"delta\":{\"content\":\"д\"}}]}\n\n";
+        // Контент восстановлен + [DONE] пришёл (finish_reason отсутствует) → Ok валиден.
+        let body_ok = "data: {\"choices\":[{\"delta\":{\"content\":\"д\"}}]}\n\n\
+                       data: [DONE]\n\n";
         let (r, scan) = accumulate(body_ok);
+        assert!(scan.done_seen);
         assert!(super::super::client::classify_sse_result(r, scan).is_ok());
     }
 }

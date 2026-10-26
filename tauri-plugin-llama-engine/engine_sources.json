@@ -28,5 +28,20 @@
       "cache_type_v": "kvarn4",
       "kv_tail_tokens": 1024
     }
+  },
+  {
+    "id": "prismml",
+    "label": "PrismML (модели Bonsai)",
+    "note": "Форк PrismML-Eng/llama.cpp — единственный движок для ternary-моделей Bonsai (кванты PQ2_0 / Q2_0_g64 / Q1_0). Обычные GGUF-модели лучше запускать на официальном источнике.",
+    "repo": "PrismML-Eng/llama.cpp",
+    "asset_prefix": "llama-",
+    "cudart_pattern": "cudart-llama-bin",
+    "prefer_stable": false,
+    "default": false,
+    "runtime": {
+      "cache_type_k": null,
+      "cache_type_v": null,
+      "kv_tail_tokens": null
+    }
   }
 ]

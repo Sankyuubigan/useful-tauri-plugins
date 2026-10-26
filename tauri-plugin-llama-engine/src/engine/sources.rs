@@ -125,20 +125,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_parses_and_has_two_sources() {
+    fn registry_parses_and_has_three_sources() {
         let all = all_sources();
-        assert!(all.len() >= 2, "ожидалось ≥2 источника, got {}", all.len());
+        assert!(all.len() >= 3, "ожидалось ≥3 источника, got {}", all.len());
         let ggml = source_spec("ggml-org").expect("ggml-org");
         let bee = source_spec("beellama").expect("beellama");
+        let prism = source_spec("prismml").expect("prismml");
         assert_eq!(ggml.asset_prefix, "llama-");
         assert_eq!(bee.asset_prefix, "beellama-");
-        assert!(bee.prefer_stable);
-        assert!(!ggml.prefer_stable);
-        assert!(ggml.default);
         assert_eq!(bee.runtime.cache_type_k.as_deref(), Some("kvarn5"));
         assert_eq!(bee.runtime.cache_type_v.as_deref(), Some("kvarn4"));
         assert_eq!(bee.runtime.kv_tail_tokens, Some(1024));
         assert!(ggml.runtime.cache_type_k.is_none());
+        // PrismML: форк для ternary-моделей Bonsai. Префикс совпадает с
+        // официальным («llama-<тег>-bin-win-…»), runtime-флагов не требует —
+        // ternary-кванты (PQ2_0/Q1_0) движок подбирает сам по GGUF.
+        assert_eq!(prism.asset_prefix, "llama-");
+        assert_eq!(prism.repo, "PrismML-Eng/llama.cpp");
+        assert_eq!(prism.cudart_pattern, "cudart-llama-bin");
+        assert!(!prism.prefer_stable);
+        assert!(!prism.default);
+        assert!(prism.runtime.cache_type_k.is_none());
+        assert!(prism.runtime.cache_type_v.is_none());
+        assert!(prism.runtime.kv_tail_tokens.is_none());
+        // Только один источник помечен default
+        assert_eq!(all.iter().filter(|s| s.default).count(), 1);
     }
 
     #[test]
@@ -146,8 +157,10 @@ mod tests {
         assert_eq!(resolve_source(None), "ggml-org");
         assert_eq!(resolve_source(Some("")), "ggml-org");
         assert_eq!(resolve_source(Some("beellama")), "beellama");
+        assert_eq!(resolve_source(Some("prismml")), "prismml");
         assert_eq!(resolve_source(Some("unknown")), "ggml-org");
         assert!(is_known_source("beellama"));
+        assert!(is_known_source("prismml"));
         assert!(!is_known_source("rotorquant"));
     }
 
@@ -164,6 +177,7 @@ mod tests {
         let infos = available_sources(&|_| false);
         assert!(infos.iter().any(|i| i.id == "ggml-org" && i.is_default));
         assert!(infos.iter().any(|i| i.id == "beellama" && !i.is_default));
+        assert!(infos.iter().any(|i| i.id == "prismml" && !i.is_default));
         assert!(infos.iter().all(|i| !i.installed));
     }
 }

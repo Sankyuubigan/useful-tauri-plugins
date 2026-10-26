@@ -224,6 +224,7 @@ class LlamaEnginePanel extends HTMLElement {
             this.setStatus(`Ошибка: ${e}`);
             return;
         }
+        this.lastStatus = st;
         this.setStatus(st.message);
         const gpu = this.root.getElementById('gpu');
         gpu.textContent = st.has_nvidia
@@ -268,6 +269,18 @@ class LlamaEnginePanel extends HTMLElement {
         this.renderUpdateState(getUpdateState());
     }
     /**
+     * Сообщение об апдейте обязано называть ОБЕ версии — установленную и новую
+     * (иначе юзер не видит, с какой на какую обновляется). Текущая берётся из
+     * последнего статуса движка; если статус ещё не приходил, остаётся только
+     * новая версия — придумывать версию нельзя.
+     */
+    updateAvailableMessage(newTag) {
+        const cur = this.lastStatus?.tag;
+        return cur
+            ? `Доступно обновление движка: ${cur} → ${newTag ?? ''}`
+            : `Доступно обновление движка: ${newTag ?? ''}`;
+    }
+    /**
      * Единственное место, где видны бейдж и кнопка «Обновить»: оба выводятся
      * из одного состояния. Раньше в ветке `else` прятался только бейдж — кнопка
      * оставалась на экране после установки обновления.
@@ -281,7 +294,7 @@ class LlamaEnginePanel extends HTMLElement {
         if (updateBtn)
             updateBtn.style.display = display;
         if (s.hasUpdate) {
-            this.setStatus(`Доступно обновление движка: ${s.tag ?? ''}`);
+            this.setStatus(this.updateAvailableMessage(s.tag));
         }
     }
     async onSourceChange() {
@@ -409,8 +422,10 @@ class LlamaEnginePanel extends HTMLElement {
         try {
             const next = await checkUpdate();
             this.setStatus(next.hasUpdate
-                ? `Доступно обновление движка: ${next.tag ?? ''}`
-                : 'Движок llamacpp актуален');
+                ? this.updateAvailableMessage(next.tag)
+                : this.lastStatus?.tag
+                    ? `Движок llamacpp актуален (${this.lastStatus.tag})`
+                    : 'Движок llamacpp актуален');
         }
         catch (e) {
             toast(`Ошибка проверки обновления движка: ${e}`, 'error');

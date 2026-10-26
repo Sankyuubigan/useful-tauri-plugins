@@ -267,6 +267,7 @@
         this.setStatus(`\u041E\u0448\u0438\u0431\u043A\u0430: ${e}`);
         return;
       }
+      this.lastStatus = st;
       this.setStatus(st.message);
       const gpu = this.root.getElementById("gpu");
       gpu.textContent = st.has_nvidia ? `${st.gpu_name} (\u0434\u0440\u0430\u0439\u0432\u0435\u0440 CUDA ${st.cuda_major}.${st.cuda_minor}${st.compute_cap ? `, compute ${st.compute_cap}` : ""}; \u0440\u0435\u043A\u043E\u043C\u0435\u043D\u0434\u0443\u0435\u043C\u044B\u0439 \u0432\u0430\u0440\u0438\u0430\u043D\u0442: ${st.required_variant || "?"})` : "\u041D\u0435 \u043E\u0431\u043D\u0430\u0440\u0443\u0436\u0435\u043D\u0430";
@@ -307,6 +308,16 @@
       this.renderUpdateState(getUpdateState());
     }
     /**
+     * Сообщение об апдейте обязано называть ОБЕ версии — установленную и новую
+     * (иначе юзер не видит, с какой на какую обновляется). Текущая берётся из
+     * последнего статуса движка; если статус ещё не приходил, остаётся только
+     * новая версия — придумывать версию нельзя.
+     */
+    updateAvailableMessage(newTag) {
+      const cur = this.lastStatus?.tag;
+      return cur ? `\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0434\u0432\u0438\u0436\u043A\u0430: ${cur} \u2192 ${newTag ?? ""}` : `\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0434\u0432\u0438\u0436\u043A\u0430: ${newTag ?? ""}`;
+    }
+    /**
      * Единственное место, где видны бейдж и кнопка «Обновить»: оба выводятся
      * из одного состояния. Раньше в ветке `else` прятался только бейдж — кнопка
      * оставалась на экране после установки обновления.
@@ -318,7 +329,7 @@
       if (badge) badge.style.display = display;
       if (updateBtn) updateBtn.style.display = display;
       if (s.hasUpdate) {
-        this.setStatus(`\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0434\u0432\u0438\u0436\u043A\u0430: ${s.tag ?? ""}`);
+        this.setStatus(this.updateAvailableMessage(s.tag));
       }
     }
     async onSourceChange() {
@@ -432,7 +443,7 @@
       try {
         const next = await checkUpdate();
         this.setStatus(
-          next.hasUpdate ? `\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u043E \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0434\u0432\u0438\u0436\u043A\u0430: ${next.tag ?? ""}` : "\u0414\u0432\u0438\u0436\u043E\u043A llamacpp \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D"
+          next.hasUpdate ? this.updateAvailableMessage(next.tag) : this.lastStatus?.tag ? `\u0414\u0432\u0438\u0436\u043E\u043A llamacpp \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D (${this.lastStatus.tag})` : "\u0414\u0432\u0438\u0436\u043E\u043A llamacpp \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D"
         );
       } catch (e) {
         toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0438 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u0434\u0432\u0438\u0436\u043A\u0430: ${e}`, "error");

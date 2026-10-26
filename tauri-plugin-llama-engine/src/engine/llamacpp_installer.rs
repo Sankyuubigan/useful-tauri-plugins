@@ -312,6 +312,12 @@ fn find_asset_by_family<'a>(
         if asset.name.contains("cudart") {
             continue;
         }
+        // Хост собирается только под x64: часть источников (PrismML) публикует
+        // arm64-ассеты с той же подстрокой семейства (-win-cpu-arm64,
+        // -win-cuda-13.4-arm64), причём в списке ассетов они идут РАНЬШЕ x64.
+        if asset.name.contains("arm64") {
+            continue;
+        }
         if !asset.name.ends_with("-x64.zip") {
             continue;
         }
@@ -378,6 +384,11 @@ fn find_cudart_asset<'a>(
     // cudart-архив обязан содержать cudart_pattern и НЕ быть main-bin движком
     for asset in &release.assets {
         if !asset.name.contains(&spec.cudart_pattern) {
+            continue;
+        }
+        // PrismML публикует и arm64-рантаймы (cudart-llama-bin-win-cuda-13.4-arm64.zip):
+        // на x64-хосте они не нужны, а в списке ассетов идут раньше x64.
+        if asset.name.contains("arm64") {
             continue;
         }
         if !asset.name.ends_with("-x64.zip") || !asset.name.contains(needle) {
@@ -1122,6 +1133,87 @@ mod tests {
 
     fn beellama() -> SourceSpec {
         source_spec("beellama").expect("beellama")
+    }
+
+    fn prismml() -> SourceSpec {
+        source_spec("prismml").expect("prismml")
+    }
+
+    #[test]
+    fn finds_prismml_asset_by_prefix_and_tag() {
+        // Схема имён PrismML: «llama-prism-<bNNNNN>-<hash>-bin-win-<variant>-x64.zip».
+        // Префикс «llama-» + фактический тег релиза = точное имя ассета.
+        let release = release_with_tag(
+            "prism-b10826-c9c34bc",
+            &[
+                "cudart-llama-bin-win-cuda-13.3-x64.zip",
+                "llama-prism-b10826-c9c34bc-bin-win-cpu-arm64.zip",
+                "llama-prism-b10826-c9c34bc-bin-win-cpu-x64.zip",
+                "llama-prism-b10826-c9c34bc-bin-win-cuda-13.3-x64.zip",
+                "llama-prism-b10826-c9c34bc-bin-win-cuda-13.4-arm64.zip",
+                "llama-prism-b10826-c9c34bc-bin-win-vulkan-x64.zip",
+            ],
+        );
+        let (asset, actual) =
+            find_engine_asset(&release, &prismml(), VARIANT_CUDA13).unwrap();
+        assert_eq!(asset.name, "llama-prism-b10826-c9c34bc-bin-win-cuda-13.3-x64.zip");
+        assert_eq!(actual, "cuda-13.3");
+
+        let (asset, actual) = find_engine_asset(&release, &prismml(), VARIANT_CPU).unwrap();
+        assert_eq!(asset.name, "llama-prism-b10826-c9c34bc-bin-win-cpu-x64.zip");
+        assert_eq!(actual, "cpu");
+
+        let (asset, actual) =
+            find_engine_asset(&release, &prismml(), VARIANT_VULKAN).unwrap();
+        assert_eq!(asset.name, "llama-prism-b10826-c9c34bc-bin-win-vulkan-x64.zip");
+        assert_eq!(actual, "vulkan");
+
+        // cudart PrismML — та же схема, что у ggml-org (cudart-llama-bin-win-…)
+        let (cudart, _) = find_cudart_asset(&release, &prismml(), "cuda-13.3").unwrap();
+        assert_eq!(cudart.name, "cudart-llama-bin-win-cuda-13.3-x64.zip");
+    }
+
+    #[test]
+    fn family_fallback_never_picks_arm64_assets() {
+        // Регрессия: в релизах PrismML arm64-ассеты идут в списке РАНЬШЕ x64 и
+        // содержат ту же подстроку семейства (-win-cpu, -win-cuda-13). Если
+        // точного имени нет, фолбэк по семейству обязан пропустить arm64, а не
+        // отдать сборку не под ту архитектуру.
+        let release = release_with_tag(
+            "prism-b10826-c9c34bc",
+            &[
+                "llama-prism-b10826-c9c34bc-bin-win-cpu-arm64.zip",
+                "llama-prism-b10826-c9c34bc-bin-win-cuda-13.4-arm64.zip",
+                "llama-prism-b10826-c9c34bc-bin-win-cuda-13.4-x64.zip",
+            ],
+        );
+        // CPU: x64-сборки нет вовсе (только arm64) — движок НЕ выбирается,
+        // вместо этого не должен вернуться arm64-ассет.
+        assert!(find_asset_by_family(&release, EngineFamily::Cpu).is_none());
+        assert!(find_engine_asset(&release, &prismml(), VARIANT_CPU).is_none());
+        // CUDA 13: arm64 пропускается, x64-сборка находится по семейству
+        let (asset, actual) = find_engine_asset(&release, &prismml(), VARIANT_CUDA13).unwrap();
+        assert_eq!(
+            asset.name,
+            "llama-prism-b10826-c9c34bc-bin-win-cuda-13.4-x64.zip"
+        );
+        assert_eq!(actual, "cuda-13.4");
+    }
+
+    #[test]
+    fn prismml_cudart_family_fallback_skips_arm64() {
+        // cudart-13.4-arm64 идёт раньше x64-варианта — по семейству обязан
+        // найтись именно x64-рантайм.
+        let release = release_with_tag(
+            "prism-b10826-c9c34bc",
+            &[
+                "cudart-llama-bin-win-cuda-13.4-arm64.zip",
+                "cudart-llama-bin-win-cuda-13.4-x64.zip",
+            ],
+        );
+        let (asset, actual) = find_cudart_asset(&release, &prismml(), "cuda-13.3").unwrap();
+        assert_eq!(asset.name, "cudart-llama-bin-win-cuda-13.4-x64.zip");
+        assert_eq!(actual, "cuda-13.4");
     }
 
     #[test]

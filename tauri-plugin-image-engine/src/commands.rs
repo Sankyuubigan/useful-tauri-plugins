@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager};
 
-use crate::engine::{self, sdcpp_installer};
+use crate::engine::{self, file_to_b64, sdcpp_installer};
 
 #[derive(Serialize, Clone)]
 pub struct ImageEngineStatus {
@@ -958,22 +958,8 @@ pub async fn download_video_bundle(
 
 // ─────────────────────────── Генерация видео ──────────────────────────
 
-fn file_to_b64(path_or_data_url: &str) -> Result<String, String> {
-    use base64::Engine as _;
-    let path_or_data_url = path_or_data_url.trim();
-    if path_or_data_url.is_empty() {
-        return Err("Пустая строка вместо пути/данных кадра.".to_string());
-    }
-    // Уже кодированный data-URL пропускаем как есть.
-    if let Some(rest) = path_or_data_url.strip_prefix("data:") {
-        let b64 = rest.split_once(',').map(|(_, b)| b).unwrap_or(rest);
-        return Ok(b64.to_string());
-    }
-    let bytes = std::fs::read(path_or_data_url).map_err(|e| {
-        format!("Не удалось прочитать кадр {}: {}", path_or_data_url, e)
-    })?;
-    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
-}
+// file_to_b64 живёт в движке (engine::video_engine::file_to_b64) — единая
+// точка чтения кадра для GUI-команды и хостовой generate_video_simple (SSOT).
 
 fn default_video_out_path(bundle_dir: &Path) -> PathBuf {
     let ts = std::time::SystemTime::now()

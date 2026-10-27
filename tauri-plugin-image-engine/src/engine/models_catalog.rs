@@ -280,6 +280,12 @@ pub struct VideoBundleEntry {
     /// Задел под `--model-args` (у H3 пока не нужен — ключей model-args нет).
     #[serde(default)]
     pub model_args: Option<String>,
+    /// Режимы vid_gen, которые диффузион-файл бандла реально поддерживает
+    /// (декларативный гейт тула: i2va-запрос на ref2va-бандле — честный отказ,
+    /// не тихий t2va). Значения: "t2va" | "i2va" | "fl2va" | "ref2va"
+    /// (VideoMode::as_str). "t2va" обязателен у каждого бандла.
+    #[serde(default)]
+    pub modes: Vec<String>,
     #[serde(default)]
     pub preset: VideoPreset,
     #[serde(default)]
@@ -298,6 +304,9 @@ const EMBEDDED_VIDEO_CATALOG: &str = include_str!("../../video_models_catalog.js
 /// audio_vae = «немое видео» — это дефект каталога, а не молчаливый допуск).
 const VIDEO_REQUIRED_ROLES: [&str; 4] = ["diffusion", "llm", "vae", "audio_vae"];
 
+/// Валидные режимы vid_gen (VideoMode::as_str).
+const VIDEO_VALID_MODES: [&str; 4] = ["t2va", "i2va", "fl2va", "ref2va"];
+
 /// Валидация одного видео-бандла. Границы — защита от опечаток в JSON,
 /// НЕ лимиты сервера: реальные ограничения проверяет preflight движка.
 pub fn validate_video_entry(entry: &VideoBundleEntry) -> Result<(), String> {
@@ -310,6 +319,25 @@ pub fn validate_video_entry(entry: &VideoBundleEntry) -> Result<(), String> {
         let count = entry.files.iter().filter(|g| g.role == f.role).count();
         if count > 1 {
             return Err(format!("роль «{}» задублирована ({} файла)", f.role, count));
+        }
+    }
+    // modes — декларативный гейт режимов тула: пустой список ломает i2va-гейт
+    // (запросы картинка→видео не смогут отличить поддержанный бандл от
+    // неподдержанного), "t2va" обязателен — видео-бандл, не умеющий t2va,
+    // не имеет смысла.
+    if entry.modes.is_empty() {
+        return Err("пустой modes — список поддерживаемых режимов vid_gen обязан быть объявлен".to_string());
+    }
+    if !entry.modes.iter().any(|m| m == "t2va") {
+        return Err("modes не содержит «t2va» — видео-бандл обязан поддерживать text→video".to_string());
+    }
+    for m in &entry.modes {
+        if !VIDEO_VALID_MODES.contains(&m.as_str()) {
+            return Err(format!(
+                "неизвестный режим «{}» в modes (валидные: {})",
+                m,
+                VIDEO_VALID_MODES.join(", ")
+            ));
         }
     }
     if entry.preset.steps_draft == 0 {
@@ -736,5 +764,47 @@ mod video_tests {
         bad2.preset.steps_draft_nolora = 6;
         let msg2 = validate_video_entry(&bad2).unwrap_err().to_string();
         assert!(msg2.contains("fallback"), "fallback-инвариант должен проверяться, got: {}", msg2);
+    }
+
+    /// modes — декларативный гейт режимов тула (Шаг 3, 27.10.26): пустой
+    /// список, отсутствие t2va и неизвестный режим — отказ валидатора.
+    #[test]
+    fn video_modes_are_validated() {
+        let catalog = load_video_catalog();
+        assert!(!catalog.is_empty());
+        for e in &catalog {
+            assert!(
+                !e.modes.is_empty() && e.modes.iter().any(|m| m == "t2va"),
+                "{}: modes обязан быть непустым и содержать t2va, got {:?}",
+                e.name,
+                e.modes
+            );
+        }
+        // fl2va-диффузион умеет кадры, ref2va — только референсы (BUNDLES.md §9).
+        let by = |name: &str| {
+            catalog
+                .iter()
+                .find(|e| e.name == name)
+                .map(|e| e.modes.clone())
+                .unwrap_or_default()
+        };
+        let q4km_modes = by("minimax_h3_fl2va_pruned-q4km");
+        assert!(q4km_modes.contains(&"i2va".to_string()), "fl2va-бандл умеет i2va");
+        assert!(q4km_modes.contains(&"fl2va".to_string()));
+        let ref_modes = by("minimax_h3_ref2va_pruned-q3k");
+        assert!(
+            !ref_modes.contains(&"i2va".to_string()),
+            "ref2va-диффузион не заявляет i2va до замера (§6 недоказанное)"
+        );
+        assert!(ref_modes.contains(&"ref2va".to_string()));
+
+        // Битые modes — честный отказ валидатора.
+        let mut bad = video_bundle_by_name("minimax_h3_fl2va_pruned-q3k").expect("бандл");
+        bad.modes.clear();
+        assert!(validate_video_entry(&bad).unwrap_err().contains("пустой modes"));
+        bad.modes = vec!["i2va".to_string()];
+        assert!(validate_video_entry(&bad).unwrap_err().contains("t2va"));
+        bad.modes = vec!["t2va".to_string(), "hypervideo".to_string()];
+        assert!(validate_video_entry(&bad).unwrap_err().contains("hypervideo"));
     }
 }

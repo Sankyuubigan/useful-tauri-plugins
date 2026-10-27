@@ -238,10 +238,13 @@ steps/cfg, load_time_s, free/total/peak/free-after VRAM, число провал
 Четыре компонента на ярус спавна: `--diffusion-model` (pruned GGUF) + `--vae`
 (video VAE fp16 `minimax_h3_video_vae_fp16.safetensors`) + `--audio-vae`
 (fp32, 605 МБ) + `--llm` `qwen3vl_32b_minimax_h3-Q2_K_M.gguf` (12.2 ГБ).
-Спавн-инварианты (`build_spawn_args`): **`--offload-to-cpu --rng cpu` всегда**
-(для video РАБОТАЕТ, в отличие от image-Qwen-стека — см. §4), запреты
-`--auto-fit/--max-vram/--fa` не обходить: каталог не задаёт этих полей по
-дизайну.
+Спавн-инварианты (`build_spawn_args`): **ровно ОДНА политика размещения весов**
+(docs/backend.md, бенч 27.10.26) — `--offload-to-cpu --rng cpu` (все params в
+RAM) ИЛИ `--auto-fit on --max-vram -1 --rng cpu` (params diffusion/te в RAM,
+VAE на disk; замер: RSS-пик 24.65 ГБ, VRAM-пик 15.26 ГБ, время 1.17× offload).
+Смесь политик и «ни одной» — дефект каталога, честный отказ; `--fa`/
+`--diffusion-fa` видео не копирует. q4km использует auto-fit (`ram_min_gb`
+28.5 — из замера), q3k-бандлы — offload.
 
 ### Режимы и ограничения vid_gen
 

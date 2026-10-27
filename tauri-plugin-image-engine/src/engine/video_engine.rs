@@ -4,9 +4,11 @@
 //! (локальные копии: `king_orch_3/temp/minimax_h3_sdcpp.md`, `king_orch_3/temp/api.md`):
 //! - spawn: `sd-server --diffusion-model … --vae … --audio-vae … --llm …
 //!   --listen-ip 127.0.0.1 --listen-port <rand> <spawn_flags из каталога>`;
-//!   флаги `--offload-to-cpu --rng cpu` — SSOT каталога (docs/minimax_h3.md).
-//!   Image-флаги `--fa/--diffusion-fa/--auto-fit/--max-vram` НЕ копируются:
-//!   docs/backend.md — explicit `--params-backend` от auto-fit отключает auto-fit.
+//!   флаги размещения весов — SSOT каталога, ОДНА из двух политик (бенч
+//!   27.10.26, king_orch_3/test/bench/video_h3_autofit/): `--offload-to-cpu
+//!   --rng cpu` ИЛИ `--auto-fit on --max-vram -1 --rng cpu`
+//!   (docs/minimax_h3.md, docs/backend.md). Image-флаги `--fa/--diffusion-fa`
+//!   видео НЕ копирует; смесь политик запрещена (build_spawn_args).
 //! - submit: `POST /sdcpp/v1/vid_gen` → 202 `{id, poll_url}`.
 //! - poll: `GET /sdcpp/v1/jobs/{id}` → completed → `result` = ОДИН контейнер:
 //!   `b64_json` + `mime_type` + `output_format` echo + `fps` + `frame_count`.
@@ -32,6 +34,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::models_catalog::{bundle_files_weights, video_bundle_disk_bytes, BundleFile, VideoBundleEntry};
+use crate::engine::preflight;
 use crate::engine::process_util::{
     assign_child_to_kill_job, kill_process_tree, register_engine_pid, unregister_engine_pid,
 };
@@ -246,6 +249,29 @@ pub fn seconds_to_frames(seconds: u32, fps: u32) -> u32 {
     seconds.saturating_mul(fps)
 }
 
+/// Чтение кадра (init/end/референс) в base64. ЕДИНСТВЕННАЯ точка чтения
+/// файла→b64 для видео: GUI-команда `generate_video` (commands.rs) и
+/// хостовая `generate_video_simple` используют её — запасных частных чтений
+/// нет (SSOT). Контракт vid_gen (temp/api.md «Image and Frame Encoding
+/// Rules»): любой image-файл принимает raw base64 ИЛИ data URL — отдаём
+/// raw base64; пришедший data URL пропускается как есть (b64-часть).
+pub fn file_to_b64(path_or_data_url: &str) -> Result<String, String> {
+    use base64::Engine as _;
+    let path_or_data_url = path_or_data_url.trim();
+    if path_or_data_url.is_empty() {
+        return Err("Пустая строка вместо пути/данных кадра.".to_string());
+    }
+    // Уже кодированный data-URL пропускаем как есть.
+    if let Some(rest) = path_or_data_url.strip_prefix("data:") {
+        let b64 = rest.split_once(',').map(|(_, b)| b).unwrap_or(rest);
+        return Ok(b64.to_string());
+    }
+    let bytes = std::fs::read(path_or_data_url).map_err(|e| {
+        format!("Не удалось прочитать кадр {}: {}", path_or_data_url, e)
+    })?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
+}
+
 /// Сборка spawn-аргументов из бандла. Отказ называет ровно ту роль/ограничение,
 /// которая не выполнена — без молчаливых подстановок.
 pub fn build_spawn_args(
@@ -301,20 +327,38 @@ pub fn build_spawn_args(
         args.push("--model-args".to_string());
         args.push(ma.to_string());
     }
-    // Инвариант каталога: видео-спавн обязан вести offload (28 ГБ весов H3 не
-    // влезают в карту целиком), а запретный image-тандем не посылается никогда.
+    // Инвариант каталога: веса H3 (~29 ГБ) обязаны иметь ЯВНУЮ политику
+    // размещения — ОДНУ из двух (бенч 27.10.26, test/bench/video_h3_autofit/):
+    //   offload:  --offload-to-cpu            — все params в RAM (порог 30.0);
+    //   auto-fit: --auto-fit on --max-vram -1 — params diffusion/te в RAM,
+    //             VAE на disk (mmap), VRAM-пик 15.26 ГБ, RSS-пик 24.65 ГБ
+    //             (порог 28.5), время 1.17× offload.
+    // Смесь политик запрещена: --offload-to-cpu подставляет --params-backend,
+    // а явный --params-backend отключает auto-fit (docs/backend.md) — вместе
+    // они дают неопределимое состояние размещения.
     let joined = args.join(" ");
-    if !joined.contains("--offload-to-cpu") {
+    let offload = joined.contains("--offload-to-cpu");
+    let autofit = joined.contains("--auto-fit");
+    if offload && autofit {
         return Err(
-            "spawn_flags бандла видео не содержит --offload-to-cpu — 28 ГБ весов H3 \
-             не влезают в карту без offload. Исправьте каталог (SSOT)."
+            "spawn_flags бандла видео смешивает политики размещения (--offload-to-cpu + --auto-fit) — \
+             --params-backend от offload отключает auto-fit (docs/backend.md). \
+             Оставьте в каталоге ОДНУ политику (SSOT)."
                 .to_string(),
         );
     }
-    if joined.contains("--auto-fit") || joined.contains("--max-vram") {
+    if !offload && !autofit {
         return Err(
-            "spawn_flags бандла видео содержит image-флаг (--auto-fit/--max-vram) — \
-             с --offload-to-cpu они запрещены (docs/backend.md). Исправьте каталог."
+            "spawn_flags бандла видео не содержит ни --offload-to-cpu, ни --auto-fit — \
+             веса H3 (~29 ГБ) не влезают в карту без явной политики размещения. \
+             Исправьте каталог (SSOT)."
+                .to_string(),
+        );
+    }
+    if autofit && !joined.contains("--max-vram") {
+        return Err(
+            "spawn_flags бандла видео содержит --auto-fit без --max-vram — бюджет VRAM \
+             обязан быть задан явно (замер 27.10.26: --max-vram -1). Исправьте каталог (SSOT)."
                 .to_string(),
         );
     }
@@ -478,15 +522,17 @@ pub fn preflight_video(entry: &VideoBundleEntry, bundle_dir: &Path) -> Result<St
         log::warn!("[video-engine] NVML недоступен — preflight проверяет только RAM/диск.");
     } else if vram_total_gb < need_vram_gb {
         return Err(format!(
-            "Не хватает VRAM: нужно ≥ {:.1} ГБ на карте, фактически {:.1} ГБ. \
+            "{}: нужно ≥ {:.1} ГБ на карте, фактически {:.1} ГБ. \
              Возьмите бандл с меньшим квантом (Q3_K для карт ~8 ГБ).",
+            preflight::resource_markers::VRAM,
             need_vram_gb, vram_total_gb
         ));
     }
     if ram_free_gb < need_ram_gb {
         return Err(format!(
-            "Не хватает RAM: нужно ≥ {:.1} ГБ свободной, фактически {:.1} ГБ. \
+            "{}: нужно ≥ {:.1} ГБ свободной, фактически {:.1} ГБ. \
              Закройте другие приложения или возьмите бандл легче.",
+            preflight::resource_markers::RAM,
             need_ram_gb, ram_free_gb
         ));
     }
@@ -506,8 +552,9 @@ pub fn preflight_video(entry: &VideoBundleEntry, bundle_dir: &Path) -> Result<St
         if let Some((_, free)) = best {
             if (free as f64) < missing_bytes {
                 return Err(format!(
-                    "Не хватает места на диске: для докачки нужно ≥ {:.1} ГБ на томе {}, \
+                    "{}: для докачки нужно ≥ {:.1} ГБ на томе {}, \
                      свободно {:.1} ГБ. Освободите место или смените папку видео-бандла.",
+                    preflight::resource_markers::DISK,
                     missing_bytes / GIB,
                     bundle_dir.display(),
                     free as f64 / GIB
@@ -932,13 +979,15 @@ impl Drop for VideoEngine {
     }
 }
 
-/// One-shot видео (t2va): spawn → vid_gen → Drop. Точка входа host-tools:
+/// One-shot видео (t2va/i2va): spawn → vid_gen → Drop. Точка входа host-tools:
 /// дефолты ИЗ ПРЕСЕТА каталога (SSOT — tools-слой не дублирует константы),
 /// seconds клампится по образцу GUI-команды `generate_video` (0 → 5, свыше
 /// max_seconds → кламп с warn), сэмплинг решает `sampling_plan_for_quality`
 /// (draft/final по наличию файла lora_draft; турбо-точка lcm/simple/shift —
-/// из каталога). init/end/refs — не на этом уровне: все четыре режима
-/// доступны через `VideoEngine::generate` напрямую.
+/// из каталога). `init_path` = Some(путь/data-URL) → i2va: первый кадр
+/// читается общим `file_to_b64` (честная ошибка, если файла нет); None → t2va.
+/// end/refs — не на этом уровне: все четыре режима доступны через
+/// `VideoEngine::generate` напрямую.
 pub fn generate_video_simple<L>(
     engine_dir: &Path,
     bundle_dir: &Path,
@@ -946,6 +995,7 @@ pub fn generate_video_simple<L>(
     prompt: &str,
     seconds: u32,
     final_quality: bool,
+    init_path: Option<&str>,
     out_path: &Path,
     cancel_flag: Option<Arc<AtomicBool>>,
     log_cb: L,
@@ -967,10 +1017,27 @@ where
         secs = preset.max_seconds;
     }
     let plan = sampling_plan_for_quality(entry, bundle_dir, final_quality);
+    // Режим выводится из входа ДО чтения файла — лог называет его честно,
+    // включая случай «файл не читается» (ошибка уйдёт с mode=i2va в контексте).
+    let init_b64 = match init_path.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(path) => {
+            let size = std::fs::metadata(path).map(|m| m.len()).ok();
+            log_cb(format!(
+                "🖼 mode=i2va: читаю первый кадр {} ({})",
+                path,
+                size.map(|b| format!("{} байт", b))
+                    .unwrap_or_else(|| "размер неизвестен".to_string())
+            ));
+            let b64 = file_to_b64(path)?;
+            log_cb(format!("🖼 первый кадр закодирован: {} симв. b64", b64.len()));
+            Some(b64)
+        }
+        None => None,
+    };
     let req = VideoRequest {
         prompt: prompt.to_string(),
         negative_prompt: None,
-        init_b64: None,
+        init_b64,
         end_b64: None,
         ref_images_b64: Vec::new(),
         width: preset.width,
@@ -1025,6 +1092,7 @@ mod tests {
                 .collect(),
             spawn_flags: spawn_flags.map(String::from),
             model_args: None,
+            modes: vec!["t2va".to_string(), "i2va".to_string(), "fl2va".to_string()],
             preset: VideoPreset::default(),
             size_gb: None,
             vram_fast_gb: None,
@@ -1083,14 +1151,47 @@ mod tests {
             "127.0.0.1",
             "--listen-port",
             "20900",
-            "--offload-to-cpu", // из каталожного spawn_flags
-            "--rng",           // --rng cpu — тоже из каталога
+            "--auto-fit",  // из каталожного spawn_flags (бенч 27.10.26, q4km)
+            "--max-vram",  // auto-fit обязан идти с явным бюджетом VRAM
+            "--rng",       // --rng cpu — тоже из каталога
         ] {
             assert!(j.contains(flag), "не хватает флага {}", flag);
         }
-        assert!(!j.contains("--auto-fit"), "image-флаг запрещён видео");
-        assert!(!j.contains("--max-vram"), "image-флаг запрещён видео");
+        assert!(!j.contains("--offload-to-cpu"), "смесь политик запрещена (auto-fit активен)");
         assert!(!j.contains("--fa"), "image-флаг запрещён видео");
+        assert!(!j.contains("--diffusion-fa"), "image-флаг запрещён видео");
+    }
+
+    /// Инвариант политик размещения (бенч 27.10.26): ровно ОДНА из двух —
+    /// offload ИЛИ auto-fit+max-vram; смесь и «ни то ни другое» — дефект каталога.
+    #[test]
+    fn spawn_args_enforce_single_placement_policy() {
+        let (entry, dir) = catalog_bundle_with_files();
+        let weights = bundle_files_weights(&dir, &entry.files);
+        let edit_flags = |entry: &VideoBundleEntry, flags: &str| {
+            let mut e = entry.clone();
+            e.spawn_flags = Some(flags.to_string());
+            e
+        };
+        // 1) offload-политика валидна (прежний канон).
+        let offload = edit_flags(&entry, "--offload-to-cpu --rng cpu");
+        build_spawn_args(&offload, &weights, 19900).expect("offload-политика валидна");
+        // 2) auto-fit без max-vram — отказ (бюджет VRAM обязан быть явным).
+        let no_budget = edit_flags(&entry, "--auto-fit on --rng cpu");
+        let err = build_spawn_args(&no_budget, &weights, 19900).unwrap_err();
+        assert!(err.contains("--max-vram"), "отказ называет --max-vram: {}", err);
+        // 3) смесь offload + auto-fit — отказ (params-backend отключает auto-fit).
+        let mixed = edit_flags(&entry, "--offload-to-cpu --auto-fit on --max-vram -1 --rng cpu");
+        let err = build_spawn_args(&mixed, &weights, 19900).unwrap_err();
+        assert!(err.contains("смешивает"), "отказ про смесь политик: {}", err);
+        // 4) ни одной политики — отказ (веса H3 не размещаются сами).
+        let none = edit_flags(&entry, "--rng cpu");
+        let err = build_spawn_args(&none, &weights, 19900).unwrap_err();
+        assert!(
+            err.contains("--offload-to-cpu") && err.contains("--auto-fit"),
+            "отказ называет обе политики: {}",
+            err
+        );
     }
 
     #[test]
@@ -1369,7 +1470,14 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let e = synthetic_entry(vec![("diffusion", "w.gguf", Some(1))], Some("--offload-to-cpu"), None, Some(16000.0));
         let err = preflight_video(&e, &dir).unwrap_err();
-        assert!(err.contains("RAM"), "отказ называет RAM: {}", err);
+        // Канон маркера — SSOT preflight::resource_markers (инцидент 27.10.26:
+        // «Не хватает RAM» не совпал с детектором хоста → слепые ретраи).
+        assert!(
+            err.starts_with(preflight::resource_markers::RAM),
+            "отказ начинается с канона «{}»: {}",
+            preflight::resource_markers::RAM,
+            err
+        );
     }
 
     #[test]
@@ -1385,8 +1493,90 @@ mod tests {
             None,
         );
         let err = preflight_video(&e, &dir).unwrap_err();
-        assert!(err.contains("диске"), "отказ называет диск: {}", err);
+        assert!(
+            err.starts_with(preflight::resource_markers::DISK),
+            "отказ начинается с канона «{}»: {}",
+            preflight::resource_markers::DISK,
+            err
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// VRAM-канон: маленькая карта → отказ начинается ровно с маркера
+    /// «Недостаточно VRAM» (NVML доступен на CI-машине не всегда, поэтому
+    /// маркер проверяется напрямую формулой, а не через NVML-ветку preflight).
+    #[test]
+    fn vram_marker_formula_uses_canon() {
+        let msg = format!(
+            "{}: нужно ≥ {:.1} ГБ на карте, фактически {:.1} ГБ.",
+            preflight::resource_markers::VRAM,
+            12.0,
+            8.0
+        );
+        assert!(msg.starts_with("Недостаточно VRAM: нужно ≥ 12.0"), "{}", msg);
+    }
+
+    /// file_to_b64 (SSOT чтения кадра): путь → raw base64 (контракт api.md —
+    /// «raw base64 или data URL»), data URL → b64-часть без префикса, пустая
+    /// строка/отсутствующий файл → честная ошибка с путём.
+    #[test]
+    fn file_to_b64_roundtrip_and_honest_errors() {
+        let dir = std::env::temp_dir().join(format!("ko_video_b64_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        // Минимальный 1×1 PNG (синтетический, не из репо-хардкода: core §2.9).
+        let png: &[u8] = &[
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+            0x00, 0x1F, 0x15, 0xC4, 0x89,
+        ];
+        let path = dir.join("pixel.png");
+        std::fs::write(&path, png).unwrap();
+        let b64 = file_to_b64(path.to_str().unwrap()).expect("PNG читается");
+        assert!(!b64.is_empty());
+        // Raw base64 (без data-префикса), декодируется обратно в байты PNG.
+        use base64::Engine as _;
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(&b64)
+            .expect("b64 декодируется");
+        assert_eq!(decoded, png, "roundtrip байт сохранён");
+        assert!(!b64.starts_with("data:"), "отдаётся raw base64, не data URL");
+        // Data URL → b64-часть.
+        let from_url = file_to_b64(&format!("data:image/png;base64,{}", b64)).unwrap();
+        assert_eq!(from_url, b64);
+        // Честные ошибки: пустая строка и отсутствующий файл (с путём в тексте).
+        assert!(file_to_b64("   ").unwrap_err().contains("Пустая строка"));
+        let ghost = dir.join("missing.png");
+        let err = file_to_b64(ghost.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("Не удалось прочитать кадр"), "{}", err);
+        assert!(err.contains("missing.png"), "ошибка называет путь: {}", err);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// i2va-вход через generate_video_simple: отсутствующий init_path → честный
+    /// Err ДО spawn движка (чтение файла идёт раньше VideoEngine::new).
+    #[test]
+    fn simple_generation_fails_honestly_on_missing_init_path() {
+        let (entry, dir) = catalog_bundle_with_files();
+        let ghost = dir.join("no_such_frame.png");
+        let out = dir.join("out.webm");
+        let err = generate_video_simple(
+            &dir,
+            &dir,
+            &entry,
+            "тестовый промпт",
+            5,
+            false,
+            Some(ghost.to_str().unwrap()),
+            &out,
+            None,
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("Не удалось прочитать кадр"),
+            "отказ чтения кадра честный: {}",
+            err
+        );
     }
 
     #[test]

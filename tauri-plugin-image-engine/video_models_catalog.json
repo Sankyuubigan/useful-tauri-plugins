@@ -2,8 +2,8 @@
   {
     "name": "minimax_h3_fl2va_pruned-q4km",
     "label": "MiniMax H3 FL2VA pruned (Q4_K) — видео+речь; для карт ≥12 ГБ",
-    "spawn_flags": "--offload-to-cpu --rng cpu",
-    "note": "Дефолт для VRAM ≥12 ГБ (16 ГБ юзера): diffusion Q4_K целиком живёт в VRAM (offload почти не нужен). Режимы motorista: text→video, image→video (init), первый+последний кадр. Русская речь — нативно (prompt). Шаги: draft 4 (Turbo-LoRA DMAD; без LoRA-файла — 6, fallback-поле steps_draft_nolora), final 20 (замеры ролика Ngc6vmyGOyU). Euler/discrete — путь final и draft-без-LoRA; турбо-точка — lcm/simple/shift 12 (поля turbo_* этого пресета). cfg 1.0, 864×480, 24 fps, ≤15 сек. Turbo-LoRA DMAD 4-step подтверждена бенчем 26.10.26: медиана 130.8 с против 505.6 с у 20-шагового final (ускорение 3.87×), lcm/simple/shift12; см. tasks/26.10.26 Ускорение видео H3 — turbo-LoRA бенч (Фаза 0-1).md и test/bench/video_h3_turbo/report.json. VRAM-пик замерен: 15.6 ГБ (клип 5 с, 864×480); порог ram_min_gb не снижать — RSS-пик контрольных конфигов 26.8–28.2 ГБ подтверждает оценку (аномально низкий RSS dmad4 6.2 ГБ не объяснён).",
+    "spawn_flags": "--auto-fit on --max-vram -1 --rng cpu",
+    "note": "Дефолт для VRAM ≥12 ГБ (16 ГБ юзера): auto-fit размещает VAE params на disk (mmap), diffusion/TE params в RAM, compute — на CUDA0 (лог бенча: --backend \"diffusion=CUDA0,te=CUDA0,vae=CUDA0\" --params-backend \"diffusion=cpu,te=cpu,vae=disk\"). Режимы fl2va: text→video, image→video (init), первый+последний кадр. Русская речь — нативно (prompt). Шаги: draft 4 (Turbo-LoRA DMAD; без LoRA-файла — 6, fallback-поле steps_draft_nolora), final 20 (замеры ролика Ngc6vmyGOyU). Euler/discrete — путь final и draft-без-LoRA; турбо-точка — lcm/simple/shift 12 (поля turbo_* этого пресета). cfg 1.0, 864×480, 24 fps, ≤15 сек. Turbo-LoRA DMAD 4-step подтверждена бенчем 26.10.26: медиана 130.8 с против 505.6 с у 20-шагового final (ускорение 3.87×), см. tasks/26.10.26 Ускорение видео H3 — turbo-LoRA бенч (Фаза 0-1).md и test/bench/video_h3_turbo/report.json. Политика auto-fit внедрена по бенчу 27.10.26 (king_orch_3/test/bench/video_h3_autofit/, гейты §5а tasks-плана): RSS-пик 24.65 ГБ, VRAM-пик 15.26 ГБ, время draft-клипа 124 кадра 153.6 с против 130.8 с у offload-контроля (1.17×, гейт ≤1.5×); ram_min_gb = 24.65×1.15 ≈ 28.5 (замер, не оценка). VRAM-пик замерен: 15.26 ГБ (offload-контроль 26.10.26: 15.6 ГБ — одинаково).",
     "is_default": true,
     "files": [
       {
@@ -55,7 +55,12 @@
     "size_gb": "31.7",
     "vram_fast_gb": 28.0,
     "vram_min_gb": 12.0,
-    "ram_min_gb": 30.0
+    "ram_min_gb": 28.5,
+    "modes": [
+      "t2va",
+      "i2va",
+      "fl2va"
+    ]
   },
   {
     "name": "minimax_h3_fl2va_pruned-q3k",
@@ -113,7 +118,12 @@
     "size_gb": "29.1",
     "vram_fast_gb": 27.0,
     "vram_min_gb": 8.5,
-    "ram_min_gb": 28.0
+    "ram_min_gb": 28.0,
+    "modes": [
+      "t2va",
+      "i2va",
+      "fl2va"
+    ]
   },
   {
     "name": "minimax_h3_ref2va_pruned-q3k",
@@ -171,6 +181,10 @@
     "size_gb": "29.0",
     "vram_fast_gb": 27.0,
     "vram_min_gb": 8.5,
-    "ram_min_gb": 28.0
+    "ram_min_gb": 28.0,
+    "modes": [
+      "t2va",
+      "ref2va"
+    ]
   }
 ]

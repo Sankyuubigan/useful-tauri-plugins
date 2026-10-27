@@ -225,11 +225,13 @@ export class BundleTabElement extends HTMLElement {
     }
   }
 
-  /** Сборка целевой папки скачивания: если хоть один файл уже на диске —
-   * продолжаем в текущей папке; иначе диалог. Выбранная папка = ПУЛ для всех
-   * наборов (25.10.2026): подпапка `${base}/${bundle_name}` больше не создаётся —
-   * она порождала перекачку общих файлов и «3 файла есть, 1 нет» при
-   * переключении активного бандла (инцидент 25.10.2026). */
+  /** «Скачать набор»/«Докачать файлы»: качает ВСЕГДА в настроенную папку
+   * (`save_dir` — кастом или дефолт KingOrchData, пустым не бывает — бэкенд
+   * `commands.rs` гарантирует дефолт). Выбор пути — ровно одно место на
+   * вкладке: кнопка «Изменить путь…» (SSOT решений; раньше диалог дублировал
+   * её на «Скачать» и вместо скачивания открывал проводник). Выбранная папка
+   * = ПУЛ для всех наборов (25.10.2026): подпапка `${base}/${bundle_name}`
+   * не создаётся — она порождала перекачку общих файлов. */
   private async onDownload() {
     const svc = this.service
     if (!svc || this.busy) return
@@ -240,16 +242,7 @@ export class BundleTabElement extends HTMLElement {
     this.setProgress(0, 0)
     try {
       const cur = await svc.info(null)
-      let target = cur.save_dir
-      const anyExists = cur.files.some((f) => f.exists)
-      if (!anyExists || !target) {
-        const sel = await openDialog({ directory: true, title: 'Куда скачать набор?' })
-        if (!sel) return
-        const base = Array.isArray(sel) ? sel[0] : sel
-        if (!base) return
-        target = base
-      }
-      await svc.download(target, cur.bundle_name)
+      await svc.download(cur.save_dir, cur.bundle_name)
       notifyBundleChanged()
       toast(`Набор ${svc.kind === 'video' ? 'видео' : 'изображений'} скачан!`)
     } catch (e) {

@@ -22,6 +22,23 @@ pub const COMPUTE_BUFFERS_MB: f64 = 2048.0;
 /// Запас поверх расчёта (МБ).
 pub const SAFETY_RESERVE_MB: f64 = 1024.0;
 
+/// Канонические маркеры ресурсного отказа (SSOT формулировок плагина):
+/// image- и video-preflight начинают отказ ровно с них, а хост-детектор
+/// (`orchestrator/vram.rs::is_resource_error`) маршрутизирует ретраи по этим
+/// же строкам. Рассинхрон маркера = замаскированная ошибка + слепые ретраи
+/// модели (инцидент 27.10.26: «Не хватает RAM» ≠ «Недостаточно RAM») —
+/// менять формулировку только здесь.
+pub mod resource_markers {
+    /// На карте не хватает памяти целиком (статическое свойство машины).
+    pub const VRAM: &str = "Недостаточно VRAM";
+    /// Не хватает свободной оперативки под веса.
+    pub const RAM: &str = "Недостаточно RAM";
+    /// Не хватает места на диске под докачку.
+    pub const DISK: &str = "Недостаточно места на диске";
+    /// Суммарно не хватает VRAM+RAM (совместный минимум).
+    pub const MEMORY: &str = "Недостаточно памяти";
+}
+
 #[derive(Serialize, Clone, Debug)]
 pub struct MemoryEstimate {
     /// Суммарный размер файлов бандла на диске, МБ.
@@ -112,7 +129,8 @@ pub fn preflight_check(entry: &ImageBundleEntry) -> (PreflightVerdict, MemoryEst
             PreflightVerdict::Insufficient,
             est.clone(),
             format!(
-                "Недостаточно RAM: нужно ~{:.1} ГБ для весов бандла, свободно {:.1} ГБ.",
+                "{}: нужно ~{:.1} ГБ для весов бандла, свободно {:.1} ГБ.",
+                resource_markers::RAM,
                 est.ram_need_mb / 1024.0,
                 est.ram_free_mb / 1024.0
             ),
@@ -140,7 +158,8 @@ pub fn preflight_check(entry: &ImageBundleEntry) -> (PreflightVerdict, MemoryEst
             PreflightVerdict::Insufficient,
             est.clone(),
             format!(
-                "Недостаточно памяти: минимум ~{:.1} ГБ VRAM + ~{:.1} ГБ RAM. Свободно: {:.1} ГБ VRAM, {:.1} ГБ RAM.",
+                "{}: минимум ~{:.1} ГБ VRAM + ~{:.1} ГБ RAM. Свободно: {:.1} ГБ VRAM, {:.1} ГБ RAM.",
+                resource_markers::MEMORY,
                 est.min_mb / 1024.0,
                 est.ram_need_mb / 1024.0,
                 est.vram_free_mb / 1024.0,

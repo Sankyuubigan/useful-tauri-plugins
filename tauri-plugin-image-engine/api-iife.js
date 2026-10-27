@@ -640,11 +640,13 @@
         await this.refresh();
       }
     }
-    /** Сборка целевой папки скачивания: если хоть один файл уже на диске —
-     * продолжаем в текущей папке; иначе диалог. Выбранная папка = ПУЛ для всех
-     * наборов (25.10.2026): подпапка `${base}/${bundle_name}` больше не создаётся —
-     * она порождала перекачку общих файлов и «3 файла есть, 1 нет» при
-     * переключении активного бандла (инцидент 25.10.2026). */
+    /** «Скачать набор»/«Докачать файлы»: качает ВСЕГДА в настроенную папку
+     * (`save_dir` — кастом или дефолт KingOrchData, пустым не бывает — бэкенд
+     * `commands.rs` гарантирует дефолт). Выбор пути — ровно одно место на
+     * вкладке: кнопка «Изменить путь…» (SSOT решений; раньше диалог дублировал
+     * её на «Скачать» и вместо скачивания открывал проводник). Выбранная папка
+     * = ПУЛ для всех наборов (25.10.2026): подпапка `${base}/${bundle_name}`
+     * не создаётся — она порождала перекачку общих файлов. */
     async onDownload() {
       const svc = this.service;
       if (!svc || this.busy) return;
@@ -655,16 +657,7 @@
       this.setProgress(0, 0);
       try {
         const cur = await svc.info(null);
-        let target = cur.save_dir;
-        const anyExists = cur.files.some((f) => f.exists);
-        if (!anyExists || !target) {
-          const sel = await open({ directory: true, title: "\u041A\u0443\u0434\u0430 \u0441\u043A\u0430\u0447\u0430\u0442\u044C \u043D\u0430\u0431\u043E\u0440?" });
-          if (!sel) return;
-          const base = Array.isArray(sel) ? sel[0] : sel;
-          if (!base) return;
-          target = base;
-        }
-        await svc.download(target, cur.bundle_name);
+        await svc.download(cur.save_dir, cur.bundle_name);
         notifyBundleChanged();
         toast(`\u041D\u0430\u0431\u043E\u0440 ${svc.kind === "video" ? "\u0432\u0438\u0434\u0435\u043E" : "\u0438\u0437\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u0439"} \u0441\u043A\u0430\u0447\u0430\u043D!`);
       } catch (e) {

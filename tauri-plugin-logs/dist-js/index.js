@@ -73,17 +73,38 @@ export async function trackError(report) {
         /* ignore */
     }
 }
-function defaultLogFilename() {
+function timestampPart() {
     const d = new Date();
     const pad = (n) => String(n).padStart(2, '0');
-    const ts = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+/**
+ * Предлагаемое имя файла для диалога «Сохранить логи»:
+ * `<проект>_logs_ГГГГ-ММ-ДД_ЧЧММСС.txt`, где <проект> — имя настроенного
+ * exe-лог-файла без расширения (единый источник — `log_file_name` в конфиге
+ * хоста; приходит существующей командой `get_log_file_path`). Без лог-файла —
+ * `logs_….txt`. Ошибка команды (рассинхрон версий плагина) не должна ломать
+ * диалог — фоллбэк на базовое имя с записью причины в лог.
+ */
+async function defaultLogFilename() {
+    const ts = timestampPart();
+    try {
+        const logPath = await getLogFilePath();
+        const base = logPath ? (logPath.split(/[\\/]/).pop() ?? '') : '';
+        const stem = base.replace(/\.[^.]+$/, '');
+        if (stem)
+            return `${stem}_logs_${ts}.txt`;
+    }
+    catch (e) {
+        logFront(`[logs-panel] не удалось получить имя лог-файла для сохранения: ${String(e)}`);
+    }
     return `logs_${ts}.txt`;
 }
 /** Диалог «Сохранить как» + запись текста лога в выбранный файл. Возвращает путь. */
 export async function saveLogsToFile(content) {
     const path = await save({
         title: 'Сохранить логи',
-        defaultPath: defaultLogFilename(),
+        defaultPath: await defaultLogFilename(),
         filters: [{ name: 'Текст', extensions: ['log', 'txt'] }],
     });
     if (!path)

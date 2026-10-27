@@ -203,6 +203,9 @@
   function getLastLogsPath() {
     return invoke("plugin:logs|get_last_logs_path");
   }
+  function getLogFilePath() {
+    return invoke("plugin:logs|get_log_file_path");
+  }
   function readLogTail(maxLines) {
     return invoke("plugin:logs|read_log_tail", { maxLines });
   }
@@ -229,16 +232,27 @@
     } catch {
     }
   }
-  function defaultLogFilename() {
+  function timestampPart() {
     const d = /* @__PURE__ */ new Date();
     const pad = (n) => String(n).padStart(2, "0");
-    const ts = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  }
+  async function defaultLogFilename() {
+    const ts = timestampPart();
+    try {
+      const logPath = await getLogFilePath();
+      const base = logPath ? logPath.split(/[\\/]/).pop() ?? "" : "";
+      const stem = base.replace(/\.[^.]+$/, "");
+      if (stem) return `${stem}_logs_${ts}.txt`;
+    } catch (e) {
+      logFront(`[logs-panel] \u043D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u0438\u043C\u044F \u043B\u043E\u0433-\u0444\u0430\u0439\u043B\u0430 \u0434\u043B\u044F \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0438\u044F: ${String(e)}`);
+    }
     return `logs_${ts}.txt`;
   }
   async function saveLogsToFile(content) {
     const path = await save({
       title: "\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C \u043B\u043E\u0433\u0438",
-      defaultPath: defaultLogFilename(),
+      defaultPath: await defaultLogFilename(),
       filters: [{ name: "\u0422\u0435\u043A\u0441\u0442", extensions: ["log", "txt"] }]
     });
     if (!path) return null;

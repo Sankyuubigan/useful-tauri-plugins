@@ -100,7 +100,9 @@ import { logFront, logFrontendEvent, onLogMessage, setReportingEnabled, trackEve
 - `trackEvent(name, props)` / `trackError({ errorType, message, stack?, severity?, kind? })` — аналитика/ошибки.
 - `setReportingEnabled(enabled)` — переключение облачного репорта (rust-функция плагина).
 - `getLastLogsPath()` / `getLogFilePath()` — пути к `last_logs` и exe-файлу лога.
-- `saveLogsToFile(content)` — сохранить текущие логи в файл.
+- `saveLogsToFile(content)` — сохранить текущие логи в файл. Диалог открывается
+  с предложенным именем `<проект>_logs_<timestamp>.txt`, где `<проект>` — имя
+  exe-лог-файла из конфига хоста без расширения (без него — `logs_<timestamp>.txt`).
 - `initFrontendErrorCapture()` — вешает обработчики `error`/`unhandledrejection` (вызывать один раз; плагин сам не дублирует).
 - `<logs-panel>` — web-component вкладки «Логи» (частично в guest-js `web-components.ts`).
 

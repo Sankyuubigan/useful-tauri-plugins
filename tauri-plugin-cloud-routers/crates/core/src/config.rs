@@ -115,6 +115,11 @@ pub struct GatewayConfig {    /// Порт HTTP-сервера.
     /// глобальный маршрут.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_relay: Option<String>,
+    /// Пользовательские комбо-связки: именованные цепочки участников с
+    /// fallback. Порядок в списке = порядок в `/v1/models` и `/api/combos`.
+    /// Пусто у всех старых конфигов — поле читается как пустой список.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub combos: Vec<ComboConfig>,
     /// Поля, которых эта версия крейта не знает.
     ///
     /// Сохраняются и переписываются при следующем сохранении. Это не
@@ -138,6 +143,7 @@ impl Default for GatewayConfig {
             presets_sources: Vec::new(),
             relays: Vec::new(),
             active_relay: None,
+            combos: Vec::new(),
             extra: BTreeMap::new(),
         }
     }
@@ -321,6 +327,119 @@ pub struct DiscoveredModel {
 impl Default for DiscoveredModel {
     fn default() -> Self {
         Self { id: String::new(), object: None, created: None }
+    }
+}
+
+/// Пользовательская комбо-связка: именованная цепочка участников с fallback.
+///
+/// Имя — идентификатор, по которому клиент выбирает связку (`model=<имя>`).
+/// Имя без `/` — обязательный инвариант: разделитель `/` занят форматом
+/// per-provider комбо `{provider_id}/{model_id}` (см. [`crate::models::split_combo`]),
+/// и коллизия сделала бы оба формата неразличимыми.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ComboConfig {
+    /// Имя комбо = id модели для клиентов API. Не пустое, без `/`, уникальное.
+    pub name: String,
+    /// Участники цепочки в порядке приоритета: запрос идёт первому, при его
+    /// отказе — второму и так далее.
+    pub members: Vec<ComboMember>,
+}
+
+impl Default for ComboConfig {
+    fn default() -> Self {
+        Self { name: String::new(), members: Vec::new() }
+    }
+}
+
+/// Участник комбо-связки: конкретная модель конкретного провайдера.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ComboMember {
+    /// id провайдера из [`GatewayConfig::providers`].
+    pub provider_id: String,
+    /// id модели из обнаруженных у этого провайдера.
+    pub model_id: String,
+    /// Подмножество ключей провайдера для этого участника.
+    ///
+    /// `None` — использовать все активные ключи провайдера (обычная ротация).
+    /// `Some(ids)` — только перечисленные ключи, порядок списка = порядок
+    /// попыток. Неактивные ключи из списка при запросе пропускаются:
+    /// деактивация (`is_active = false`) сильнее явного перечисления — ключ,
+    /// выключенный апстримом (401), не оживёт от упоминания в комбо.
+    pub key_ids: Option<Vec<String>>,
+}
+
+impl Default for ComboMember {
+    fn default() -> Self {
+        Self { provider_id: String::new(), model_id: String::new(), key_ids: None }
+    }
+}
+
+impl ComboConfig {
+    /// Проверить одну связку на согласованность с провайдерами конфига.
+    /// Возвращает список проблем; пустой список — связка корректна.
+    ///
+    /// Правило живёт рядом с данными (как [`ProviderConfig::validate`]): и
+    /// загрузка конфига, и CRUD-эндпоинт дашборда обязаны проверять связку
+    /// одним и тем же кодом, иначе две правды о «валидной связке» разъезжаются.
+    pub fn validate_against(&self, providers: &[ProviderConfig]) -> Vec<String> {
+        let mut problems = Vec::new();
+        if self.name.trim().is_empty() {
+            problems.push("комбо-связка с пустым именем".to_string());
+        }
+        if self.name.contains('/') {
+            problems.push(format!(
+                "имя комбо «{}» содержит «/» — это разделитель в id комбо формата «провайдер/модель»",
+                self.name
+            ));
+        }
+        if self.members.is_empty() {
+            problems.push(format!(
+                "комбо «{}» без участников — связка обязана иметь хотя бы одного",
+                self.name
+            ));
+        }
+        for member in &self.members {
+            let Some(p) = providers.iter().find(|p| p.id == member.provider_id) else {
+                problems.push(format!(
+                    "комбо «{}»: участник ссылается на провайдера «{}», которого нет в конфиге",
+                    self.name, member.provider_id
+                ));
+                continue;
+            };
+            if !p.models.iter().any(|m| m.id == member.model_id) {
+                problems.push(format!(
+                    "комбо «{}»: модель «{}» не обнаружена у провайдера «{}» — список моделей провайдера единственный источник правды",
+                    self.name, member.model_id, member.provider_id
+                ));
+            }
+            if let Some(ids) = &member.key_ids {
+                if ids.is_empty() {
+                    problems.push(format!(
+                        "комбо «{}»: у участника «{}/{}» пустой список key_ids — либо все активные ключи (None), либо непустой список",
+                        self.name, member.provider_id, member.model_id
+                    ));
+                }
+                let mut seen: Vec<&str> = Vec::new();
+                for id in ids {
+                    if seen.contains(&id.as_str()) {
+                        problems.push(format!(
+                            "комбо «{}»: у участника «{}/{}» дубликат ключа «{}»",
+                            self.name, member.provider_id, member.model_id, id
+                        ));
+                    }
+                    seen.push(id);
+                    if !p.keys.iter().any(|k| &k.id == id) {
+                        problems.push(format!(
+                            "комбо «{}»: у участника «{}/{}» ключ «{}» не существует у провайдера «{}»",
+                            self.name, member.provider_id, member.model_id, id, member.provider_id
+                        ));
+                    }
+                }
+            }
+        }
+        problems
     }
 }
 
@@ -540,6 +659,14 @@ impl GatewayConfig {
                     ));
                 }
             }
+        }
+        let mut seen_combos: Vec<&str> = Vec::new();
+        for c in &self.combos {
+            if !c.name.trim().is_empty() && seen_combos.contains(&c.name.as_str()) {
+                problems.push(format!("дубликат имени комбо-связки «{}»", c.name));
+            }
+            seen_combos.push(&c.name);
+            problems.extend(c.validate_against(&self.providers));
         }
         problems
     }
@@ -873,6 +1000,138 @@ mod tests {
         let mut c = GatewayConfig::default();
         c.providers.push(ProviderConfig { id: "groq".into(), ..Default::default() });
         assert!(c.validate().iter().any(|m| m.contains("base_url")), "{:?}", c.validate());
+    }
+
+    // ---- Комбо-связки -------------------------------------------------------
+
+    fn member(provider_id: &str, model_id: &str) -> ComboMember {
+        ComboMember { provider_id: provider_id.into(), model_id: model_id.into(), key_ids: None }
+    }
+
+    fn config_with_provider() -> GatewayConfig {
+        let mut c = GatewayConfig::default();
+        c.providers.push(provider("groq", "https://a.dev"));
+        c
+    }
+
+    #[test]
+    fn validate_rejects_slash_in_combo_name() {
+        // Инвариант «/» занят форматом provider/model: без этого запрета
+        // resolve_user_combo и resolve_combo спорили бы об одном id.
+        let mut c = config_with_provider();
+        c.combos.push(ComboConfig {
+            name: "fast/llama".into(),
+            members: vec![member("groq", "m")],
+        });
+        let p = c.validate();
+        assert!(p.iter().any(|m| m.contains("разделитель")), "{:?}", p);
+    }
+
+    #[test]
+    fn validate_rejects_empty_and_duplicate_combo_names() {
+        let mut c = config_with_provider();
+        c.combos.push(ComboConfig { name: "  ".into(), members: vec![member("groq", "m")] });
+        assert!(c.validate().iter().any(|m| m.contains("пустым именем")), "{:?}", c.validate());
+
+        c.combos.clear();
+        c.combos.push(ComboConfig { name: "fast".into(), members: vec![member("groq", "m")] });
+        c.combos.push(ComboConfig { name: "fast".into(), members: vec![member("groq", "m")] });
+        let p = c.validate();
+        assert!(p.iter().any(|m| m.contains("дубликат имени комбо")), "{:?}", p);
+    }
+
+    #[test]
+    fn validate_rejects_combo_without_members() {
+        // Отказ «связка пуста» структурно невозможен: конфиг без участников
+        // отвергается валидацией ещё на сохранении, а не в прокси.
+        let mut c = config_with_provider();
+        c.combos.push(ComboConfig { name: "fast".into(), members: Vec::new() });
+        let p = c.validate();
+        assert!(p.iter().any(|m| m.contains("без участников")), "{:?}", p);
+    }
+
+    #[test]
+    fn validate_rejects_member_with_unknown_provider_or_model() {
+        let mut c = config_with_provider();
+        c.combos.push(ComboConfig {
+            name: "fast".into(),
+            members: vec![member("ghost", "m"), member("groq", "m2")],
+        });
+        let p = c.validate();
+        assert!(p.iter().any(|m| m.contains("ghost") && m.contains("нет в конфиге")), "{:?}", p);
+        assert!(
+            p.iter().any(|m| m.contains("m2") && m.contains("не обнаружена")),
+            "{:?}",
+            p
+        );
+        // Оба участника корректны — проблем от комбо нет.
+        c.combos[0].members = vec![member("groq", "m")];
+        assert!(c.validate().is_empty(), "{:?}", c.validate());
+    }
+
+    #[test]
+    fn validate_rejects_bad_key_ids() {
+        let mut c = config_with_provider();
+        c.combos.push(ComboConfig {
+            name: "fast".into(),
+            members: vec![ComboMember {
+                provider_id: "groq".into(),
+                model_id: "m".into(),
+                key_ids: Some(vec!["k1".into(), "k1".into(), "ghost".into()]),
+            }],
+        });
+        c.combos.push(ComboConfig {
+            name: "empty_keys".into(),
+            members: vec![ComboMember {
+                provider_id: "groq".into(),
+                model_id: "m".into(),
+                key_ids: Some(Vec::new()),
+            }],
+        });
+        let p = c.validate();
+        assert!(p.iter().any(|m| m.contains("дубликат ключа")), "{:?}", p);
+        assert!(p.iter().any(|m| m.contains("ghost") && m.contains("не существует")), "{:?}", p);
+        assert!(p.iter().any(|m| m.contains("empty_keys") && m.contains("пустой список key_ids")), "{:?}", p);
+    }
+
+    #[test]
+    fn valid_combo_passes_validation() {
+        let mut c = config_with_provider();
+        c.combos.push(ComboConfig {
+            name: "fast".into(),
+            members: vec![
+                member("groq", "m"),
+                ComboMember {
+                    provider_id: "groq".into(),
+                    model_id: "m".into(),
+                    key_ids: Some(vec!["k1".into()]),
+                },
+            ],
+        });
+        assert!(c.validate().is_empty(), "{:?}", c.validate());
+    }
+
+    #[test]
+    fn combos_field_roundtrips_and_old_configs_parse_without_it() {
+        // Старый конфиг без поля combos читается с пустым списком — нулевая миграция.
+        let raw = r#"{"port":20131,"providers":[{"id":"groq","name":"G","base_url":"https://a.dev"}]}"#;
+        let cfg: GatewayConfig = serde_json::from_str(raw).expect("parse");
+        assert!(cfg.combos.is_empty());
+
+        // Пользовательская связка переживает serialize→deserialize без искажений,
+        // включая подмножество ключей.
+        let mut cfg2 = config_with_provider();
+        cfg2.combos.push(ComboConfig {
+            name: "fast".into(),
+            members: vec![ComboMember {
+                provider_id: "groq".into(),
+                model_id: "m".into(),
+                key_ids: Some(vec!["k1".into()]),
+            }],
+        });
+        let back: GatewayConfig =
+            serde_json::from_value(serde_json::to_value(&cfg2).expect("serialize")).expect("parse back");
+        assert_eq!(back.combos, cfg2.combos, "комбо обязано пережить roundtrip");
     }
 
     #[test]

@@ -408,7 +408,9 @@ pub fn read_combos_from_config(
 ) -> Result<Vec<crate::router::combos::ComboInfo>, String> {
     let data_dir = config::router_data_dir(app, router_id);
     let cfg = cloud_routers_core::load_config(&data_dir);
-    let combos = cloud_routers_core::models::list_combos(&cfg.providers);
+    // Один построитель списка с сервером: и пользовательские связки, и
+    // per-provider комбо — иначе настройки показали бы одно, а сервер другое.
+    let combos = cloud_routers_core::models::list_all_combos(&cfg);
     if combos.is_empty() {
         return Err(format!(
             "У шлюза нет комбо: добавьте провайдера с ключом и нажмите «Обновить модели» (кнопка «Открыть Web UI»)."

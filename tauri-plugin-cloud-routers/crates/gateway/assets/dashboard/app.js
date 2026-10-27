@@ -17,6 +17,7 @@ import {
 // Циклический импорт безопасен: это function-декларации в providers.js,
 // к моменту любого вызова модуль с ними уже вычислен.
 import { renderProviders, bindProviderExtras } from './providers.js';
+import { renderCombos, bindComboExtras } from './combos.js';
 
 // ────────────────────────────── загрузка ──────────────────────────────
 
@@ -35,6 +36,7 @@ export async function refreshAll() {
     renderHeader();
     renderProviders();
     renderModels();
+    await renderCombos();
     renderRelay();
     renderRelaySlots(slots);
   } catch (e) {
@@ -425,6 +427,7 @@ function initTabs() {
 function init() {
   initTabs();
   bindProviderExtras();
+  bindComboExtras();
   $('#btn-sync-presets').addEventListener('click', (e) => void syncPresets(e.currentTarget));
   $('#btn-modal-sync').addEventListener('click', (e) => void syncPresets(e.currentTarget));
 

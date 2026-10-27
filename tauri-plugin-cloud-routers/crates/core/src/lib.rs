@@ -20,13 +20,19 @@
 //! Кулдаун **никогда** не попадает на диск (тип `Instant` не сериализуется, и
 //! переживать перезапуск ему не нужно). См. [`keys`].
 //!
-//! ## Формат комбо
+//! ## Форматы комбо
 //!
-//! Комбо шлюза — это пара «провайдер + конкретная модель», а не пользовательская
-//! связка с fallback-цепочкой (как у 9Router). Идентификатор детерминирован:
-//! `"{provider_id}/{model_id}"`, например `groq/llama-3.3-70b-versatile`.
-//! Детерминизм здесь принципиален: один и тот же id всегда означает один и тот же
-//! апстрим, поэтому маршрутизация не зависит от скрытого состояния.
+//! Два формата идентификаторов, не пересекающиеся по инварианту «`/` в имени
+//! пользовательской связки запрещён»:
+//!
+//! - **Per-provider комбо** — пара «провайдер + конкретная модель»:
+//!   `"{provider_id}/{model_id}"`, например `groq/llama-3.3-70b-versatile`.
+//!   Детерминизм здесь принципиален: один и тот же id всегда означает один и тот же
+//!   апстрим, поэтому маршрутизация не зависит от скрытого состояния.
+//! - **Пользовательские связки** ([`config::ComboConfig`]) — именованная цепочка
+//!   участников с fallback (как у 9Router): `name` без `/`, участники в порядке
+//!   приоритета, у каждого — опциональное подмножество ключей. Список строит
+//!   [`models::list_all_combos`], разбор запроса — [`models::resolve_user_combo`].
 
 pub mod config;
 pub mod keys;
@@ -36,9 +42,9 @@ pub mod protocol;
 pub mod relay_token;
 pub mod store;
 
-pub use config::{AccountKey, DiscoveredModel, GatewayConfig, ProviderConfig};
+pub use config::{AccountKey, ComboConfig, ComboMember, DiscoveredModel, GatewayConfig, ProviderConfig};
 pub use keys::{FailureKind, KeyRotation};
-pub use models::{combo_id, resolve_combo};
+pub use models::{combo_id, list_all_combos, resolve_combo, resolve_user_combo};
 pub use presets::{ProviderPreset, ProviderPresetsCatalog};
 pub use protocol::{OAuthMethod, OAuthSession, OAuthSessionDto, ProviderAuth, VendorProtocol};
 pub use relay_token::{generate_relay_token, is_usable_token, TokenError};

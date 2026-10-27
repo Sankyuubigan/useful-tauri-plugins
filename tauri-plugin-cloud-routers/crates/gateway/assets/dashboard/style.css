@@ -241,6 +241,47 @@ textarea { font-family: var(--mono); resize: vertical; }
 }
 .gw-check-model-title:first-child { margin-top: 0; }
 
+/* ── Комбо-связки (gw-combo) ─────────────────────────────────────────── */
+
+/* Цепочка участников в карточке: шаги вертикально, стрелка перед каждым,
+ * кроме первого — порядок читается сверху вниз как приоритет fallback. */
+.gw-combo-chain { margin-top: 8px; }
+.gw-combo-step { padding: 3px 0; font-size: 12px; display: flex; align-items: baseline; gap: 4px; }
+.gw-combo-arrow { color: var(--muted); }
+.gw-combo-num {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  min-width: 16px;
+}
+
+/* Редактор в модалке: участники — карточки один в одном, порядковые кнопки
+ * в шапке участника; блок ключей — переносимый чек-лист. */
+.gw-combo-members { display: flex; flex-direction: column; gap: 10px; }
+.gw-combo-members-head {
+  margin: 12px 0 6px;
+  color: var(--muted);
+  font-size: 12px;
+  border-bottom: 1px solid var(--bg-hover);
+  padding-bottom: 3px;
+}
+.gw-combo-member { padding: 10px 12px; }
+.gw-combo-member .gw-row { margin: 0; }
+.gw-combo-member label.gw-inline { align-items: flex-start; }
+.gw-combo-member select { width: auto; min-width: 180px; margin-top: 2px; }
+.gw-combo-keys {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+}
+.gw-combo-keys label.gw-inline {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.gw-combo-keys input { width: auto; margin: 0; }
+.gw-combo-keys-note { margin-top: 4px; }
+
 /* ── Журнал ──────────────────────────────────────────────────────────── */
 
 .gw-log {

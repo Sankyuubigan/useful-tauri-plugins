@@ -29,9 +29,9 @@
 use axum::body::{Body, Bytes};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use cloud_routers_core::config::{GatewayConfig, ProviderConfig, trim_base_url};
+use cloud_routers_core::config::{ComboConfig, GatewayConfig, ProviderConfig, trim_base_url};
 use cloud_routers_core::keys::{parse_retry_after, FailureKind};
-use cloud_routers_core::models::resolve_combo;
+use cloud_routers_core::models::{resolve_combo, resolve_user_combo};
 use serde_json::json;
 
 use crate::app::AppState;
@@ -105,10 +105,17 @@ pub async fn chat_completions(state: axum::extract::State<AppState>, headers: He
     }
 
     let config = state.config();
-    let known: Vec<String> = cloud_routers_core::models::list_combos(&config.providers)
+    let known: Vec<String> = cloud_routers_core::models::list_all_combos(&config)
         .into_iter()
         .map(|c| c.name)
         .collect();
+
+    // Пользовательская связка проверяется первой: имя без `/` не пересекается
+    // с форматом «провайдер/модель» (инвариант валидации конфига), а сама
+    // связка — явное намерение пользователя, а не выведенный каталог.
+    if let Some(combo) = resolve_user_combo(&config, &model) {
+        return route_user_combo(&state, &headers, &payload, &config, combo).await;
+    }
 
     let resolved = resolve_combo(&config.providers, &model);
 
@@ -126,9 +133,171 @@ pub async fn chat_completions(state: axum::extract::State<AppState>, headers: He
         None => return unknown_model(&model, &known),
     };
 
+    // Одиночный провайдер переходить «дальше» не может: любой исход — ответ.
+    match route_provider(&state, &headers, &payload, &config, provider, upstream_model, None, &model)
+        .await
+    {
+        AttemptOutcome::Final(r) | AttemptOutcome::Exhausted(r) | AttemptOutcome::Broken(r) => r,
+    }
+}
+
+/// Итог одной попытки маршрутизации на провайдера (по набору его ключей).
+///
+/// Различает «ответ отдан клиенту» от «участник исчерпан»: цепочка связки
+/// переходит к следующему участнику только при исчерпании ключей и при
+/// конфигурационной ошибке провайдера. Повтор после передачи байтов клиенту
+/// невозможен по определению (инвариант модуля), а 4xx-ошибки запроса легли бы
+/// одинаково на любого участника — переход к нему только задержал бы честный
+/// ответ.
+enum AttemptOutcome {
+    /// Ответ апстрима передан клиенту (успех или честная ошибка запроса).
+    Final(Response),
+    /// Все кандидаты ключей отказали — связка идёт к следующему участнику;
+    /// ответ здесь — последняя ошибка (её же получает клиент, если участников
+    /// больше нет).
+    Exhausted(Response),
+    /// Провайдер не готов маршрутизировать (ошибка построения запроса —
+    /// конфигурация провайдера, а не запроса) — связка идёт дальше.
+    Broken(Response),
+}
+
+/// Маршрутизация запроса по пользовательской связке: участники в порядке
+/// приоритета конфига, при исчерпании участника — переход к следующему, с
+/// журналом до и после каждого перехода (тишина между переходами = ложь).
+///
+/// Участник пропускается с `warn`-записью, если его провайдер удалён/выключен
+/// или модель больше не обнаружена: конфиг мог измениться после сохранения
+/// связки, и молча отправить запрос «в никуда» нельзя, но и ронять всю связку
+/// из-за одного участника не нужно — на это и fallback.
+async fn route_user_combo(
+    state: &AppState,
+    headers: &HeaderMap,
+    payload: &serde_json::Value,
+    config: &GatewayConfig,
+    combo: &ComboConfig,
+) -> Response {
+    state.events().info(format!(
+        "связка «{}»: цепочка {}",
+        combo.name,
+        combo
+            .members
+            .iter()
+            .map(|m| format!("{}/{}", m.provider_id, m.model_id))
+            .collect::<Vec<_>>()
+            .join(" → ")
+    ));
+    let total = combo.members.len();
+    let mut last: Option<Response> = None;
+    for (idx, member) in combo.members.iter().enumerate() {
+        let Some(provider) = config.provider(&member.provider_id).cloned() else {
+            state.events().warn(format!(
+                "связка «{}»: участник {}/{} — провайдера «{}» нет в конфигурации, пропущен",
+                combo.name, member.provider_id, member.model_id, member.provider_id
+            ));
+            continue;
+        };
+        if !provider.is_enabled {
+            state.events().warn(format!(
+                "связка «{}»: участник {}/{} — провайдер «{}» выключен, пропущен",
+                combo.name, member.provider_id, member.model_id, member.provider_id
+            ));
+            continue;
+        }
+        if !provider.models.iter().any(|m| m.id == member.model_id) {
+            state.events().warn(format!(
+                "связка «{}»: участник {}/{} — модель «{}» больше не обнаружена у провайдера «{}», пропущен",
+                combo.name, member.provider_id, member.model_id, member.model_id, member.provider_id
+            ));
+            continue;
+        }
+        // Разрешённое подмножество ключей — ДО первой попытки: диагностика
+        // «какие ключи были разрешены» не должна восстанавливаться по косвенным
+        // признакам после отказа.
+        state.events().info(format!(
+            "связка «{}»: попытка {}/{} — провайдер «{}» модель «{}», разрешённые ключи: {}",
+            combo.name,
+            idx + 1,
+            total,
+            member.provider_id,
+            member.model_id,
+            member
+                .key_ids
+                .as_ref()
+                .map(|ids| ids.join(", "))
+                .unwrap_or_else(|| "все активные".to_string())
+        ));
+        let outcome = route_provider(
+            state,
+            headers,
+            payload,
+            config,
+            provider,
+            member.model_id.clone(),
+            member.key_ids.as_deref(),
+            &combo.name,
+        )
+        .await;
+        match outcome {
+            AttemptOutcome::Final(r) => return r,
+            AttemptOutcome::Exhausted(r) | AttemptOutcome::Broken(r) => {
+                if idx + 1 < total {
+                    state.events().warn(format!(
+                        "связка «{}»: участник {}/{} («{}») не принял запрос — переход к следующему",
+                        combo.name,
+                        idx + 1,
+                        total,
+                        member.provider_id
+                    ));
+                }
+                last = Some(r);
+            }
+        }
+    }
+    state.events().error(format!(
+        "запрос «{}» по связке «{}» не выполнен: отказали все пригодные участники",
+        combo.name, combo.name
+    ));
+    last.unwrap_or_else(|| {
+        openai_error(
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "У связки «{}» нет ни одного пригодного участника: все ссылаются на отсутствующих или выключенных провайдеров",
+                combo.name
+            ),
+            "configuration_error",
+        )
+    })
+}
+
+/// Прогнать запрос через одного провайдера: сборка кандидатов, цикл попыток,
+/// честная ошибка в конце.
+///
+/// Единая точка логики попыток для обоих форматов запросов: per-provider комбо
+/// (`resolve_combo`) и участники пользовательской связки (`route_user_combo`).
+/// Двух копий цикла быть не должно — правила ретраев разъехались бы при
+/// первой же правке.
+///
+/// `allowed_keys` — подмножество ключей участника связки: `Some(ids)` — только
+/// эти ключи в **порядке массива** (детерминированный порядок попыток; неактивные
+/// и спящие в кулдауне пропускаются), `None` — обычная round-robin ротация всех
+/// активных ключей провайдера со сбросом кулдаунов при полном сне.
+#[allow(clippy::too_many_arguments)]
+async fn route_provider(
+    state: &AppState,
+    headers: &HeaderMap,
+    payload: &serde_json::Value,
+    config: &GatewayConfig,
+    provider: ProviderConfig,
+    upstream_model: String,
+    allowed_keys: Option<&[String]>,
+    requested_model: &str,
+) -> AttemptOutcome {
     let adapter = match crate::protocol::adapter_for(provider.protocol) {
         Ok(a) => a,
-        Err(e) => return openai_error(StatusCode::BAD_GATEWAY, e, "configuration_error"),
+        // Конфигурация этого провайдера сломана (нет URL релея, сломан
+        // маршрут) — запрос ни при чём: другой участник связки может быть
+        // настроен верно. У одиночного провайдера Broken — просто ответ.
+        Err(e) => return AttemptOutcome::Broken(openai_error(StatusCode::BAD_GATEWAY, e, "configuration_error")),
     };
 
     // ── Кандидаты ────────────────────────────────────────────────────────────
@@ -140,9 +309,11 @@ pub async fn chat_completions(state: axum::extract::State<AppState>, headers: He
         cloud_routers_core::protocol::ProviderAuth::OAuth { .. } => {
             match credential_for(&state, &provider).await {
                 Ok(c) => Some(c),
-                Err(e) => {
-                    return openai_error(StatusCode::SERVICE_UNAVAILABLE, e, "insufficient_quota")
-                }
+                Err(e) => return AttemptOutcome::Exhausted(openai_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    e,
+                    "insufficient_quota",
+                )),
             }
         }
     };
@@ -151,16 +322,36 @@ pub async fn chat_completions(state: axum::extract::State<AppState>, headers: He
     if let Some(cred) = oauth_credential {
         attempts.push(("oauth".to_string(), cred));
     } else {
-        let mut key_ids = state.rotation().candidates(&provider_id, &provider.keys);
-        if key_ids.is_empty()
-            && state.rotation().reset_if_all_sleeping(&provider_id, &provider.keys)
-        {
-            state.events().warn(format!(
-                "провайдер «{}»: все ключи были в кулдауне — сброшены кулдауны, пробуем снова",
-                provider_id
-            ));
-            key_ids = state.rotation().candidates(&provider_id, &provider.keys);
-        }
+        // Кандидаты: явное подмножество участника связки (порядок массива,
+        // календарь кулдаунов только читается — сама выборка попыток в него
+        // ничего не добавляет) либо обычная ротация всех активных ключей.
+        let key_ids: Vec<String> = match allowed_keys {
+            Some(ids) => ids
+                .iter()
+                .filter(|id| {
+                    provider.keys.iter().any(|k| {
+                        &k.id == *id
+                            && k.is_active
+                            && !k.key.trim().is_empty()
+                            && state.rotation().is_available(&provider_id, &k.id)
+                    })
+                })
+                .cloned()
+                .collect(),
+            None => {
+                let mut key_ids = state.rotation().candidates(&provider_id, &provider.keys);
+                if key_ids.is_empty()
+                    && state.rotation().reset_if_all_sleeping(&provider_id, &provider.keys)
+                {
+                    state.events().warn(format!(
+                        "провайдер «{}»: все ключи были в кулдауне — сброшены кулдауны, пробуем снова",
+                        provider_id
+                    ));
+                    key_ids = state.rotation().candidates(&provider_id, &provider.keys);
+                }
+                key_ids
+            }
+        };
         for key_id in key_ids {
             let Some(key) = provider.keys.iter().find(|k| k.id == key_id) else {
                 continue;
@@ -171,14 +362,25 @@ pub async fn chat_completions(state: axum::extract::State<AppState>, headers: He
     if attempts.is_empty() {
         let total = provider.keys.len();
         let active = provider.keys.iter().filter(|k| k.is_active).count();
-        return openai_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!(
+        let reason = match allowed_keys {
+            Some(ids) => format!(
+                "У участника «{}» связки «{}» нет доступных ключей из разрешённого подмножества ({}): неактивны или в кулдауне. У провайдера всего {}, включено {}.",
+                provider_id,
+                requested_model,
+                if ids.is_empty() { "список пуст".to_string() } else { ids.join(", ") },
+                total,
+                active
+            ),
+            None => format!(
                 "У провайдера «{}» нет доступных ключей (всего {}, включено {}). Добавьте ключ или включите его в настройках шлюза.",
                 provider_id, total, active
             ),
+        };
+        return AttemptOutcome::Exhausted(openai_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            reason,
             "insufficient_quota",
-        );
+        ));
     }
 
     let mut last: Option<Response> = None;
@@ -205,14 +407,20 @@ pub async fn chat_completions(state: axum::extract::State<AppState>, headers: He
         ) {
             Ok(u) => u,
             // Построение запроса упало на серверной конфигурации (нет URL
-            // релея, сломан маршрут), а не на запросе клиента: 502, как было
-            // до выноса в адаптер (гейт: relay_configured_without_url_*).
-            Err(e) => return openai_error(StatusCode::BAD_GATEWAY, e, "configuration_error"),
+            // релея, сломан маршрут), а не на запросе клиента: конфигурация
+            // провайдера не починится следующим ключом — выход из цикла.
+            Err(e) => {
+                return AttemptOutcome::Broken(openai_error(
+                    StatusCode::BAD_GATEWAY,
+                    e,
+                    "configuration_error",
+                ))
+            }
         };
         let req = build_reqwest(&state, &up);
         state.events().info(format!(
             "запрос {} → провайдер «{}» модель «{}» ключ {}",
-            model, provider_id, upstream_model, key_id
+            requested_model, provider_id, upstream_model, key_id
         ));
 
         let response = match state.http().execute(req).await {
@@ -309,7 +517,7 @@ pub async fn chat_completions(state: axum::extract::State<AppState>, headers: He
                 let body_hint = summarize(passthrough.body_hint.as_deref());
                 state.events().info(format!(
                     "ответ {} от провайдера «{}» ключ {} (HTTP {}){}",
-                    model,
+                    requested_model,
                     provider_id,
                     key_id,
                     final_status.as_u16(),
@@ -318,11 +526,11 @@ pub async fn chat_completions(state: axum::extract::State<AppState>, headers: He
                 if attempted.len() > 1 {
                     state.events().warn(format!(
                         "запрос {} выполнен с ретраем по ключам: {}",
-                        model,
+                        requested_model,
                         attempted.join(" → ")
                     ));
                 }
-                return passthrough.response;
+                return AttemptOutcome::Final(passthrough.response);
             }
         }
     }
@@ -330,17 +538,17 @@ pub async fn chat_completions(state: axum::extract::State<AppState>, headers: He
     // ── Все ключи провайдера отказали ───────────────────────────────────────
     state.events().error(format!(
         "запрос {} не выполнен: отказали все ключи провайдера «{}» ({})",
-        model,
+        requested_model,
         provider_id,
         attempted.join(", ")
     ));
-    last.unwrap_or_else(|| {
+    AttemptOutcome::Exhausted(last.unwrap_or_else(|| {
         openai_error(
             StatusCode::SERVICE_UNAVAILABLE,
             format!("У провайдера «{}» не осталось ключей для запроса", provider_id),
             "insufficient_quota",
         )
-    })
+    }))
 }
 
 /// Что-то, что удалось отдать клиенту, плюс короткая выжимка для журнала.

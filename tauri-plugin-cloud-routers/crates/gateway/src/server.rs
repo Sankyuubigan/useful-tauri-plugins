@@ -14,7 +14,7 @@
 //! Два формата списка моделей дублируют друг друга **намеренно**: `/v1/models`
 //! читают IDE, `/api/combos` — существующий плагин-контракт (`client.rs`), где
 //! комбо выбираются по `kind == "llm"`. Оба строятся из одного
-//! `list_combos()`, поэтому разойтись не могут.
+//! `list_all_combos()`, поэтому разойтись не могут.
 //!
 //! ## CORS
 //!
@@ -32,10 +32,11 @@ use axum::routing::{get, post};
 use axum::Router;
 use tower_http::cors::CorsLayer;
 
-use cloud_routers_core::models::{list_combos, openai_models_list};
+use cloud_routers_core::models::{list_all_combos, openai_models_list};
 
 use crate::admin;
 use crate::app::AppState;
+use crate::combos_admin;
 use crate::proxy;
 
 /// Ресурсы дашборда, вшитые в бинарь.
@@ -49,6 +50,8 @@ const DASHBOARD_JS: &str = include_str!("../assets/dashboard/app.js");
 /// app.js импортирует его домен и утилиты — их надо отдавать по HTTP.
 const DASHBOARD_PROVIDERS_JS: &str = include_str!("../assets/dashboard/providers.js");
 const DASHBOARD_UTILS_JS: &str = include_str!("../assets/dashboard/utils.js");
+/// ES-модуль домена комбо-связок (вкладка «Комбо»): импортируется app.js.
+const DASHBOARD_COMBOS_JS: &str = include_str!("../assets/dashboard/combos.js");
 
 fn asset(content_type: &'static str, body: &'static str) -> Response {
     (
@@ -84,6 +87,10 @@ async fn dashboard_utils_js() -> Response {
     asset("text/javascript; charset=utf-8", DASHBOARD_UTILS_JS)
 }
 
+async fn dashboard_combos_js() -> Response {
+    asset("text/javascript; charset=utf-8", DASHBOARD_COMBOS_JS)
+}
+
 /// `GET /health` — лёгкая проверка без чтения конфига.
 async fn health(State(state): State<AppState>) -> Response {
     let config = state.config();
@@ -110,13 +117,13 @@ async fn openai_models(State(state): State<AppState>) -> Response {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or_default();
-    axum::Json(openai_models_list(&config.providers, created)).into_response()
+    axum::Json(openai_models_list(&config, created)).into_response()
 }
 
 /// `GET /api/combos` — тот же список в формате плагина.
 async fn combos(State(state): State<AppState>) -> Response {
     let config = state.config();
-    axum::Json(serde_json::json!({ "combos": list_combos(&config.providers) })).into_response()
+    axum::Json(serde_json::json!({ "combos": list_all_combos(&config) })).into_response()
 }
 
 /// Собрать полный роутер.
@@ -141,11 +148,13 @@ pub fn build(state: AppState) -> Router {
         .route("/dashboard/style.css", get(dashboard_css))
         .route("/dashboard/app.js", get(dashboard_js))
         .route("/dashboard/providers.js", get(dashboard_providers_js))
+        .route("/dashboard/combos.js", get(dashboard_combos_js))
         .route("/dashboard/utils.js", get(dashboard_utils_js))
         .route("/style.css", get(dashboard_css))
         .route("/app.js", get(dashboard_js))
         .route("/", get(dashboard_html))
         .merge(admin::router(state.clone()))
+        .merge(combos_admin::router(state.clone()))
         .layer(
             CorsLayer::new()
                 .allow_origin(tower_http::cors::Any)
@@ -289,10 +298,10 @@ mod tests {
         );
 
         // Шаблонные классы сканируются по ВСЕМ JS-модулям: карточки рендерит
-        // providers.js, а не app.js — гвард обязан читать источники, а не
-        // «где удобно». Прямые `assert`-строки для каждого файла ниже.
+        // providers.js, связки — combos.js, а не app.js — гвард обязан читать
+        // источники, а не «где удобно». Прямые `assert`-строки для каждого файла ниже.
         let js_all = format!(
-            "{DASHBOARD_JS}\n{DASHBOARD_PROVIDERS_JS}\n{DASHBOARD_UTILS_JS}\n"
+            "{DASHBOARD_JS}\n{DASHBOARD_PROVIDERS_JS}\n{DASHBOARD_COMBOS_JS}\n{DASHBOARD_UTILS_JS}\n"
         );
         let (js_n, js_bad) = dotted_tokens(&js_all);
         assert!(
@@ -511,6 +520,7 @@ mod tests {
             // ES-модули, которые app.js импортирует: без этих маршрутов импорт
             // падал бы HTTP 404, а страница молча оставалась без логики.
             ("/dashboard/providers.js", "text/javascript; charset=utf-8"),
+            ("/dashboard/combos.js", "text/javascript; charset=utf-8"),
             ("/dashboard/utils.js", "text/javascript; charset=utf-8"),
             ("/style.css", "text/css; charset=utf-8"),
             ("/app.js", "text/javascript; charset=utf-8"),

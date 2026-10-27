@@ -25,6 +25,7 @@
 <nav class="gw-tabs" id="tabs">
   <button data-tab="providers" class="gw-active">Провайдеры</button>
   <button data-tab="models">Модели</button>
+  <button data-tab="combos">Комбо</button>
   <button data-tab="relay">Релей</button>
   <button data-tab="log">Журнал</button>
 </nav>
@@ -57,6 +58,20 @@
     не будет использоваться в чате.
   </div>
   <div id="models-list" class="gw-cards"></div>
+</section>
+
+<!-- ───────────────────────── Комбо-связки ───────────────────────── -->
+<section class="gw-page" id="page-combos" hidden>
+  <div class="gw-note">
+    Комбо-связка — именованная цепочка моделей с fallback: запрос идёт первому
+    участнику, при его отказе — следующему. В чате связка выбирается одним
+    именем. Порядок участников = приоритет.
+  </div>
+  <div class="gw-row">
+    <button id="btn-add-combo" class="gw-primary">+ Добавить связку</button>
+    <span class="gw-hint" id="combos-hint"></span>
+  </div>
+  <div id="combos-list" class="gw-cards"></div>
 </section>
 
 <!-- ────────────────────────────── Релей ────────────────────────────── -->
@@ -228,6 +243,29 @@
     <div class="gw-row gw-modal-actions">
       <button id="btn-keys-cancel" class="gw-ghost">Отмена</button>
       <button id="btn-keys-save" class="gw-primary">Добавить</button>
+    </div>
+  </div>
+</div>
+
+<!-- ───────────────────── Модалка комбо-связки ───────────────────── -->
+<!-- Редактор: имя + участники (провайдер → модель из обнаруженных), у каждого
+     участника чек-лист ключей (ничего не отмечено = все активные). Порядок
+     участников — кнопками вверх/вниз: он же приоритет fallback. -->
+<div class="gw-modal-backdrop" id="combo-modal" hidden>
+  <div class="gw-modal">
+    <h3 id="combo-modal-title">Новая связка</h3>
+    <div class="gw-hint">Имя — идентификатор в чате: не пустое, без «/», уникальное.</div>
+    <label>Имя связки
+      <input id="combo-name" type="text" placeholder="fast" autocomplete="off">
+    </label>
+    <div class="gw-combo-members-head">Участники (порядок = приоритет)</div>
+    <div id="combo-members" class="gw-combo-members"></div>
+    <div class="gw-row">
+      <button id="btn-combo-add-member" class="gw-ghost">+ участник</button>
+    </div>
+    <div class="gw-row gw-modal-actions">
+      <button id="btn-combo-cancel" class="gw-ghost">Отмена</button>
+      <button id="btn-combo-save" class="gw-primary">Сохранить</button>
     </div>
   </div>
 </div>

@@ -26,13 +26,27 @@ export declare class CloudRoutersPanel extends HTMLElement {
     /** Роутер, у которого «Переустановить» ожидает второй клик-подтверждения. */
     private reinstallArm;
     private reinstallArmTimer;
+    /**
+     * Слушатель postMessage от дашборда шлюза. Дашборд (в iframe или отдельной
+     * вкладке) после изменения конфигурации шлёт `{source: 'cloud-routers-gateway',
+     * type: 'config-changed'}` родительскому окну; панель перечитывает комбо и
+     * рассылает существующее `cloud-routers:combos-changed`, чтобы дропдаун
+     * моделей чата обновился без переоткрытия настроек.
+     */
+    private hostMsgListener;
     constructor();
     private stateOf;
     private get status();
-    private get combos();
     private setStatus;
     private setCombos;
     connectedCallback(): void;
+    /**
+     * Сообщение от дашборда шлюза: перечитать комбо и статус активного роутера
+     * и разослать существующее событие combos-changed. Фильтр по `source`
+     * обязателен: postMessage получают все слушатели окна, и чужие сообщения
+     * (расширения, другие страницы) не должны дёргать перечитывание.
+     */
+    private onHostMessage;
     disconnectedCallback(): void;
     private observeVisibility;
     private refresh;
@@ -56,7 +70,6 @@ export declare class CloudRoutersPanel extends HTMLElement {
     private onOpen;
     private onStart;
     private onStop;
-    private onShowCombos;
     private onSetDir;
     private onCheckUpdate;
     /** Скопировать адрес Web UI: юзер открывает дашборд в обычном браузере, а не

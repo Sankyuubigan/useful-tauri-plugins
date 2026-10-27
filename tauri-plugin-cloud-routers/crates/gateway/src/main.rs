@@ -25,6 +25,7 @@
 
 mod admin;
 mod app;
+mod combos_admin;
 mod eventstream;
 mod free_usage;
 mod key_check;

@@ -43,7 +43,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 
-use cloud_routers_core::config::{AccountKey, DiscoveredModel, GatewayConfig, ProviderConfig};
+use cloud_routers_core::config::{
+    AccountKey, ComboConfig, ComboMember, DiscoveredModel, GatewayConfig, ProviderConfig,
+};
+use tower::ServiceExt;
 
 use crate::app::AppState;
 use crate::proxy;
@@ -618,6 +621,201 @@ async fn unknown_model_returns_404_without_touching_network() {
     assert_eq!(mock.chat_count(), 0, "апстрим не должен дёргаться");
     let text = body_string(r).await;
     assert!(text.contains("mock/m1"), "в ошибке полезен список доступных: {text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ──────────────────────── пользовательские связки ────────────────────────
+
+/// Состояние с двумя провайдерами (a, b — каждый на своём моке) и пользовательской
+/// связкой `fast` из участников `a/m1` → `b/m1` (если `second` не задан — только `a/m1`).
+#[allow(clippy::too_many_arguments)]
+fn state_combo(
+    a_base: &str,
+    a_keys: Vec<AccountKey>,
+    b_base: Option<&str>,
+    b_keys: Vec<AccountKey>,
+    a_key_ids: Option<Vec<String>>,
+    b_key_ids: Option<Vec<String>>,
+) -> (AppState, std::path::PathBuf) {
+    let dir = tmp_dir("combo");
+    let mut cfg = GatewayConfig::default();
+    let mut members = vec![ComboMember {
+        provider_id: "a".into(),
+        model_id: "m1".into(),
+        key_ids: a_key_ids,
+    }];
+    cfg.providers.push(ProviderConfig {
+        id: "a".into(),
+        name: "A".into(),
+        base_url: a_base.to_string(),
+        is_enabled: true,
+        relay_id: None,
+        keys: a_keys,
+        models: vec![DiscoveredModel { id: "m1".into(), ..Default::default() }],
+        ..Default::default()
+    });
+    if let Some(b_base) = b_base {
+        members.push(ComboMember {
+            provider_id: "b".into(),
+            model_id: "m1".into(),
+            key_ids: b_key_ids,
+        });
+        cfg.providers.push(ProviderConfig {
+            id: "b".into(),
+            name: "B".into(),
+            base_url: b_base.to_string(),
+            is_enabled: true,
+            relay_id: None,
+            keys: b_keys,
+            models: vec![DiscoveredModel { id: "m1".into(), ..Default::default() }],
+            ..Default::default()
+        });
+    }
+    cfg.combos.push(ComboConfig { name: "fast".into(), members });
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    cloud_routers_core::save_config(&dir, &cfg).expect("save config");
+    (AppState::new(&dir).expect("state"), dir)
+}
+
+#[tokio::test]
+async fn user_combo_routes_to_first_member_and_rewrites_model_id() {
+    // Счастливый путь: запрос `model=fast` уходит первому участнику, и апстрим
+    // получает НАСТОЯЩИЙ id модели (m1), а не имя связки.
+    let (base_a, mock_a) = start_mock(ok_chat_behavior()).await;
+    let (base_b, mock_b) = start_mock(ok_chat_behavior()).await;
+    let (state, dir) = state_combo(
+        &base_a,
+        vec![key("ka1", "sk-a1", true)],
+        Some(&base_b),
+        vec![key("kb1", "sk-b1", true)],
+        None,
+        None,
+    );
+
+    let r = post_chat(state, serde_json::json!({"model":"fast","messages":[]})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(mock_a.models(), vec!["m1".to_string()], "апстрим получает настоящий id");
+    assert_eq!(mock_a.auths(), vec!["Bearer sk-a1"]);
+    assert_eq!(mock_b.chat_count(), 0, "второй участник не должен опрашиваться при живом первом");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn user_combo_falls_over_to_second_member_when_first_exhausts_keys() {
+    // Главный сценарий связки: первый участник отвечает ошибкой апстрима на все
+    // свои ключи — запрос уходит второму, клиент видит успех.
+    let (base_a, mock_a) = start_mock(MockBehavior::error(
+        500,
+        r#"{"error":{"message":"upstream exploded","type":"api_error"}}"#,
+    ))
+    .await;
+    let (base_b, mock_b) = start_mock(ok_chat_behavior()).await;
+    let (state, dir) = state_combo(
+        &base_a,
+        vec![key("ka1", "sk-a1", true)],
+        Some(&base_b),
+        vec![key("kb1", "sk-b1", true)],
+        None,
+        None,
+    );
+
+    let r = post_chat(state, serde_json::json!({"model":"fast","messages":[]})).await;
+    assert_eq!(r.status(), StatusCode::OK, "fallback обязан быть прозрачным для клиента");
+    let text = body_string(r).await;
+    assert!(text.contains("\"ok\":true"), "ответ пришёл со второго участника: {text}");
+    assert_eq!(mock_a.chat_count(), 1, "первый участник опрошен один раз (один ключ)");
+    assert_eq!(mock_b.chat_count(), 1, "второй участник принял запрос");
+    assert_eq!(mock_b.models(), vec!["m1".to_string()]);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn user_combo_key_subset_sends_only_allowed_key() {
+    // key_ids=["k2"] → в Authorization уходит именно k2, k1 не тратит попытки.
+    let (base_a, mock_a) = start_mock(ok_chat_behavior()).await;
+    let (state, dir) = state_combo(
+        &base_a,
+        vec![key("k1", "sk-1", true), key("k2", "sk-2", true)],
+        None,
+        vec![],
+        Some(vec!["k2".into()]),
+        None,
+    );
+
+    let r = post_chat(state, serde_json::json!({"model":"fast","messages":[]})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(mock_a.chat_count(), 1, "один разрешённый ключ — одна попытка");
+    assert_eq!(mock_a.auths(), vec!["Bearer sk-2"], "разрешённое подмножество определяет ключ");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn user_combo_all_members_down_returns_last_upstream_error() {
+    // Оба участника отказали: клиент получает ЧЕСТНУЮ последнюю ошибку апстрима,
+    // а не выдуманный «успех» или пустой 503.
+    let (base_a, _mock_a) = start_mock(MockBehavior::error(429, r#"{"error":{"message":"limited"}}"#)).await;
+    let (base_b, _mock_b) = start_mock(MockBehavior::error(503, r#"{"error":{"message":"down"}}"#)).await;
+    let (state, dir) = state_combo(
+        &base_a,
+        vec![key("ka1", "sk-a1", true)],
+        Some(&base_b),
+        vec![key("kb1", "sk-b1", true)],
+        None,
+        None,
+    );
+
+    let r = post_chat(state, serde_json::json!({"model":"fast","messages":[]})).await;
+    assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let text = body_string(r).await;
+    assert!(text.contains("down"), "ошибка последнего участника доходит до клиента: {text}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn user_combo_appears_in_models_lists_and_unknown_404_lists_it() {
+    // /v1/models и /api/combos содержат связку; 404 по чужому имени перечисляет
+    // её в подсказке (единый построитель list_all_combos).
+    let (base_a, _mock) = start_mock(ok_chat_behavior()).await;
+    let (state, dir) = state_combo(&base_a, vec![key("ka1", "sk-a1", true)], None, vec![], None, None);
+
+    let app = crate::server::build(state);
+    let r = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/v1/models")
+                .body(Body::empty())
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(r.status(), StatusCode::OK);
+    let v: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(r.into_body(), usize::MAX).await.expect("body"))
+            .expect("json");
+    let ids: Vec<&str> = v["data"]
+        .as_array()
+        .expect("data")
+        .iter()
+        .map(|m| m["id"].as_str().expect("id"))
+        .collect();
+    assert_eq!(ids.first(), Some(&"fast"), "связка первая в списке: {ids:?}");
+    assert!(ids.contains(&"a/m1"), "per-provider комбо не потеряны: {ids:?}");
+
+    let r = app
+        .oneshot(
+            axum::http::Request::builder()
+                .method(axum::http::Method::POST)
+                .uri("/v1/chat/completions")
+                .header(axum::http::header::CONTENT_TYPE, "application/json")
+                .body(Body::from(r#"{"model":"nope","messages":[]}"#))
+                .expect("req"),
+        )
+        .await
+        .expect("response");
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    let text = body_string(r).await;
+    assert!(text.contains("fast"), "404 перечисляет пользовательскую связку: {text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

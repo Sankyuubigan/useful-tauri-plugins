@@ -51,15 +51,15 @@ fn err(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(ApiError { error: message.into() })).into_response()
 }
 
-fn bad_request(message: impl Into<String>) -> Response {
+pub(crate) fn bad_request(message: impl Into<String>) -> Response {
     err(StatusCode::BAD_REQUEST, message)
 }
 
-fn not_found(message: impl Into<String>) -> Response {
+pub(crate) fn not_found(message: impl Into<String>) -> Response {
     err(StatusCode::NOT_FOUND, message)
 }
 
-fn internal(message: impl Into<String>) -> Response {
+pub(crate) fn internal(message: impl Into<String>) -> Response {
     err(StatusCode::INTERNAL_SERVER_ERROR, message)
 }
 
@@ -100,7 +100,7 @@ async fn status(State(state): State<AppState>) -> Response {
         uptime_sec: state.uptime().as_secs(),
         providers_total: config.providers.len(),
         providers_enabled: config.providers.iter().filter(|p| p.is_enabled).count(),
-        combos_total: cloud_routers_core::models::list_combos(&config.providers).len(),
+        combos_total: cloud_routers_core::models::list_all_combos(&config).len(),
         presets_count: catalog.providers.len(),
         presets_source: source.as_str(),
         presets_updated_at: catalog.updated_at.clone(),
@@ -699,6 +699,16 @@ async fn patch_provider(
 
 async fn delete_provider(State(state): State<AppState>, Path(id): Path<String>) -> ApiResult<Json<serde_json::Value>> {
     require_provider(&state, &id)?;
+    // Связки, ссылающиеся на удаляемого провайдера, остаются в конфиге — но
+    // молча оставить их значило бы ложь: пользователь узнал бы о сломанной
+    // связке только по ошибке в чате. Честный warn перечисляет пострадавших.
+    let affected: Vec<String> = state
+        .config()
+        .combos
+        .iter()
+        .filter(|c| c.members.iter().any(|m| m.provider_id == id))
+        .map(|c| c.name.clone())
+        .collect();
     state
         .update_config(|c| {
             c.providers.retain(|p| p.id != id);
@@ -706,6 +716,13 @@ async fn delete_provider(State(state): State<AppState>, Path(id): Path<String>) 
         })
         .map_err(internal)?;
     state.events().warn(format!("удалён провайдер «{}» вместе с его ключами", id));
+    if !affected.is_empty() {
+        state.events().warn(format!(
+            "комбо-связки [{}] ссылались на удалённого провайдера «{}» — их участники, указывающие на него, будут пропускаться",
+            affected.join(", "),
+            id
+        ));
+    }
     notify_host(&state, "provider-deleted");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -1734,9 +1751,8 @@ fn tail_chars(s: &str, max: usize) -> &str {
 /// Хост держит свой список комбо для выпадающих списков. Без уведомления он
 /// обновил бы его только по своему 15-секундному тику — пользователь увидел бы
 /// «модели не появились» при уже применённом изменении.
-fn notify_host(state: &AppState, kind: &str) {
-    let combos = cloud_routers_core::models::list_combos(&state.config().providers)
-        .len();
+pub(crate) fn notify_host(state: &AppState, kind: &str) {
+    let combos = cloud_routers_core::models::list_all_combos(&state.config()).len();
     state.events().push("info", format!("конфигурация изменена ({}) — комбо доступно: {}", kind, combos));
 }
 
@@ -1917,7 +1933,7 @@ pub fn router(state: AppState) -> axum::Router<AppState> {
 /// дашборд показал тост и всё, журналы (`gateway.log`, вкладка событий) молчали.
 /// `/api/events` исключён — это сам журнал: писать в журнал о чтении журнала —
 /// бесконечный feedback-цикл.
-async fn log_admin_errors(
+pub(crate) async fn log_admin_errors(
     State(state): State<AppState>,
     req: axum::extract::Request,
     next: axum::middleware::Next,

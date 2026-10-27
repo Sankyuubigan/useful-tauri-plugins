@@ -1,8 +1,8 @@
 //! Разбор идентификатора комбо и построение списка комбо для `/v1/models`.
 //!
-//! ## Формат
+//! ## Форматы идентификаторов
 //!
-//! Комбо шлюза — строго `{provider_id}/{model_id}`, например:
+//! Per-provider комбо — строго `{provider_id}/{model_id}`, например:
 //! `groq/llama-3.3-70b-versatile` или `together/meta-llama/Llama-3.3-70B-Instruct-Turbo`.
 //!
 //! Разделитель — **первый** `/`. Это важно: идентификаторы моделей у реальных
@@ -10,17 +10,21 @@
 //! провайдера — никогда (это инвариант, проверяемый в [`crate::config::GatewayConfig::validate`]).
 //! Поэтому однозначность не зависит от того, сколько слэшей в имени модели.
 //!
-//! ## Почему не пользовательские связки
+//! Пользовательские комбо-связки ([`crate::config::ComboConfig`]) — просто
+//! `name` **без** `/` (валидация конфига запрещает слэш в имени). Поэтому два
+//! формата не пересекаются: id со слэшем разбирается как `провайдер/модель`,
+//! без слэша — ищется среди пользовательских связок.
+//!
+//! ## Пользовательские связки
 //!
 //! У 9Router «комбо» — это настроенная пользователем цепочка моделей с
-//! fallback. Такой формат требует отдельного состояния (что выбрано, что
-//! отключено), и его нельзя вывести из одного строкового id. Здесь комбо —
-//! чистая функция от (провайдер, модель): один id всегда означает один апстрим.
-//! Ротация ключей внутри провайдера уже покрывает потребность в отказоустойчивости,
-//! а мульти-провайдерный fallback при необходимости добавляется отдельным
-//! явным слоем, а не магией в имени.
+//! fallback. Здесь они тоже есть: имя + участники (провайдер, модель,
+//! опциональное подмножество ключей), запрос идёт по цепочке до первого
+//! успешного апстрима (см. `proxy::chat_completions`). Один id пользовательской
+//! связки означает настроенную цепочку, а не один апстрим — в отличие от
+//! per-provider комбо, которые остаются чистой функцией от (провайдер, модель).
 
-use crate::config::{DiscoveredModel, ProviderConfig};
+use crate::config::{ComboConfig, DiscoveredModel, GatewayConfig, ProviderConfig};
 
 /// Собрать id комбо из провайдера и модели.
 pub fn combo_id(provider_id: &str, model_id: &str) -> String {
@@ -86,7 +90,11 @@ pub struct ComboInfo {
     pub models: Vec<String>,
 }
 
-/// Все комбо маршрутизируемых провайдеров.
+/// Все комбо маршрутизируемых провайдеров (per-provider).
+///
+/// Поле `models` содержит **только id этой модели** — раньше туда клонировался
+/// весь каталог провайдера (N×M дублей в UI хоста; хост поле не читает,
+/// проверено по `chat.ts`/`settings.ts`).
 ///
 /// Порядок детерминирован (порядок провайдеров в конфиге, порядок моделей в
 /// провайдере) — чтобы `/v1/models` не «дрожал» между двумя одинаковыми
@@ -97,10 +105,6 @@ pub fn list_combos(providers: &[ProviderConfig]) -> Vec<ComboInfo> {
         if !p.is_routable() {
             continue;
         }
-        let model_ids: Vec<String> = p.models.iter().map(|m| m.id.clone()).collect();
-        if model_ids.is_empty() {
-            continue;
-        }
         for m in &p.models {
             if m.id.is_empty() {
                 continue;
@@ -108,11 +112,41 @@ pub fn list_combos(providers: &[ProviderConfig]) -> Vec<ComboInfo> {
             out.push(ComboInfo {
                 name: combo_id(&p.id, &m.id),
                 kind: "llm".to_string(),
-                models: model_ids.clone(),
+                models: vec![m.id.clone()],
             });
         }
     }
     out
+}
+
+/// Все комбо шлюза — единственный построитель списка для `/v1/models`,
+/// `/api/combos` и `read_combos_from_config` плагина (SSOT, «один построитель»).
+///
+/// Порядок: сначала пользовательские связки в порядке конфига, затем
+/// per-provider комбо в порядке провайдеров. Пользовательские связки показываются
+/// всегда (это явное намерение пользователя, хранящееся в конфиге), их
+/// `models` — полные id участников `провайдер/модель` в порядке приоритета
+/// fallback; доступность участников на момент показа не проверяется — честную
+/// ошибку отдаст прокси при попытке маршрутизации.
+pub fn list_all_combos(cfg: &GatewayConfig) -> Vec<ComboInfo> {
+    let mut out = Vec::new();
+    for c in &cfg.combos {
+        out.push(ComboInfo {
+            name: c.name.clone(),
+            kind: "llm".to_string(),
+            models: c.members.iter().map(|m| combo_id(&m.provider_id, &m.model_id)).collect(),
+        });
+    }
+    out.extend(list_combos(&cfg.providers));
+    out
+}
+
+/// Найти пользовательскую связку по имени — точное совпадение с `model=` запроса.
+///
+/// Имена связок без `/` (валидация конфига), поэтому совпадение возможно
+/// только с полноценным именем, а не с префиксом per-provider id.
+pub fn resolve_user_combo<'a>(cfg: &'a GatewayConfig, model: &str) -> Option<&'a ComboConfig> {
+    cfg.combos.iter().find(|c| c.name == model)
 }
 
 /// Те же комбо в формате OpenAI `GET /v1/models`.
@@ -120,8 +154,8 @@ pub fn list_combos(providers: &[ProviderConfig]) -> Vec<ComboInfo> {
 /// `owned_by` обязан быть ровно `"combo"`: хост (`client.rs`) отбрасывает всё
 /// с другим значением, считая его локальной gguf-моделью. Это не украшение, а
 /// часть контракта.
-pub fn openai_models_list(providers: &[ProviderConfig], created: u64) -> serde_json::Value {
-    let data: Vec<serde_json::Value> = list_combos(providers)
+pub fn openai_models_list(cfg: &GatewayConfig, created: u64) -> serde_json::Value {
+    let data: Vec<serde_json::Value> = list_all_combos(cfg)
         .into_iter()
         .map(|c| {
             serde_json::json!({
@@ -273,20 +307,105 @@ mod tests {
     }
 
     #[test]
-    fn list_combos_reports_provider_models_for_each_combo() {
+    fn list_combos_reports_only_own_model() {
+        // Регресс 27.10.2026: в models клонировался ВЕСЬ каталог провайдера на
+        // каждую запись (N×M дублей в плашке хоста). Теперь — только эта модель.
         let ps = vec![provider("groq", &["m1", "m2"])];
         let combos = list_combos(&ps);
-        for c in &combos {
-            assert_eq!(c.kind, "llm");
-            assert_eq!(c.models, vec!["m1".to_string(), "m2".to_string()]);
-        }
+        assert_eq!(combos[0].name, "groq/m1");
+        assert_eq!(combos[0].models, vec!["m1".to_string()], "только своя модель, не каталог");
+        assert_eq!(combos[1].name, "groq/m2");
+        assert_eq!(combos[1].models, vec!["m2".to_string()]);
+    }
+
+    #[test]
+    fn list_all_combos_puts_user_combos_first_with_member_ids() {
+        let ps = vec![provider("groq", &["m1"]), provider("deep", &["d1"])];
+        let mut cfg = GatewayConfig::default();
+        cfg.providers = ps.clone();
+        cfg.combos.push(crate::config::ComboConfig {
+            name: "fast".into(),
+            members: vec![
+                crate::config::ComboMember { provider_id: "deep".into(), model_id: "d1".into(), key_ids: None },
+                crate::config::ComboMember { provider_id: "groq".into(), model_id: "m1".into(), key_ids: None },
+            ],
+        });
+        let combos = list_all_combos(&cfg);
+        assert_eq!(combos[0].name, "fast", "пользовательские связки первыми");
+        assert_eq!(
+            combos[0].models,
+            vec!["deep/d1".to_string(), "groq/m1".to_string()],
+            "участники в порядке приоритета fallback"
+        );
+        assert_eq!(combos[1].name, "groq/m1", "затем per-provider комбо");
+        assert_eq!(combos[2].name, "deep/d1");
+    }
+
+    #[test]
+    fn list_all_combos_shows_user_combo_even_if_provider_disabled() {
+        // Связка — явное намерение пользователя в конфиге: её прятать нельзя,
+        // иначе «куда делась моя связка». Недоступность участников честно
+        // отдаст прокси при попытке маршрутизации.
+        let mut ps = vec![provider("groq", &["m1"])];
+        ps[0].is_enabled = false;
+        let mut cfg = GatewayConfig::default();
+        cfg.providers = ps;
+        cfg.combos.push(crate::config::ComboConfig {
+            name: "fast".into(),
+            members: vec![crate::config::ComboMember {
+                provider_id: "groq".into(),
+                model_id: "m1".into(),
+                key_ids: None,
+            }],
+        });
+        let combos = list_all_combos(&cfg);
+        assert_eq!(combos.len(), 1, "выключенный провайдер скрывает per-provider комбо, но не пользовательскую связку");
+        assert_eq!(combos[0].name, "fast");
+    }
+
+    #[test]
+    fn resolve_user_combo_finds_exact_name_only() {
+        let mut cfg = GatewayConfig::default();
+        cfg.combos.push(crate::config::ComboConfig {
+            name: "fast".into(),
+            members: vec![crate::config::ComboMember {
+                provider_id: "groq".into(),
+                model_id: "m1".into(),
+                key_ids: None,
+            }],
+        });
+        assert!(resolve_user_combo(&cfg, "fast").is_some());
+        assert!(resolve_user_combo(&cfg, "fastest").is_none(), "префикс не совпадает");
+        assert!(resolve_user_combo(&cfg, "groq/m1").is_none(), "per-provider id не имя связки");
+    }
+
+    #[test]
+    fn openai_list_includes_user_combo_and_keeps_owned_by() {
+        let ps = vec![provider("groq", &["m1"])];
+        let mut cfg = GatewayConfig::default();
+        cfg.providers = ps;
+        cfg.combos.push(crate::config::ComboConfig {
+            name: "fast".into(),
+            members: vec![crate::config::ComboMember {
+                provider_id: "groq".into(),
+                model_id: "m1".into(),
+                key_ids: None,
+            }],
+        });
+        let v = openai_models_list(&cfg, 1_700_000_000);
+        let data = v["data"].as_array().expect("data array");
+        assert_eq!(data.len(), 2);
+        assert_eq!(data[0]["id"], "fast");
+        assert_eq!(data[0]["owned_by"], "combo");
+        assert_eq!(data[1]["id"], "groq/m1");
     }
 
     #[test]
     fn openai_list_uses_owned_by_combo_exactly() {
         // Хост (client.rs) отбрасывает всё, у чего owned_by != "combo".
-        let ps = vec![provider("groq", &["m1"])];
-        let v = openai_models_list(&ps, 1_700_000_000);
+        let mut cfg = GatewayConfig::default();
+        cfg.providers = vec![provider("groq", &["m1"])];
+        let v = openai_models_list(&cfg, 1_700_000_000);
         assert_eq!(v["object"], "list");
         let data = v["data"].as_array().expect("data array");
         assert_eq!(data.len(), 1);

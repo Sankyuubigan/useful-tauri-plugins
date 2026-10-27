@@ -440,52 +440,6 @@
     .progress-bar.indeterminate { animation: none; width: 100%; opacity: 0.5; }
   }
 
-  /* \u2500\u2500 \u041A\u043E\u043C\u0431\u043E / \u0414\u043E\u0441\u0442\u0443\u043F\u043D\u044B\u0435 \u0440\u043E\u0443\u0442\u044B \u2500\u2500 */
-  .combos-wrapper {
-    display: none;
-    background: var(--bg-card);
-    border: 1px solid var(--border-subtle);
-    border-radius: 10px;
-    padding: 12px;
-    margin-bottom: 14px;
-  }
-  .combos-wrapper.on { display: block; }
-  .combos-title {
-    font-size: 11px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    font-weight: 700;
-    color: var(--text-dim);
-    margin-bottom: 8px;
-  }
-  .combo-item {
-    padding: 8px 0;
-    border-bottom: 1px solid var(--border-subtle);
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-  .combo-item:last-child { border-bottom: 0; padding-bottom: 0; }
-  .combo-header {
-    font-weight: 600;
-    color: #fff;
-    font-size: 13px;
-  }
-  .combo-chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 4px;
-  }
-  .model-chip {
-    font-family: ui-monospace, monospace;
-    font-size: 11px;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid var(--border-subtle);
-    color: var(--text-muted);
-    padding: 2px 6px;
-    border-radius: 4px;
-  }
-
   /* \u2500\u2500 \u0424\u0443\u0442\u0435\u0440 \u0441 \u043F\u0443\u0442\u044F\u043C\u0438 \u2500\u2500 */
   .path-box {
     display: flex;
@@ -580,6 +534,14 @@
       /** Роутер, у которого «Переустановить» ожидает второй клик-подтверждения. */
       this.reinstallArm = null;
       this.reinstallArmTimer = null;
+      /**
+       * Слушатель postMessage от дашборда шлюза. Дашборд (в iframe или отдельной
+       * вкладке) после изменения конфигурации шлёт `{source: 'cloud-routers-gateway',
+       * type: 'config-changed'}` родительскому окну; панель перечитывает комбо и
+       * рассылает существующее `cloud-routers:combos-changed`, чтобы дропдаун
+       * моделей чата обновился без переоткрытия настроек.
+       */
+      this.hostMsgListener = null;
       this.root = this.attachShadow({ mode: "open" });
     }
     stateOf(router) {
@@ -588,9 +550,6 @@
     get status() {
       const s = this.stateOf(this.router);
       return s.kind === "ready" ? s.status : null;
-    }
-    get combos() {
-      return this.combosByRouter.get(this.router) ?? [];
     }
     setStatus(router, status) {
       this.states.set(router, { kind: "ready", status });
@@ -614,6 +573,24 @@
       }).then((off) => {
         this.offStatus = off;
       });
+      this.hostMsgListener = (e) => void this.onHostMessage(e);
+      window.addEventListener("message", this.hostMsgListener);
+    }
+    /**
+     * Сообщение от дашборда шлюза: перечитать комбо и статус активного роутера
+     * и разослать существующее событие combos-changed. Фильтр по `source`
+     * обязателен: postMessage получают все слушатели окна, и чужие сообщения
+     * (расширения, другие страницы) не должны дёргать перечитывание.
+     */
+    async onHostMessage(e) {
+      const data = e.data;
+      if (!data || data.source !== "cloud-routers-gateway" || data.type !== "config-changed") return;
+      const router = this.router;
+      this.setCombos(router, await getCombos(router).catch(() => []));
+      const fresh = await getStatus(router).catch(() => null);
+      if (fresh) this.setStatus(router, fresh);
+      this.notifyCombosChanged(router);
+      this.render();
     }
     disconnectedCallback() {
       this.unsubUpdate?.();
@@ -623,6 +600,10 @@
       this.offStatus = null;
       this.visibilityObserver?.disconnect();
       this.visibilityObserver = null;
+      if (this.hostMsgListener !== null) {
+        window.removeEventListener("message", this.hostMsgListener);
+        this.hostMsgListener = null;
+      }
       if (this.refreshTimer !== null) {
         clearInterval(this.refreshTimer);
         this.refreshTimer = null;
@@ -783,22 +764,6 @@
       } finally {
         this.setBtnBusy(".stop", false);
       }
-      this.render();
-    }
-    async onShowCombos() {
-      const router = this.router;
-      this.setBtnBusy(".refresh", true);
-      try {
-        this.setCombos(router, await getCombos(router));
-        this.setStatus(router, await getStatus(router));
-      } catch (e) {
-        const msg = `\u041E\u0448\u0438\u0431\u043A\u0430 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u043A\u043E\u043C\u0431\u043E: ${String(e)}`;
-        logPlugin(`[cloud-routers] ${msg}`);
-        toast(msg, "error");
-      } finally {
-        this.setBtnBusy(".refresh", false);
-      }
-      this.notifyCombosChanged(router);
       this.render();
     }
     async onSetDir() {
@@ -993,11 +958,6 @@
 
         <button class="primary install-update" style="display:none;">\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u0441\u0435\u0439\u0447\u0430\u0441</button>
 
-        <button class="refresh" ${installed ? "" : "disabled"} title="\u041F\u0435\u0440\u0435\u0447\u0438\u0442\u0430\u0442\u044C \u043A\u043E\u043D\u0444\u0438\u0433\u0443\u0440\u0430\u0446\u0438\u044E">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
-          \u041A\u043E\u043C\u0431\u043E
-        </button>
-
         <button class="setdir" title="\u0418\u0437\u043C\u0435\u043D\u0438\u0442\u044C \u0434\u0438\u0440\u0435\u043A\u0442\u043E\u0440\u0438\u044E \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0438">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
           \u041F\u0443\u0442\u044C
@@ -1102,19 +1062,6 @@
         <div class="progress-track"><div class="progress-bar"></div></div>
       </div>
 
-      <!-- \u041C\u0430\u043F\u043F\u0438\u043D\u0433 \u043A\u043E\u043C\u0431\u043E-\u043C\u043E\u0434\u0435\u043B\u0435\u0439 -->
-      <div class="combos-wrapper ${this.combos.length ? "on" : ""}">
-        <div class="combos-title">\u0410\u043A\u0442\u0438\u0432\u043D\u044B\u0435 \u0441\u0432\u044F\u0437\u043A\u0438 \u043C\u043E\u0434\u0435\u043B\u0435\u0439 (${this.combos.length})</div>
-        ${this.combos.map((c) => `
-          <div class="combo-item">
-            <div class="combo-header">${esc(c.name)}</div>
-            <div class="combo-chips">
-              ${c.models.map((m) => `<span class="model-chip">${esc(m)}</span>`).join("")}
-            </div>
-          </div>
-        `).join("")}
-      </div>
-
       <!-- \u041F\u0443\u0442\u044C \u043A \u0431\u0438\u043D\u0430\u0440\u043D\u0438\u043A\u0443/\u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0435 -->
       <div class="path-box" title="${s?.path ? esc(s.path) : ""}">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
@@ -1133,7 +1080,6 @@
       this.root.querySelector(".copy-url")?.addEventListener("click", () => void this.onCopyUrl());
       this.root.querySelector(".start")?.addEventListener("click", () => void this.onStart());
       this.root.querySelector(".stop")?.addEventListener("click", () => void this.onStop());
-      this.root.querySelector(".refresh")?.addEventListener("click", () => void this.onShowCombos());
       this.root.querySelector(".open")?.addEventListener("click", () => void this.onOpen());
       this.root.querySelector(".setdir")?.addEventListener("click", () => void this.onSetDir());
       this.root.querySelector(".reinstall")?.addEventListener("click", () => void this.onReinstall());

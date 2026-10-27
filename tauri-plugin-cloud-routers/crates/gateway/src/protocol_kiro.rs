@@ -137,14 +137,14 @@ impl VendorProtocol for KiroProtocol {
         let api_key_mode = is_api_key_mode(provider);
         let mut headers = Self::headers(credential, api_key_mode, profile_arn.as_deref())?;
         // Релей: absolute target + заголовки поверх (та же схема, что OpenAI).
-        let route = if provider.use_relay {
+        let route = if provider.relay_id.is_some() {
             // Единый источник правила боковой настройки (проверка «настроен,
             // но без схемы» живёт в relay_route_base, а не в копиях).
             let relay = crate::upstream::relay_route_base(provider, config)?;
             let route = Route::Relay {
                 url: format!("{relay}{}/ListAvailableModels", crate::upstream::RELAY_PATH_PREFIX),
                 target_url: url,
-                token: config.relay_token().filter(|t| !t.trim().is_empty()),
+                token: crate::upstream::relay_route_token(provider, config)?,
             };
             crate::upstream::apply_route_headers(&route, &mut headers);
             route
@@ -171,7 +171,7 @@ impl VendorProtocol for KiroProtocol {
         let bytes = serde_json::to_vec(&body)
             .map_err(|e| format!("Не удалось сериализовать тело Kiro-запроса: {e}"))?;
         let first = CHAT_ENDPOINTS[0].to_string();
-        let (route, target) = if provider.use_relay {
+        let (route, target) = if provider.relay_id.is_some() {
             let relay = crate::upstream::relay_route_base(provider, config)?;
             let target = first.clone();
             let route = Route::Relay {
@@ -180,7 +180,7 @@ impl VendorProtocol for KiroProtocol {
                     crate::upstream::RELAY_PATH_PREFIX
                 ),
                     target_url: target.clone(),
-                    token: config.relay_token().filter(|t| !t.trim().is_empty()),
+                    token: crate::upstream::relay_route_token(provider, config)?,
             };
             (route, target)
         } else {
@@ -460,7 +460,7 @@ mod tests {
             name: "Kiro".into(),
             base_url: String::new(),
             is_enabled: true,
-            use_relay: false,
+            relay_id: None,
             keys: Vec::new(),
             models: vec![DiscoveredModel { id: "claude-sonnet-4.5".into(), ..Default::default() }],
             ..Default::default()

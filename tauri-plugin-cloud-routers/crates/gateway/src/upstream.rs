@@ -36,7 +36,7 @@
 //! routing-заголовок.
 
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
-use cloud_routers_core::config::{GatewayConfig, ProviderConfig};
+use cloud_routers_core::config::{GatewayConfig, ProviderConfig, RelaySlot};
 
 /// Префикс пути релея, под которым живёт Edge-воркер.
 pub const RELAY_PATH_PREFIX: &str = "/api/gateway";
@@ -78,6 +78,44 @@ impl Route {
     }
 }
 
+/// Слот релея, к которому привязан провайдер (`relay_id`). SSOT привязки.
+///
+/// Общий источник для `resolve_route`, Kiro-протокола и проверки ключей:
+/// релеи не универсальны, у провайдера — свой слот, и все точки маршрутизации
+/// обязаны резолвить его одинаково. Ошибки — человекочитаемые и по-честному
+/// жёсткие: молчаливого прямого запроса нет (см. тест
+/// `relay_without_url_is_a_hard_error_not_silent_direct`).
+pub fn provider_relay_slot<'a>(
+    provider: &ProviderConfig,
+    config: &'a GatewayConfig,
+) -> Result<&'a RelaySlot, String> {
+    let Some(slot_id) = provider.relay_id.as_deref() else {
+        return Err(format!(
+            "Провайдер «{}» не привязан к слоту релея (relay_id не задан)",
+            provider.id
+        ));
+    };
+    config.relays.iter().find(|s| s.id == slot_id).ok_or_else(|| {
+        format!(
+            "Провайдер «{}» привязан к релею «{slot_id}», но такого слота нет в конфиге (удалён?)",
+            provider.id
+        )
+    })
+}
+
+/// Токен релея для привязки провайдера: секрет ЕГО слота, пустой — `None`.
+///
+/// Не `config.relay_token()` (там активный слот): слот провайдера и активный
+/// слот могут быть разными, каждый воркер знает свой секрет.
+pub fn relay_route_token(
+    provider: &ProviderConfig,
+    config: &GatewayConfig,
+) -> Result<Option<String>, String> {
+    Ok(provider_relay_slot(provider, config)?
+        .usable_secret()
+        .filter(|t| !t.trim().is_empty()))
+}
+
 /// База релея, пригодная для склейки маршрута, или причина невозможности.
 ///
 /// Общий источник для `resolve_route` и Kiro-протокола: если сюда добавить
@@ -88,16 +126,17 @@ impl Route {
 /// отвечает `Kind::Builder` («builder error»), и пользователь видит
 /// бессмысленное «неверный URL запроса» на каждом запросе.
 ///
-/// Если у провайдера включён релей, но URL релея не задан — падаем **ошибкой**,
-/// а не молча идём напрямую. Причина: пользователь нажал «через релей»,
-/// потому что прямой доступ заблокирован; молчаливый прямой запрос выглядел бы
+/// Если провайдер привязан к релею, но URL слота не задан — падаем **ошибкой**,
+/// а не молча идём напрямую. Причина: пользователь привязал релей, потому что
+/// прямой доступ заблокирован; молчаливый прямой запрос выглядел бы
 /// как «релей сломался» и побудил бы его чинить не то.
 pub fn relay_route_base(provider: &ProviderConfig, config: &GatewayConfig) -> Result<String, String> {
-    match config.relay_url().as_deref().and_then(cloud_routers_core::config::relay_base_url) {
+    let slot = provider_relay_slot(provider, config)?;
+    match slot.url.as_deref().and_then(cloud_routers_core::config::relay_base_url) {
         Some(base) => Ok(base),
         None => {
-            let described = config
-                .relay_url()
+            let described = slot
+                .url
                 .as_deref()
                 .filter(|s| !cloud_routers_core::config::trim_base_url(s).is_empty())
                 .map_or_else(
@@ -105,8 +144,8 @@ pub fn relay_route_base(provider: &ProviderConfig, config: &GatewayConfig) -> Re
                     |raw| format!("задан без http:// или https:// префикса: «{raw}»"),
                 );
             Err(format!(
-                "Провайдер «{}» настроен на работу через релей, но URL релея {}",
-                provider.id, described
+                "Провайдер «{}» привязан к релею «{}», но URL релея {}",
+                provider.id, slot.id, described
             ))
         }
     }
@@ -119,14 +158,14 @@ pub fn resolve_route(
     upstream_path: &str,
 ) -> Result<Route, String> {
     let direct = format!("{}{}", cloud_routers_core::config::trim_base_url(&provider.base_url), upstream_path);
-    if !provider.use_relay {
+    if provider.relay_id.is_none() {
         return Ok(Route::Direct { url: direct });
     }
     let relay = relay_route_base(provider, config)?;
     Ok(Route::Relay {
         url: format!("{relay}{RELAY_PATH_PREFIX}{upstream_path}"),
         target_url: direct,
-        token: config.relay_token().filter(|t| !t.trim().is_empty()),
+        token: relay_route_token(provider, config)?,
     })
 }
 
@@ -221,29 +260,35 @@ mod tests {
         m
     }
 
-    fn provider(base: &str, use_relay: bool) -> ProviderConfig {
+    fn provider(base: &str, relay_id: Option<&str>) -> ProviderConfig {
         ProviderConfig {
             id: "groq".into(),
             name: "Groq".into(),
             base_url: base.into(),
-            use_relay,
+            relay_id: relay_id.map(|s| s.to_string()),
             keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true, name: None }],
             ..Default::default()
         }
     }
 
-    fn config_with_relay(url: Option<&str>, token: Option<&str>) -> GatewayConfig {
-        GatewayConfig {
-            vercel_relay_url: url.map(|s| s.to_string()),
-            vercel_relay_token: token.map(|s| s.to_string()),
+    fn slot(id: &str, url: Option<&str>, token: Option<&str>) -> RelaySlot {
+        RelaySlot {
+            id: id.into(),
+            kind: cloud_routers_core::config::RELAY_KIND_VERCEL.into(),
+            url: url.map(|s| s.to_string()),
+            relay_secret: token.map(|s| s.to_string()),
             ..Default::default()
         }
     }
 
+    fn config_with_slots(slots: &[RelaySlot]) -> GatewayConfig {
+        GatewayConfig { relays: slots.to_vec(), ..Default::default() }
+    }
+
     #[test]
     fn direct_route_appends_path_without_double_slash() {
-        let p = provider("https://api.groq.com/openai/v1/", false);
-        let r = resolve_route(&p, &config_with_relay(None, None), "/v1/chat/completions").expect("route");
+        let p = provider("https://api.groq.com/openai/v1/", None);
+        let r = resolve_route(&p, &config_with_slots(&[]), "/v1/chat/completions").expect("route");
         assert_eq!(
             r,
             Route::Direct { url: "https://api.groq.com/openai/v1/v1/chat/completions".into() }
@@ -255,8 +300,8 @@ mod tests {
     fn relay_route_targets_absolute_upstream_url() {
         // Регрессия против схемы «x-target-host + pathname»: склейка дала бы
         // ".../openai/v1/v1/chat/completions" с двойным /v1.
-        let p = provider("https://api.groq.com/openai/v1", true);
-        let cfg = config_with_relay(Some("https://relay.vercel.app/"), Some("secret"));
+        let p = provider("https://api.groq.com/openai/v1", Some("vercel"));
+        let cfg = config_with_slots(&[slot("vercel", Some("https://relay.vercel.app/"), Some("secret"))]);
         let r = resolve_route(&p, &cfg, "/v1/chat/completions").expect("route");
         match &r {
             Route::Relay { url, target_url, token } => {
@@ -271,36 +316,68 @@ mod tests {
 
     #[test]
     fn relay_without_url_is_a_hard_error_not_silent_direct() {
-        // Пользователь выбрал релей из-за блокировки. Молчаливый прямой запрос
+        // Пользователь привязал релей из-за блокировки. Молчаливый прямой запрос
         // выглядел бы как «релей сломался».
-        let p = provider("https://api.groq.com/openai/v1", true);
-        let err = resolve_route(&p, &config_with_relay(None, None), "/v1/chat/completions")
+        let p = provider("https://api.groq.com/openai/v1", Some("vercel"));
+        let err = resolve_route(&p, &config_with_slots(&[slot("vercel", None, None)]), "/v1/chat/completions")
             .expect_err("must fail");
         assert!(err.contains("URL релея не задан"), "{err}");
     }
 
     #[test]
     fn relay_blank_url_counts_as_missing() {
-        let p = provider("https://api.groq.com/openai/v1", true);
-        assert!(resolve_route(&p, &config_with_relay(Some("   "), None), "/v1/chat/completions").is_err());
+        let p = provider("https://api.groq.com/openai/v1", Some("vercel"));
+        assert!(
+            resolve_route(&p, &config_with_slots(&[slot("vercel", Some("   "), None)]), "/v1/chat/completions").is_err()
+        );
     }
 
     #[test]
     fn relay_url_without_scheme_is_named_not_builder_error() {
         // Кейс 22.10.2026: конфиг содержал релей без схемы, и каждый запрос
         // падал reqwest'ом «builder error». Причина обязана называть поле.
-        let p = provider("https://api.groq.com/openai/v1", true);
-        let err = resolve_route(&p, &config_with_relay(Some("my-relay.vercel.app"), Some("tok")), "/v1/chat/completions")
-            .expect_err("must fail");
+        let p = provider("https://api.groq.com/openai/v1", Some("vercel"));
+        let err = resolve_route(
+            &p,
+            &config_with_slots(&[slot("vercel", Some("my-relay.vercel.app"), Some("tok"))]),
+            "/v1/chat/completions",
+        )
+        .expect_err("must fail");
         assert!(err.contains("my-relay.vercel.app"), "{err}");
         assert!(err.contains("http:// или https://"), "{err}");
         assert!(!err.contains("builder"), "{err}");
     }
 
     #[test]
+    fn relay_slot_missing_is_a_hard_error_not_silent_direct() {
+        // 27.10.2026: привязка провайдера к удалённому слоту — конфигурационная
+        // ошибка с именем слота, а не тихий прямой запрос.
+        let p = provider("https://api.groq.com/openai/v1", Some("ghost"));
+        let err = resolve_route(&p, &config_with_slots(&[]), "/v1/chat/completions")
+            .expect_err("must fail");
+        assert!(err.contains("ghost"), "{err}");
+    }
+
+    #[test]
+    fn relay_token_comes_from_the_bound_slot() {
+        // Два слота с разными секретами: провайдер обязан получить секрет
+        // СВОЕГО слота, а не активного или первого.
+        let cfg = config_with_slots(&[
+            slot("vercel", Some("https://a.vercel.app"), Some("tok-a")),
+            slot("cf-main", Some("https://b.workers.dev"), Some("tok-b")),
+        ]);
+        let p = provider("https://api.groq.com/openai/v1", Some("cf-main"));
+        let r = resolve_route(&p, &cfg, "/v1/chat/completions").expect("route");
+        match &r {
+            Route::Relay { token, .. } => assert_eq!(token.as_deref(), Some("tok-b")),
+            other => panic!("ожидался Relay, получен {:?}", other),
+        }
+    }
+
+    #[test]
     fn relay_route_headers_carry_target_and_token() {
-        let p = provider("https://api.groq.com/openai/v1", true);
-        let cfg = config_with_relay(Some("https://relay.vercel.app"), Some("s3cret"));
+        let p = provider("https://api.groq.com/openai/v1", Some("vercel"));
+        let cfg = config_with_slots(&[slot("vercel", Some("https://relay.vercel.app"), Some("s3cret"))]);
         let route = resolve_route(&p, &cfg, "/v1/chat/completions").expect("route");
         let mut h = HeaderMap::new();
         apply_route_headers(&route, &mut h);
@@ -311,8 +388,8 @@ mod tests {
 
     #[test]
     fn direct_route_adds_no_relay_headers() {
-        let p = provider("https://api.groq.com/openai/v1", false);
-        let route = resolve_route(&p, &config_with_relay(None, None), "/v1/chat/completions").expect("route");
+        let p = provider("https://api.groq.com/openai/v1", None);
+        let route = resolve_route(&p, &config_with_slots(&[]), "/v1/chat/completions").expect("route");
         let mut h = HeaderMap::new();
         apply_route_headers(&route, &mut h);
         assert!(h.get(HDR_TARGET_URL).is_none());

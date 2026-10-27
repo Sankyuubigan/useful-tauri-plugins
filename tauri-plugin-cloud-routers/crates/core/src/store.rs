@@ -22,6 +22,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::GatewayConfig;
 
+/// Атомарная запись JSON (tmp + rename) — реэкспорт инфраструктурного крейта:
+/// шлюз пишет свои файлы состояния тем же механизмом, что `gateway.json`
+/// (free_usage.rs 27.10.26), и НЕ должен зависеть от `ko-json-store` напрямую
+/// минуя домен-слой.
+pub use ko_json_store::write_atomic;
+
 /// Каталог данных роутера `gateway` внутри app-data хоста.
 ///
 /// Хост передаёт свой `app_data_dir` (через `plugins.cloud-routers.data_dir_name`
@@ -101,6 +107,15 @@ pub fn load(data_dir: &Path) -> GatewayConfig {
             if cfg.migrate_relay_slots() {
                 log::info!(
                     "cloud-routers: {}: релей перенесён из vercel_relay_* в слоты (relays)",
+                    path.display()
+                );
+            }
+            // 27.10.2026: булев use_relay каждого провайдера → relay_id (слот).
+            // В памяти, идемпотентно: файл будет переписан в новом формате при
+            // следующем сохранении.
+            if cfg.migrate_provider_relay_ids() {
+                log::info!(
+                    "cloud-routers: {}: булев use_relay перенесён в relay_id провайдеров",
                     path.display()
                 );
             }
@@ -437,6 +452,26 @@ mod tests {
         // Идемпотентность повторной загрузки того же файла.
         let cfg2 = load(&d);
         assert_eq!(cfg2.relays, cfg.relays);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn load_migrates_use_relay_flag_into_provider_relay_id() {
+        // 27.10.2026: старый конфиг с булевым use_relay при загрузке привязывает
+        // провайдера к активному слоту и снимает флаг — релей назначается
+        // на провайдера, а не глобально.
+        let d = tmp_dir("relflag");
+        write_raw(
+            &d,
+            r#"{"port":20131,"providers":[{"id":"groq","name":"Groq","base_url":"https://a.dev","use_relay":true}],"relays":[{"id":"vercel","kind":"vercel","url":"https://r.vercel.app","relay_secret":"tok"}],"active_relay":"vercel"}"#,
+        );
+        let cfg = load(&d);
+        assert_eq!(cfg.providers[0].relay_id.as_deref(), Some("vercel"), "{:?}", cfg.providers[0]);
+        assert!(!cfg.providers[0].use_relay, "флаг снят миграцией");
+        // Идемпотентность повторной загрузки того же файла.
+        let cfg2 = load(&d);
+        assert_eq!(cfg2.providers[0].relay_id, cfg.providers[0].relay_id);
+        assert!(!cfg2.providers[0].use_relay);
         let _ = std::fs::remove_dir_all(&d);
     }
 

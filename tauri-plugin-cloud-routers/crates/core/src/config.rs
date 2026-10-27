@@ -109,7 +109,10 @@ pub struct GatewayConfig {    /// Порт HTTP-сервера.
     /// legacy-полях `vercel_relay_*`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relays: Vec<RelaySlot>,
-    /// Какой слот используется провайдерами с `use_relay = true`.
+    /// Слот релея по умолчанию: новые провайдеры наследуют его привязкой
+    /// (`add_provider`), а legacy-миграция флага `use_relay` привязывает к нему
+    /// старых провайдеров. Каждому провайдеру назначается свой слот — это не
+    /// глобальный маршрут.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_relay: Option<String>,
     /// Поля, которых эта версия крейта не знает.
@@ -160,8 +163,21 @@ pub struct ProviderConfig {
     pub auth: crate::protocol::ProviderAuth,
     /// Участвует ли провайдер в маршрутизации.
     pub is_enabled: bool,
-    /// Пускать ли запросы этого провайдера через Vercel-релей.
+    /// LEGACY (27.10.2026): булев флаг «через релей» из старых конфигов.
+    ///
+    /// Мигрируется в [`Self::relay_id`] при загрузке
+    /// ([`GatewayConfig::migrate_provider_relay_ids`]) и после миграции
+    /// нигде не читается. Поле оставлено, чтобы миграция могла прочитать
+    /// флаг из старого `gateway.json` (serde молча выбросил бы его при удалении
+    /// из структуры — и провайдеры потеряли бы привязку без предупреждения).
     pub use_relay: bool,
+    /// Слот релея, через который ходит этот провайдер: `None` — напрямую,
+    /// `Some(id)` — слот с таким id в [`GatewayConfig::relays`].
+    ///
+    /// Релеи не универсальны (воркеры на разных платформах под разными
+    /// провайдерами), поэтому привязка — свойство провайдера, а не один
+    /// глобальный активный слот.
+    pub relay_id: Option<String>,
     /// API-ключи с ротацией.
     pub keys: Vec<AccountKey>,
     /// Модели, обнаруженные реальным `GET /models` (не захардкожены).
@@ -178,6 +194,7 @@ impl Default for ProviderConfig {
             auth: crate::protocol::ProviderAuth::default(),
             is_enabled: true,
             use_relay: false,
+            relay_id: None,
             keys: Vec::new(),
             models: Vec::new(),
         }
@@ -367,7 +384,7 @@ impl GatewayConfig {
         self.providers.iter().filter(|p| p.is_routable())
     }
 
-    /// Активный слот релея (тот, что используют `use_relay`-провайдеры).
+    /// Слот релея по умолчанию (его наследуют новые провайдеры и legacy-флаг).
     pub fn active_slot(&self) -> Option<&RelaySlot> {
         let id = self.active_relay.as_deref()?;
         self.relays.iter().find(|s| s.id == id)
@@ -397,8 +414,15 @@ impl GatewayConfig {
 
     /// Миграция legacy-полей релея в слоты. Идемпотентно, в памяти (файл
     /// перепишется при следующем сохранении — как миграция `presets_sync_url`).
+    ///
+    /// Инвариант: если в конфиге есть legacy-URL/секрет, то после миграции
+    /// существует и Vercel-слот. Регресс 27.10.2026: условие было «список
+    /// слотов пуст», поэтому после удаления единственного Vercel-слота
+    /// (остались слоты других видов) legacy-деплой оставался невидим в списке
+    /// слотов и не мог быть привязан к провайдерам. Теперь слот ищется по
+    /// `kind`, а не по пустоте списка.
     pub fn migrate_relay_slots(&mut self) -> bool {
-        if !self.relays.is_empty() {
+        if self.vercel_slot().is_some() {
             return false;
         }
         if self.vercel_relay_url.is_none() && self.vercel_relay_token.is_none() {
@@ -418,6 +442,35 @@ impl GatewayConfig {
         true
     }
 
+    /// Миграция legacy-флага `use_relay` провайдеров в их привязку `relay_id`.
+    ///
+    /// 27.10.2026: релей назначается каждому провайдеру отдельно, а не одному
+    /// активному на всех. Провайдер с флагом получает активный слот как свою
+    /// привязку — это и был прежний смысл флага. Если активного слота нет,
+    /// назначать нечем: флаг снимается, привязка остаётся `None` (провайдер
+    /// пойдёт напрямую), а в журнал пишется `warn` — смена поведения видима,
+    /// не молчалива. Идемпотентно, в памяти (файл перепишется при следующем
+    /// сохранении — как миграция `migrate_relay_slots`).
+    pub fn migrate_provider_relay_ids(&mut self) -> bool {
+        let active = self.active_relay.clone();
+        let mut changed = false;
+        for p in &mut self.providers {
+            if !p.use_relay {
+                continue;
+            }
+            changed = true;
+            p.relay_id = p.relay_id.clone().or_else(|| active.clone());
+            p.use_relay = false;
+            if p.relay_id.is_none() {
+                log::warn!(
+                    "cloud-routers: провайдер «{}» был настроен «через релей», но активного релея нет — назначена работа напрямую",
+                    p.id
+                );
+            }
+        }
+        changed
+    }
+
     /// Базовый URL шлюза для подключения IDE.
     pub fn base_url(&self) -> String {
         format!("http://{}:{}", self.host, self.port)
@@ -427,7 +480,8 @@ impl GatewayConfig {
     /// пустой список — конфигурация корректна.
     ///
     /// Проверяется ровно то, что ломает маршрутизацию: дубликаты id, `/`
-    /// внутри id (ломает разбор комбо), пустые `base_url` без схемы.
+    /// внутри id (ломает разбор комбо), пустые `base_url` без схемы,
+    /// привязка провайдера к несуществующему слоту релея.
     /// Наличие ключей и моделей **не** проверяется — это нормальное состояние
     /// только что созданного провайдера, а не ошибка конфигурации.
     pub fn validate(&self) -> Vec<String> {
@@ -477,6 +531,16 @@ impl GatewayConfig {
                 problems.push(format!("активный релей «{id}» не найден среди слотов"));
             }
         }
+        for p in &self.providers {
+            if let Some(rid) = p.relay_id.as_deref() {
+                if !self.relays.iter().any(|s| s.id == rid) {
+                    problems.push(format!(
+                        "провайдер «{}» привязан к релею «{rid}», которого нет среди слотов",
+                        p.id
+                    ));
+                }
+            }
+        }
         problems
     }
 }
@@ -492,6 +556,7 @@ mod tests {
             base_url: base.to_string(),
             is_enabled: true,
             use_relay: false,
+            relay_id: None,
             keys: vec![AccountKey { id: "k1".into(), key: "sk-1".into(), is_active: true, name: None }],
             models: vec![DiscoveredModel { id: "m".into(), object: None, created: None }],
             ..Default::default()
@@ -590,6 +655,136 @@ mod tests {
         assert!(!c.migrate_relay_slots());
         assert!(c.relays.is_empty());
         assert_eq!(c.active_relay, None);
+    }
+
+    /// 27.10.2026 — регресс: слот ищется по `kind`, а не по пустоте списка.
+    /// Пользователь удалил Vercel-слот (остались слоты других видов), затем
+    /// развёл новый: URL ушёл в legacy-поля, релей «исчезал» из списка слотов
+    /// и не привязывался к провайдерам.
+    #[test]
+    fn migrate_relay_slots_restores_vercel_slot_among_other_slots() {
+        let mut c = GatewayConfig::default();
+        c.relays.push(RelaySlot {
+            id: "cloudflare".into(),
+            kind: "cloudflare".into(),
+            url: Some("https://cf.workers.dev".into()),
+            relay_secret: Some("cf-tok".into()),
+            cf_account_id: Some("acc".into()),
+            cf_script_name: Some("relay".into()),
+        });
+        c.vercel_relay_url = Some("https://new-relay.vercel.app".into());
+        c.vercel_relay_token = Some("tok".into());
+
+        assert!(c.migrate_relay_slots(), "миграция обязана восстановить слот");
+        assert_eq!(c.relays.len(), 2);
+        let slot = c.relays.iter().find(|s| s.kind == RELAY_KIND_VERCEL).expect("vercel-слот");
+        assert_eq!(slot.id, "vercel");
+        assert_eq!(slot.url.as_deref(), Some("https://new-relay.vercel.app"));
+        assert_eq!(slot.relay_secret.as_deref(), Some("tok"));
+        // Соседний слот другого вида не тронут.
+        let cf = c.relays.iter().find(|s| s.id == "cloudflare").expect("cf-слот");
+        assert_eq!(cf.url.as_deref(), Some("https://cf.workers.dev"));
+        assert_eq!(c.active_relay.as_deref(), Some("vercel"));
+        assert_eq!(c.vercel_relay_url, None);
+        assert_eq!(c.vercel_relay_token, None);
+        // Идемпотентность: второй вызов ничего не делает.
+        assert!(!c.migrate_relay_slots());
+        assert_eq!(c.relays.len(), 2);
+    }
+
+    /// Слот kind=vercel уже есть — миграция ничего не делает, даже если
+    /// legacy-поля остались с другого прогона: слот приоритетен (SSOT).
+    #[test]
+    fn migrate_relay_slots_noop_when_vercel_slot_exists() {
+        let mut c = GatewayConfig::default();
+        c.relays.push(RelaySlot {
+            id: "vercel".into(),
+            kind: RELAY_KIND_VERCEL.into(),
+            url: Some("https://slot.vercel.app".into()),
+            relay_secret: Some("slot-tok".into()),
+            cf_account_id: None,
+            cf_script_name: None,
+        });
+        c.vercel_relay_url = Some("https://legacy.vercel.app".into());
+        c.vercel_relay_token = Some("legacy-tok".into());
+        assert!(!c.migrate_relay_slots());
+        let slot = c.vercel_slot().expect("слот");
+        assert_eq!(slot.url.as_deref(), Some("https://slot.vercel.app"));
+        assert_eq!(slot.relay_secret.as_deref(), Some("slot-tok"));
+    }
+
+    // 27.10.2026 — релей назначается на провайдера (`relay_id`), а не одним
+    // активным слотом на всех. Legacy-флаг `use_relay` при загрузке превращается
+    // в привязку к активному слоту (его прежний смысл) и снимается; после
+    // миграции флаг нигде не читается — единственный источник правды `relay_id`.
+    #[test]
+    fn migrate_provider_relay_ids_moves_flag_to_active_slot() {
+        let mut c = GatewayConfig::default();
+        c.relays.push(RelaySlot {
+            id: "vercel".into(),
+            kind: RELAY_KIND_VERCEL.into(),
+            url: Some("https://r.vercel.app".into()),
+            ..Default::default()
+        });
+        c.active_relay = Some("vercel".into());
+        let mut p = provider("groq", "https://a.dev");
+        p.use_relay = true;
+        c.providers.push(p);
+        assert!(c.migrate_provider_relay_ids(), "миграция должна сработать");
+        assert_eq!(c.providers[0].relay_id.as_deref(), Some("vercel"));
+        assert!(!c.providers[0].use_relay, "флаг снят");
+        // Идемпотентность: второй вызов ничего не делает.
+        assert!(!c.migrate_provider_relay_ids());
+        assert_eq!(c.providers[0].relay_id.as_deref(), Some("vercel"));
+    }
+
+    #[test]
+    fn migrate_provider_relay_ids_without_active_relay_clears_flag() {
+        // Провайдер был «через релей», но назначить нечего: флаг снимается,
+        // привязки нет — провайдер пойдёт напрямую (warn в журнал об этом).
+        let mut c = GatewayConfig::default();
+        let mut p = provider("groq", "https://a.dev");
+        p.use_relay = true;
+        c.providers.push(p);
+        assert!(c.migrate_provider_relay_ids());
+        assert_eq!(c.providers[0].relay_id, None);
+        assert!(!c.providers[0].use_relay);
+        assert!(!c.migrate_provider_relay_ids());
+    }
+
+    #[test]
+    fn migrate_provider_relay_ids_preserves_explicit_binding() {
+        // Привязка уже задана вручную — миграция не подменяет её активным
+        // слотом, только снимает устаревший флаг.
+        let mut c = GatewayConfig::default();
+        c.active_relay = Some("vercel".into());
+        let mut p = provider("groq", "https://a.dev");
+        p.use_relay = true;
+        p.relay_id = Some("cf-main".into());
+        c.providers.push(p);
+        assert!(c.migrate_provider_relay_ids());
+        assert_eq!(c.providers[0].relay_id.as_deref(), Some("cf-main"));
+        assert!(!c.providers[0].use_relay);
+    }
+
+    #[test]
+    fn validate_catches_dangling_provider_relay_id() {
+        // Привязка на удалённый слот — конфигурационная проблема: запросы
+        // провайдера упали бы с ошибкой на каждом вызове.
+        let mut c = GatewayConfig::default();
+        let mut p = provider("groq", "https://a.dev");
+        p.relay_id = Some("ghost".into());
+        c.providers.push(p);
+        let pr = c.validate();
+        assert!(pr.iter().any(|m| m.contains("ghost")), "{:?}", pr);
+        // Найденный слот снимает проблему.
+        c.relays.push(RelaySlot {
+            id: "ghost".into(),
+            kind: RELAY_KIND_VERCEL.into(),
+            url: Some("https://g.vercel.app".into()),
+            ..Default::default()
+        });
+        assert!(c.validate().is_empty(), "{:?}", c.validate());
     }
 
     #[test]

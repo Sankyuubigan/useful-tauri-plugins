@@ -104,12 +104,28 @@ function providerCard(p) {
       (p.models.length > 40 ? `<span>…и ещё ${p.models.length - 40}</span>` : '') + `</div>`
     : '';
 
-  // Кнопка «Проверить ключи» — только для Gemini-провайдера (is_gemini
-  // решает бэкенд, дашборд не дублирует эвристику по host'у). Без активных
-  // ключей проверять нечего — кнопка заблокирована.
-  const checkKeysBtn = p.is_gemini
+  // Релей — селект привязки (27.10.2026): «напрямую» или конкретный слот.
+  // Слоты без URL показаны заблокированными: привязывать к ним нечего,
+  // маршрут упал бы честной ошибкой «URL релея не задан».
+  const relayOptions = (state.relaySlots || [])
+    .map(s =>
+      `<option value="${esc(s.id)}" ${s.url ? '' : 'disabled'}${
+        p.relay_id === s.id ? ' selected' : ''}>${esc(s.id)}${s.url ? '' : ' (нет URL)'}</option>`
+    )
+    .join('');
+  const relaySelect =
+    `<label class="gw-inline">релей ` +
+    `<select class="gw-prov-relay" data-provider="${esc(p.id)}">` +
+    `<option value="" ${p.relay_id ? '' : 'selected'}>напрямую</option>` +
+    relayOptions +
+    `</select></label>`;
+
+  // Кнопка «Проверить ключи» — по `key_check` (род проверки решает бэкенд,
+  // дашборд не дублирует эвристику по host'у). Без активных ключей
+  // проверять нечего — кнопка заблокирована.
+  const checkKeysBtn = p.key_check
     ? `<button class="gw-ghost gw-btn-keys-check" data-provider="${esc(p.id)}"` +
-      `${p.keys.length ? '' : ' disabled'}>Проверить ключи</button>`
+      ` data-kind="${esc(p.key_check)}"${p.keys.length ? '' : ' disabled'}>Проверить ключи</button>`
     : '';
 
   return (
@@ -122,8 +138,7 @@ function providerCard(p) {
     `<span class="gw-spacer"></span>` +
     `<label class="gw-inline"><input type="checkbox" class="gw-prov-toggle" data-provider="${esc(p.id)}"` +
     `${p.is_enabled ? ' checked' : ''}> включён</label>` +
-    `<label class="gw-inline"><input type="checkbox" class="gw-prov-relay" data-provider="${esc(p.id)}"` +
-    `${p.use_relay ? ' checked' : ''}> через релей</label>` +
+    relaySelect +
     `</div>` +
     `<div class="gw-kv"><span>Адрес</span><b class="gw-break">${esc(p.base_url)}</b></div>` +
     authBlock(p) +
@@ -161,12 +176,18 @@ export function renderProviders() {
 function bindProviderButtons() {
   $$('.gw-prov-toggle').forEach(el => el.addEventListener('change', () =>
     patchProvider(el.dataset.provider, { is_enabled: el.checked })));
+  // Привязка релея: пустое значение — «напрямую» (null), непустое — id слота.
   $$('.gw-prov-relay').forEach(el => el.addEventListener('change', () =>
-    patchProvider(el.dataset.provider, { use_relay: el.checked })));
+    patchProvider(el.dataset.provider, { relay_id: el.value === '' ? null : el.value })));
 
   $$('.gw-btn-models').forEach(el => el.addEventListener('click', () => refreshModels(el)));
   $$('.gw-btn-test').forEach(el => el.addEventListener('click', () => testProvider(el)));
-  $$('.gw-btn-keys-check').forEach(el => el.addEventListener('click', () => openCheckKeysModal(el.dataset.provider)));
+  $$('.gw-btn-keys-check').forEach(el => el.addEventListener('click', () => {
+    // OpenRouter проверяется сразу без модалки: эндпоинт ключевой, моделей
+    // выбирать не из чего; Gemini открывает выбор моделей.
+    if (el.dataset.kind === 'openrouter') runOpenRouterCheck(el.dataset.provider);
+    else openCheckKeysModal(el.dataset.provider);
+  }));
   $$('.gw-btn-prov-del').forEach(el => el.addEventListener('click', () => deleteProvider(el)));
   $$('.gw-btn-key-del').forEach(el => el.addEventListener('click', () => deleteKey(el)));
   $$('.gw-btn-key-reset').forEach(el => el.addEventListener('click', () => resetKey(el)));
@@ -299,6 +320,71 @@ async function runCheckKeys() {
     }
     toast(
       `Проверка ключей (${r.models.length} ${plural(r.models.length, 'модель', 'модели', 'моделей')}): ` +
+      `валидных ${nValid}, невалидных ${nBad}, в лимите ${nLimited}, неизвестно ${nUnknown}` +
+      `${r.via_relay ? ' (через релей)' : ''}`,
+      (nValid + nLimited) === r.results.length ? 'ok' : 'err',
+    );
+  } catch (e) {
+    fail('Проверка ключей не удалась', e);
+    if (out) { out.innerHTML = ''; out.hidden = true; }
+  } finally { busy(btn, false); }
+}
+
+// ─────────────────────── проверка ключей OpenRouter ───────────────────────
+
+/** Стр результата одного ключа OpenRouter: вердикт + тир + $-расход + лимит. */
+function openrouterRowHtml(x) {
+  const base = checkRowHtml(x);
+  const i = x.openrouter;
+  if (!i) return base;
+  const tier = i.is_free_tier === true ? 'free' : i.is_free_tier === false ? 'paid' : 'тир неизвестен';
+  const money = v => (v == null ? '—' : `$${Number(v)}`);
+  const parts = [tier];
+  if (i.usage_daily != null) parts.push(`${money(i.usage_daily)} потрачено сегодня`);
+  else if (i.usage != null) parts.push(`${money(i.usage)} потрачено всего`);
+  if (i.limit != null) {
+    parts.push(
+      `осталось ${money(i.limit_remaining)} из ${money(i.limit)}` +
+      (i.limit_reset ? ` (сброс: ${esc(i.limit_reset)})` : ''),
+    );
+  }
+  return base + `<div class="gw-hint gw-check-detail">${parts.join(' · ')}</div>`;
+}
+
+/**
+ * Проверить ключи OpenRouter (`GET /key`, лимит генерации не расходуется) —
+ * сразу POST без тела: эндпоинт ключевой, моделей выбирать не из чего.
+ * Результаты + строка сводки счётчика бесплатных запросов.
+ */
+async function runOpenRouterCheck(id) {
+  const out = $(`#check-results-${CSS.escape(id)}`);
+  const btn = document.querySelector(`.gw-btn-keys-check[data-provider="${CSS.escape(id)}"]`);
+  busy(btn, true);
+  if (out) {
+    out.hidden = false;
+    out.innerHTML = '<div class="gw-hint">проверяем ключ…</div>';
+  }
+  try {
+    const r = await api(`/api/providers/${encodeURIComponent(id)}/keys/check`, { method: 'POST' });
+    if (out) {
+      out.innerHTML = (r.results.length
+        ? r.results.map(openrouterRowHtml).join('')
+        : '<div class="gw-hint">Проверять было нечего — активных ключей нет.</div>');
+      const fu = r.free_usage;
+      if (fu) {
+        out.innerHTML +=
+          `<div class="gw-check-model-title">Бесплатные запросы сегодня</div>` +
+          `<div class="gw-hint gw-check-detail">${esc(String(fu.count))} из ` +
+          `${fu.cap != null ? esc(String(fu.cap)) : 'лимит неизвестен'} ` +
+          `(${esc(fu.ymd)}). Счётчик видит только запросы через шлюз.</div>`;
+      }
+    }
+    const nValid = r.results.filter(x => x.verdict === 'valid').length;
+    const nLimited = r.results.filter(x => x.verdict === 'valid_limited').length;
+    const nBad = r.results.filter(x => x.verdict === 'invalid').length;
+    const nUnknown = r.results.filter(x => x.verdict === 'unknown').length;
+    toast(
+      `Проверка ключей (${r.results.length} ${plural(r.results.length, 'ключ', 'ключа', 'ключей')}): ` +
       `валидных ${nValid}, невалидных ${nBad}, в лимите ${nLimited}, неизвестно ${nUnknown}` +
       `${r.via_relay ? ' (через релей)' : ''}`,
       (nValid + nLimited) === r.results.length ? 'ok' : 'err',

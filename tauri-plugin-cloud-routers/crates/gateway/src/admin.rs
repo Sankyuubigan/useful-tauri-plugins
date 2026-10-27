@@ -34,6 +34,7 @@ use cloud_routers_core::presets;
 use cloud_routers_core::store as core_store;
 
 use crate::app::AppState;
+use crate::free_usage::today_ymd;
 use crate::key_check;
 use crate::logbuf::mask_secret;
 use crate::proxy;
@@ -129,16 +130,21 @@ struct ProviderDto {
     /// Секретов здесь нет — только факт привязки и метаданные.
     auth: ProviderAuthDto,
     is_enabled: bool,
-    use_relay: bool,
+    /// Слот релея провайдера: `None` — напрямую, `Some(id)` — id слота
+    /// из `relays` (без секретов). Заменил булев `use_relay` (27.10.2026):
+    /// релей назначается каждому провайдеру отдельно.
+    relay_id: Option<String>,
     /// Ключи с маской вместо секрета.
     keys: Vec<KeyDto>,
     models: Vec<String>,
     models_count: usize,
     /// Готов к маршрутизации (есть ключ и модели).
     routable: bool,
-    /// Апстрим — Gemini (generativelanguage.googleapis.com): только такому
-    /// провайдеру дашборд показывает кнопку «Проверить ключи».
-    is_gemini: bool,
+    /// Проверка ключей, применимая к провайдеру: `"gemini"` | `"openrouter"`,
+    /// `None` — не поддерживается (кнопки в дашборде не будет). Заменил булев
+    /// `is_gemini` (27.10.2026): дашборд не дублирует эвристику по host'у
+    /// (тот же принцип, что и раньше).
+    key_check: Option<String>,
     /// Остаток кулдауна по каждому ключу, секунды.
     cooldowns: Vec<KeyCooldownDto>,
 }
@@ -225,7 +231,7 @@ fn provider_dto(state: &AppState, p: &ProviderConfig) -> ProviderDto {
         protocol: p.protocol,
         auth,
         is_enabled: p.is_enabled,
-        use_relay: p.use_relay,
+        relay_id: p.relay_id.clone(),
         keys: p
             .keys
             .iter()
@@ -239,7 +245,7 @@ fn provider_dto(state: &AppState, p: &ProviderConfig) -> ProviderDto {
         models: p.models.iter().map(|m| m.id.clone()).collect(),
         models_count: p.models.len(),
         routable: p.is_routable(),
-        is_gemini: key_check::is_gemini_provider(p),
+        key_check: key_check::key_check_kind(p).map(|k| k.as_str().to_string()),
         cooldowns: p
             .keys
             .iter()
@@ -557,7 +563,10 @@ async fn add_provider(State(state): State<AppState>, Json(body): Json<NewProvide
         protocol,
         auth: cloud_routers_core::protocol::ProviderAuth::ApiKeys,
         is_enabled: true,
+        // Активный слот — релей по умолчанию для новых провайдеров (None —
+        // тоже честная привязка: «напрямую», пока пользователь не выбрал).
         use_relay: false,
+        relay_id: config.active_relay.clone(),
         keys,
         models: Vec::new(),
     };
@@ -579,6 +588,22 @@ async fn add_provider(State(state): State<AppState>, Json(body): Json<NewProvide
     Ok(Json(provider_dto(&state, &state.config().provider(&id).cloned().unwrap_or_default())))
 }
 
+/// `null` → `Some(None)`, отсутствие поля → `None` — serde сам по себе оба
+/// случая даёт `None` (известная семантика double-option), а селект дашборда
+/// шлёт `null` осмысленно: «снять привязку релея». Копия паттерна
+/// `serde_with::double_option`, без новой зависимости в Cargo.toml.
+mod double_option {
+    use serde::{Deserialize, Deserializer};
+
+    pub fn deserialize<'de, D, T>(de: D) -> Result<Option<Option<T>>, D::Error>
+    where
+        D: Deserializer<'de>,
+        T: Deserialize<'de>,
+    {
+        Ok(Some(Option::<T>::deserialize(de)?))
+    }
+}
+
 /// Патч провайдера. `None` = не менять.
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -586,7 +611,10 @@ struct ProviderPatch {
     name: Option<String>,
     base_url: Option<String>,
     is_enabled: Option<bool>,
-    use_relay: Option<bool>,
+    /// Привязка релея (serde-тройка через [`double_option`]): поле отсутствует —
+    /// не трогать, `null` — снять привязку (напрямую), значение — id слота из `relays`.
+    #[serde(default, deserialize_with = "double_option::deserialize")]
+    relay_id: Option<Option<String>>,
 }
 
 /// Достать провайдера или отдать `404`.
@@ -608,8 +636,32 @@ async fn patch_provider(
     Json(patch): Json<ProviderPatch>,
 ) -> ApiResult<Json<ProviderDto>> {
     require_provider(&state, &id)?;
+    // Несуществующий слот — 400 ДО записи (слоты редактируются в той же
+    // вкладке, рука дёргается легко). Внутри update_config проверка
+    // повторяется: слот мог быть удалён между чтением и записью — тогда
+    // dangling-привязка не запишется никогда (ошибка → конфиг не тронут).
+    if let Some(rid) = patch.relay_id.as_ref().and_then(|inner| inner.as_deref()) {
+        if !state.config().relays.iter().any(|s| s.id == rid) {
+            return Err(bad_request(format!(
+                "релей «{rid}» не найден среди слотов (вкладка «Релей»)"
+            )));
+        }
+    }
     let updated = state
         .update_config(|c| {
+            // Валидация слота ДО мутабельного заёма провайдера: borrow checker
+            // не позволяет читать `c.relays`, пока жив заём `p`.
+            if let Some(rid) = patch.relay_id.as_ref().and_then(|inner| inner.as_deref()) {
+                // `None` = напрямую, `Some(id)` = слот из `relays`. Несуществующий
+                // слот — 400 с его именем, иначе запрос ходил бы ошибкой на
+                // каждом вызове (слоты редактируются в той же вкладке, рука
+                // дёргается легко).
+                if !c.relays.iter().any(|s| s.id == rid) {
+                    return Err(format!(
+                        "релей «{rid}» не найден среди слотов (вкладка «Релей»)"
+                    ));
+                }
+            }
             let p = c
                 .provider_mut(&id)
                 .ok_or_else(|| format!("Провайдер «{}» исчез между проверкой и записью", id))?;
@@ -633,8 +685,8 @@ async fn patch_provider(
             if let Some(v) = patch.is_enabled {
                 p.is_enabled = v;
             }
-            if let Some(v) = patch.use_relay {
-                p.use_relay = v;
+            if let Some(v) = patch.relay_id {
+                p.relay_id = v;
             }
             Ok(p.clone())
         })
@@ -789,7 +841,7 @@ async fn refresh_models(State(state): State<AppState>, Path(id): Path<String>) -
         .await
         .map_err(bad_request)?;
     let latency_ms = started.elapsed().as_millis() as u64;
-    let via_relay = provider.use_relay;
+    let via_relay = provider.relay_id.is_some();
 
     if models.is_empty() {
         // Не пишем пустой список: он «съел» бы ранее обнаруженные модели, и
@@ -1195,25 +1247,9 @@ fn merge_hints(into: &mut Vec<(String, Vec<String>)>, hints: Vec<(String, Vec<St
 
 /// Сегодняшняя дата `ГГГГ-ММ-ДД` для `updated_at` каталога.
 ///
-/// Без `chrono`: в шлюзе календарных часов нет, а тащить зависимость ради
-/// одной строки запрещено минимализмом. Считаем дни от эпохи Unix.
-fn today_ymd() -> String {
-    let days = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() / 86_400)
-        .unwrap_or(0);
-    // Алгоритм «civil_from_days» Говарда Хиннанта: дни → (год, месяц, день).
-    let z = days as i64 + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    format!("{:04}-{:02}-{:02}", if m <= 2 { y + 1 } else { y }, m, d)
-}
+/// Календарь шлюза — `crate::free_usage::today_ymd` (перенесён туда
+/// 27.10.26, когда счётчику бесплатных запросов понадобился тот же ключ
+/// дня; без chrono — см. комментарий там).
 
 /// Короткий вид ошибки `reqwest`: что именно сломалось.
 ///
@@ -1473,31 +1509,15 @@ async fn relay_deploy(State(state): State<AppState>, Json(body): Json<DeployBody
                 .await
                 .map_err(|e| bad_request(e))?
         }
-        _ => {
-            let result = relay::deploy_relay(&state, &body.vercel_token, body.project.as_deref())
-                .await
-                .map_err(|e| bad_request(e))?;
-            // Развёрнутый URL сразу сохраняем: пользователь не должен копировать
-            // его руками и не должен получить «получилось, но в поле пусто».
-            // Развернули — и СДЕЛАЛИ АКТИВНЫМ: панель не заставляет пользователя
-            // после деплоя искать ещё одну кнопку.
-            let url = result.url.clone();
-            state
-                .update_config(|c| {
-                    c.migrate_relay_slots();
-                    let activated = c.vercel_slot_mut().map(|slot| {
-                        slot.url = Some(url.clone());
-                        slot.id.clone()
-                    });
-                    match activated {
-                        Some(id) => c.active_relay = Some(id),
-                        None => c.vercel_relay_url = Some(url),
-                    }
-                    Ok(())
-                })
-                .map_err(|e| internal(e))?;
-            result
-        }
+        // Оба пути сами записывают свой слот и делают его активным, admin-слой
+        // только пробрасывает результат: CF — deploy_relay_cf, Vercel —
+        // relay::deploy_relay через save_deployed_url. Прежняя запись здесь
+        // при отсутствии Vercel-слота уезжала в legacy-поля — URL был невидим
+        // во вкладке «Релей» и не привязывался к провайдерам (регресс
+        // 27.10.2026), поэтому запись перенесена к месту деплоя.
+        _ => relay::deploy_relay(&state, &body.vercel_token, body.project.as_deref())
+            .await
+            .map_err(|e| bad_request(e))?,
     };
     notify_host(&state, "relay-deployed");
     Ok(Json(serde_json::to_value(result).map_err(|e| internal(e.to_string()))?))
@@ -1583,7 +1603,11 @@ async fn relay_slot_activate(
 ///
 /// Удаление АКТИВНОГО слота снимает его с активного пути (`active_relay: None`):
 /// доставка честно перестаёт работать, а не продолжает указывать на
-/// несуществующий релей.
+/// несуществующий релей. Провайдеры, привязанные к удалённому слоту,
+/// отвязываются в той же записи: иначе они остались бы с dangling `relay_id`,
+/// каждый их запрос падал бы конфигурационной ошибкой, а валидатор конфига
+/// ругался бы на состояние, созданное самим шлюзом. Отвязка происходит
+/// явно и попадает в журнал с именами провайдеров — не молчаливо.
 async fn relay_slot_delete(
     State(state): State<AppState>,
     Json(body): Json<RelaySlotIdBody>,
@@ -1593,15 +1617,30 @@ async fn relay_slot_delete(
     if !exists {
         return Err(not_found(format!("Слот релея «{}» не найден", id)));
     }
-    state
+    let unbound = state
         .update_config(move |c| {
             c.relays.retain(|s| s.id != id);
             if c.active_relay.as_deref() == Some(id.as_str()) {
                 c.active_relay = None;
             }
-            Ok(())
+            let mut unbound: Vec<String> = Vec::new();
+            for p in &mut c.providers {
+                if p.relay_id.as_deref() == Some(id.as_str()) {
+                    p.relay_id = None;
+                    unbound.push(p.id.clone());
+                }
+            }
+            Ok(unbound)
         })
         .map_err(|e| internal(e))?;
+    if !unbound.is_empty() {
+        // `id` moved в замыкание — имя берём из `body` (не перемещён).
+        state.events().info(format!(
+            "слот «{}» удалён: отвязаны провайдеры {} — теперь идут напрямую",
+            body.id,
+            unbound.join(", ")
+        ));
+    }
     notify_host(&state, "relay-slot-deleted");
     Ok(Json(serde_json::json!({ "ok": true })))
 }
@@ -1648,7 +1687,7 @@ struct UiErrorBody {
 /// (`utils.js reportUiError`), записи уходят зеркалом (`gateway_events.rs`)
 /// в лог приложения с префиксом `gateway:`.
 ///
-/// Кривое/пустое тело — 400 по контракту `check_keys_gemini`: молчаливый
+/// Кривое/пустое тело — 400 по контракту `report_ui_error`: молчаливый
 /// откат к дефолту маскировал бы сломанного репортёра.
 async fn report_ui_error(State(state): State<AppState>, body: axum::body::Bytes) -> Response {
     if body.is_empty() {
@@ -1770,13 +1809,15 @@ struct CheckKeysBody {
     models: Vec<String>,
 }
 
-/// Проверить все активные Gemini-ключи провайдера через `:countTokens`
-/// (лимит генерации не расходуется). Логику исполняет [`crate::key_check`],
-/// обработчик — только разбор зависимостей и код ответа: диагностическая
-/// причина («не Gemini», «релей без URL») приходит в тост дашборда как 400.
-/// Тело опционально: `{"models": [...]}` — проверка по выбранным моделям,
-/// пустое тело — по дефолтному кандидату провайдера.
-async fn check_keys_gemini(
+/// Проверить активные ключи провайдера. Род проверки выбирает
+/// [`crate::key_check::key_check_kind`]: Gemini — через `:countTokens`
+/// (лимит генерации не расходуется), OpenRouter — `GET /key` (Bearer).
+/// Обработчик — только разбор зависимостей и код ответа: диагностическая
+/// причина («не поддерживается», «релей без секрета») приходит в тост
+/// дашборда как 400. Тело опционально и релевантно только Gemini:
+/// `{"models": [...]}` — проверка по выбранным моделям, пустое тело — по
+/// дефолтному кандидату провайдера.
+async fn check_provider_keys(
     State(state): State<AppState>,
     Path(id): Path<String>,
     body: axum::body::Bytes,
@@ -1797,6 +1838,16 @@ async fn check_keys_gemini(
     let Some(provider) = state.config().provider(&id).cloned() else {
         return Err(not_found(format!("Провайдер «{}» не найден", id)));
     };
+    // Список моделей осмыслен только для Gemini: OpenRouter проверяет ключ
+    // ключевым эндпоинтом. Молча игнорировать тело — прятать от пользователя
+    // его же ошибку, поэтому явный отказ.
+    if requested.is_some()
+        && key_check::key_check_kind(&provider) == Some(key_check::KeyCheckKind::OpenRouterKeyInfo)
+    {
+        return Err(bad_request(
+            "проверка ключей OpenRouter не принимает список моделей — шлите запрос без тела",
+        ));
+    }
     let summary = key_check::check_provider_keys(&state, &provider, requested.as_deref())
         .await
         .map_err(bad_request)?;
@@ -1833,7 +1884,7 @@ pub fn router(state: AppState) -> axum::Router<AppState> {
         )
         .route(
             "/api/providers/:id/keys/check",
-            axum::routing::post(check_keys_gemini),
+            axum::routing::post(check_provider_keys),
         )
         .route("/api/providers/:id/models/refresh", axum::routing::post(refresh_models))
         .route("/api/providers/:id/test", axum::routing::post(test_provider))
@@ -1938,7 +1989,9 @@ mod tests {
         let state = AppState::new(&dir).expect("state");
         let app = crate::server::build(state);
 
-        // PATCH провайдера — тот самый чекбокс «через релей» (use_relay).
+        // PATCH провайдера — параметризованный маршрут блока (исторически
+        // обнаружен на чекбоксе «через релей»; семантику привязки релея
+        // проверяет PATCH-тест relay_id).
         let r = app
             .clone()
             .oneshot(
@@ -1946,7 +1999,7 @@ mod tests {
                     .method(axum::http::Method::PATCH)
                     .uri("/api/providers/mock")
                     .header("content-type", "application/json")
-                    .body(Body::from(r#"{"use_relay":true}"#))
+                    .body(Body::from(r#"{"name":"Mock v2"}"#))
                     .expect("req"),
             )
             .await
@@ -1957,9 +2010,9 @@ mod tests {
             "PATCH /api/providers/:id обязан проходить (см. комментарий к тесту)"
         );
         let saved = cloud_routers_core::load_config(&dir);
-        assert!(
-            saved.providers[0].use_relay,
-            "флаг «через релей» обязан примениться в конфиге"
+        assert_eq!(
+            saved.providers[0].name, "Mock v2",
+            "PATCH обязан примениться в конфиге"
         );
 
         // POST ключей — второй параметризованный маршрут того же блока.
@@ -2075,10 +2128,19 @@ mod tests {
         let dir = tmp("keydto");
         std::fs::create_dir_all(&dir).expect("mkdir");
         let mut cfg = GatewayConfig::default();
+        // Слот обязателен: save валидирует dangling-привязку и без него
+        // отклонил бы конфиг.
+        cfg.relays.push(cloud_routers_core::config::RelaySlot {
+            id: "vercel".into(),
+            kind: "vercel".into(),
+            url: Some("https://v.vercel.app".into()),
+            ..Default::default()
+        });
         cfg.providers.push(ProviderConfig {
             id: "google".into(),
             name: "Google".into(),
             base_url: "https://generativelanguage.googleapis.com/v1beta/openai".into(),
+            relay_id: Some("vercel".into()),
             keys: vec![AccountKey {
                 id: "k1".into(),
                 key: "AQ.Ab8RN6-secret-value".into(),
@@ -2104,6 +2166,16 @@ mod tests {
             "имя ключа обязано дойти до дашборда: {v}"
         );
         assert!(v["providers"][0]["keys"][0]["masked"].is_string(), "маска обязана быть");
+        assert_eq!(
+            v["providers"][0]["relay_id"],
+            "vercel",
+            "привязка релея доходит до дашборда (селект в карточке рисует её)"
+        );
+        assert_eq!(
+            v["providers"][0]["key_check"],
+            "gemini",
+            "род проверки доходит до дашборда (кнопка не дублирует эвристику по host'у)"
+        );
         let text = serde_json::to_string(&v).expect("text");
         assert!(
             !text.contains("AQ.Ab8RN6-secret-value"),
@@ -2438,6 +2510,214 @@ mod tests {
             "удалённый слот больше не обслуживает доставку (а legacy без URL — тем более)"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Удаление слота отвязывает привязанных провайдеров (27.10.2026, релей на
+    /// провайдера): dangling `relay_id` падал бы конфигурационной ошибкой на
+    /// каждом их запросе, а валидатор ругался бы на состояние, созданное самим
+    /// шлюзом. Отвязка попадает в журнал с именами провайдеров — не молчаливо.
+    #[tokio::test]
+    async fn relay_slot_delete_unbinds_bound_providers() {
+        let dir = tmp("slots_unbind");
+        let state = AppState::new(&dir).expect("state");
+        state
+            .update_config(|c| {
+                c.relays.push(cloud_routers_core::config::RelaySlot {
+                    id: "vercel".into(),
+                    kind: "vercel".into(),
+                    url: Some("https://v.vercel.app".into()),
+                    ..Default::default()
+                });
+                c.providers.push(ProviderConfig {
+                    id: "groq".into(),
+                    name: "Groq".into(),
+                    base_url: "https://api.groq.com/openai/v1".into(),
+                    relay_id: Some("vercel".into()),
+                    ..Default::default()
+                });
+                c.providers.push(ProviderConfig {
+                    id: "plain".into(),
+                    name: "Plain".into(),
+                    base_url: "https://a.dev".into(),
+                    relay_id: None,
+                    ..Default::default()
+                });
+                Ok(())
+            })
+            .expect("seed");
+
+        let _ = relay_slot_delete(
+            State(state.clone()),
+            Json(RelaySlotIdBody { id: "vercel".into() }),
+        )
+        .await
+        .expect("delete ok");
+
+        let cfg = state.config();
+        assert_eq!(
+            cfg.providers[0].relay_id, None,
+            "привязанный провайдер обязан отвязаться"
+        );
+        assert_eq!(cfg.providers[1].relay_id, None, "непривязанный не меняется");
+
+        let events = state.events().since(0);
+        assert!(
+            events.iter().any(|e| e.message.contains("groq") && e.message.contains("напрямую")),
+            "журнал обязан назвать отвязанных провайдеров: {:?}",
+            events.iter().map(|e| e.message.clone()).collect::<Vec<_>>()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Привязка релея PATCH'ем — три формы, которые шлёт селект дашборда:
+    /// id слота сохраняется, несуществующий слот — 400 с его именем,
+    /// `null` снимает привязку («напрямую»).
+    #[tokio::test]
+    async fn patch_provider_relay_id_validates_slot() {
+        let dir = tmp("patchrelay");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let mut cfg = GatewayConfig::default();
+        cfg.relays.push(cloud_routers_core::config::RelaySlot {
+            id: "vercel".into(),
+            kind: "vercel".into(),
+            url: Some("https://v.vercel.app".into()),
+            ..Default::default()
+        });
+        cfg.providers.push(ProviderConfig {
+            id: "mock".into(),
+            name: "Mock".into(),
+            base_url: "https://upstream.example/v1".into(),
+            keys: vec![AccountKey { id: "k1".into(), key: "sk-1".into(), is_active: true, name: None }],
+            ..Default::default()
+        });
+        core_store::save(&dir, &cfg).expect("save");
+        let state = AppState::new(&dir).expect("state");
+
+        // 1. Валидный слот сохраняется в конфиге.
+        let app = crate::server::build(state.clone());
+        let r = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(axum::http::Method::PATCH)
+                    .uri("/api/providers/mock")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"relay_id":"vercel"}"#))
+                    .expect("req"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(r.status(), StatusCode::OK, "валидный слот обязан примениться");
+        assert_eq!(
+            cloud_routers_core::load_config(&dir).providers[0].relay_id.as_deref(),
+            Some("vercel")
+        );
+
+        // 2. Несуществующий слот — 400 с его именем (слоты редактируются в той
+        //    же вкладке, рука дёргается легко).
+        let app = crate::server::build(state.clone());
+        let r = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(axum::http::Method::PATCH)
+                    .uri("/api/providers/mock")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"relay_id":"ghost"}"#))
+                    .expect("req"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "dangling-привязка обязана отклоняться");
+        let bytes = axum::body::to_bytes(r.into_body(), usize::MAX).await.expect("body");
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        assert!(text.contains("ghost"), "ошибка обязана назвать слот: {text}");
+        assert_eq!(
+            cloud_routers_core::load_config(&dir).providers[0].relay_id.as_deref(),
+            Some("vercel"),
+            "отклонённый PATCH не должен менять прежнюю привязку"
+        );
+
+        // 3. `null` — снять привязку, провайдер идёт напрямую.
+        let app = crate::server::build(state);
+        let r = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(axum::http::Method::PATCH)
+                    .uri("/api/providers/mock")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"relay_id":null}"#))
+                    .expect("req"),
+            )
+            .await
+            .expect("response");
+        assert_eq!(r.status(), StatusCode::OK, "null обязан снять привязку");
+        assert_eq!(
+            cloud_routers_core::load_config(&dir).providers[0].relay_id,
+            None,
+            "привязка снята — маршрут напрямую"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Активный слот — релей по умолчанию: новый провайдер получает его
+    /// привязкой, иначе после создания пользователь менял бы «напрямую» на
+    /// релей вручную у каждого нового провайдера. Без активного слота —
+    /// честная привязка «напрямую».
+    #[tokio::test]
+    async fn add_provider_inherits_default_relay() {
+        let dir = tmp("addrelay");
+        let state = AppState::new(&dir).expect("state");
+        state
+            .update_config(|c| {
+                c.relays.push(cloud_routers_core::config::RelaySlot {
+                    id: "vercel".into(),
+                    kind: "vercel".into(),
+                    url: Some("https://v.vercel.app".into()),
+                    ..Default::default()
+                });
+                c.active_relay = Some("vercel".into());
+                Ok(())
+            })
+            .expect("seed");
+        let r = add_provider(
+            State(state.clone()),
+            Json(NewProvider {
+                preset_id: Some("groq".into()),
+                keys: vec![KeySpec::Plain("gsk-1".into())],
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("add");
+        let _ = axum::body::to_bytes(r.into_response().into_body(), usize::MAX).await.expect("body");
+        assert_eq!(
+            state.config().provider("groq").and_then(|p| p.relay_id.clone()).as_deref(),
+            Some("vercel"),
+            "новый провайдер наследует релей по умолчанию"
+        );
+
+        let dir2 = tmp("addnorelay");
+        let state2 = AppState::new(&dir2).expect("state");
+        let r2 = add_provider(
+            State(state2.clone()),
+            Json(NewProvider {
+                preset_id: Some("groq".into()),
+                keys: vec![KeySpec::Plain("gsk-1".into())],
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("add");
+        let _ = axum::body::to_bytes(r2.into_response().into_body(), usize::MAX).await.expect("body");
+        assert_eq!(
+            state2.config().provider("groq").and_then(|p| p.relay_id.clone()),
+            None,
+            "без релея по умолчанию новый провайдер идёт напрямую"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
     }
 
     #[tokio::test]
@@ -2997,11 +3277,11 @@ mod tests {
             )
             .await
             .expect("response");
-        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "не-Gemini апстрим отклоняется планом");
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "апстрим без проверки отклоняется планом");
         let bytes = axum::body::to_bytes(r.into_body(), usize::MAX).await.expect("body");
         let text = String::from_utf8_lossy(&bytes);
         assert!(
-            text.contains("не Gemini"),
+            text.contains("не поддерживается"),
             "валидное тело дошло до планировщика (отказ про апстрим, не про JSON): {text}"
         );
         let _ = std::fs::remove_dir_all(&dir);

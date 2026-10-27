@@ -52,6 +52,9 @@ struct Inner {
     http: reqwest::Client,
     events: EventLog,
     oauth: crate::kiro_oauth::OAuthState,
+    /// Счётчик бесплатных (`:free`) запросов OpenRouter — файл состояния
+    /// рядом с конфигом, операции сериализованы внутри.
+    free_usage: crate::free_usage::FreeUsageState,
     started_at: Instant,
 }
 
@@ -87,6 +90,7 @@ impl AppState {
                 http,
                 events: EventLog::new(),
                 oauth: crate::kiro_oauth::OAuthState::new(),
+                free_usage: crate::free_usage::FreeUsageState::new(data_dir),
                 started_at: Instant::now(),
             }),
         })
@@ -114,6 +118,11 @@ impl AppState {
 
     pub fn oauth_state(&self) -> &crate::kiro_oauth::OAuthState {
         &self.inner.oauth
+    }
+
+    /// Счётчик бесплатных (`:free`) запросов OpenRouter.
+    pub fn free_usage(&self) -> &crate::free_usage::FreeUsageState {
+        &self.inner.free_usage
     }
 
     /// Снимок конфигурации.

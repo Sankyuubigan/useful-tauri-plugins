@@ -15,6 +15,12 @@
 //
 // Абсолютный URL цели приходит в x-target-url. Схема «x-target-host + pathname»
 // даёт двойной /v1 у провайдеров, чей base_url уже заканчивается на /v1.
+//
+// РУЧНОЙ ДЕПЛОЙ. В Vercel-проекте этот файл кладётся как api/relay.js, а рядом
+// обязателен vercel.json с rewrite «все пути → воркер»:
+//   { "rewrites": [{ "source": "/(.*)", "destination": "/api/relay" }] }
+// Без него Vercel не зарегистрирует маршрут и деплой-URL ответит NOT_FOUND на
+// любой путь (регресс 27.10.2026: [...path].js без vercel.json не поднялся).
 
 export const config = { runtime: 'edge' }
 

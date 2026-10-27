@@ -306,7 +306,7 @@ fn state_for(base_url: &str, keys: Vec<AccountKey>) -> (AppState, std::path::Pat
         name: "Mock".into(),
         base_url: base_url.to_string(),
         is_enabled: true,
-        use_relay: false,
+        relay_id: None,
         keys,
         // Модели уже «обнаружены»: без них провайдер не маршрутизируем, а цель
         // этих тестов — не опрос моделей, а прокси и ротация.
@@ -804,6 +804,7 @@ async fn ping_provider_reports_latency_and_model_count() {
 
 fn gemini_check_plan(base: &str) -> crate::key_check::CheckPlan {
     crate::key_check::CheckPlan {
+        kind: crate::key_check::KeyCheckKind::GeminiCountTokens,
         models: vec!["gemini-2.0-flash".into()],
         via_relay: false,
         target_urls: vec![format!("{base}/v1beta/models/gemini-2.0-flash:countTokens")],
@@ -902,5 +903,153 @@ async fn key_check_secret_travels_only_in_x_goog_api_key() {
         headers
     );
     assert!(!headers.iter().any(|h| h == "authorization"), "Authorization запрещён: {:?}", headers);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ───────────────────────── проверка ключей OpenRouter ─────────────────────────
+
+/// Записи эхо-релея: что дошло (метод, цель, токен) — на каждый запрос.
+#[derive(Default)]
+struct RelayEcho {
+    /// (метод, x-target-url, x-relay-token) каждого запроса.
+    hits: Mutex<Vec<(String, String, String)>>,
+}
+
+impl RelayEcho {
+    fn hits(&self) -> Vec<(String, String, String)> {
+        self.hits.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+}
+
+/// Эхо-релей: не ходит к цели (сеть до апстрима — не предмет теста), а
+/// ЗАПИСЫВАЕТ заголовки релей-протокола и отвечает телом ключ-инфо. Предмет
+/// проверки — что run_plan ДОСТАВИЛ x-target-url и x-relay-token слота.
+async fn relay_echo(
+    State(s): State<Arc<RelayEcho>>,
+    method: axum::http::Method,
+    headers: HeaderMap,
+) -> Response {
+    let get = |name: &str| {
+        headers.get(name).and_then(|v| v.to_str().ok()).unwrap_or("").to_string()
+    };
+    s.hits
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .push((
+            method.as_str().to_ascii_uppercase(),
+            get(crate::upstream::HDR_TARGET_URL),
+            get(crate::upstream::HDR_RELAY_TOKEN),
+        ));
+    (
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        r#"{"data":{"label":"my-key","is_free_tier":true,"usage":0.42,"usage_daily":0.03,"limit":10.0,"limit_remaining":9.97,"limit_reset":"daily"}}"#,
+    )
+        .into_response()
+}
+
+/// Поднять эхо-релей на свободном порту, вернуть базовый URL.
+async fn relay_echo_serve(echo: Arc<RelayEcho>) -> String {
+    let router = Router::<Arc<RelayEcho>>::new().fallback(relay_echo).with_state(echo.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind relay");
+    let addr: SocketAddr = listener.local_addr().expect("addr");
+    tokio::spawn(async move { let _ = axum::serve(listener, router).await; });
+    format!("http://127.0.0.1:{}", addr.port())
+}
+
+/// Проверка ключей OpenRouter через релей: GET /key едет к эхо-релею с
+/// абсолютной целью и токеном слота, ответ спарсивается, кап free-тира — 50.
+/// Прямого запроса к openrouter.ai из теста быть не может (127.0.0.1-эхо) —
+/// любой уход «напрямую» не дал бы тесту пройти.
+#[tokio::test]
+async fn openrouter_key_check_travels_through_relay_with_target_headers() {
+    let echo = Arc::new(RelayEcho::default());
+    let relay_base = relay_echo_serve(echo.clone()).await;
+
+    let (state, dir) = state_for("https://openrouter.ai/api/v1", vec![key("k1", "sk-or-1", true)]);
+    state
+        .update_config(|c| {
+            c.relays.push(cloud_routers_core::config::RelaySlot {
+                id: "vercel".into(),
+                kind: "vercel".into(),
+                url: Some(relay_base),
+                relay_secret: Some("s3cret".into()),
+                ..Default::default()
+            });
+            if let Some(p) = c.provider_mut("mock") {
+                p.relay_id = Some("vercel".into());
+            }
+            Ok(())
+        })
+        .expect("seed relay");
+
+    let provider = state.config().provider("mock").expect("provider").clone();
+    let config = state.config();
+    let plan = crate::openrouter_check::build_openrouter_plan(&provider, &config).expect("plan");
+    assert!(plan.via_relay, "план обязан идти через релей");
+
+    let summary = crate::key_check::run_plan(&state, &provider, plan).await.expect("run plan");
+
+    // Релей-протокол доставлен: метод GET, абсолютная цель {base}/key, токен слота.
+    let hits = echo.hits();
+    assert_eq!(hits.len(), 1, "один ключ — один запрос: {:?}", hits);
+    assert_eq!(hits[0].0, "GET", "OpenRouter-проверка — GET, не POST");
+    assert_eq!(hits[0].1, "https://openrouter.ai/api/v1/key", "цель абсолютная");
+    assert_eq!(hits[0].2, "s3cret", "токен — секрет слота провайдера");
+
+    // Ответ спарсился в структурные поля, вердикт валиден.
+    let r0 = &summary.results[0];
+    assert_eq!(r0.verdict, crate::key_check::CheckVerdict::Valid);
+    assert_eq!(r0.model, "key", "маркер ключевой цели");
+    let info = r0.openrouter.as_ref().expect("ключ-инфо парсится");
+    assert_eq!(info.is_free_tier, Some(true));
+    assert_eq!(info.usage_daily, Some(0.03));
+    assert_eq!(info.limit, Some(10.0));
+    assert_eq!(info.limit_remaining, Some(9.97));
+    assert_eq!(info.limit_reset.as_deref(), Some("daily"));
+    assert!(r0.detail.is_empty(), "JSON-тело валидного ответа в detail не нужно: {}", r0.detail);
+
+    // Сводка счётчика: чат-запросов не было — счёт 0; кап от free-тира — 50.
+    let fu = summary.free_usage.as_ref().expect("free_usage только для OpenRouter");
+    assert_eq!(fu.provider_id, "mock");
+    assert_eq!(fu.count, 0);
+    assert_eq!(fu.cap, Some(crate::openrouter_check::FREE_DAILY_CAP_FREE_KEY));
+    assert_eq!(fu.ymd, crate::free_usage::today_ymd());
+    assert!(summary.via_relay);
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Релей без секрета — отказ ДО сети с читаемой причиной (не прямой запрос).
+#[tokio::test]
+async fn openrouter_key_check_rejects_relay_without_secret() {
+    let echo = Arc::new(RelayEcho::default());
+    let relay_base = relay_echo_serve(echo.clone()).await;
+
+    let (state, dir) = state_for("https://openrouter.ai/api/v1", vec![key("k1", "sk-or-1", true)]);
+    state
+        .update_config(|c| {
+            c.relays.push(cloud_routers_core::config::RelaySlot {
+                id: "cf".into(),
+                kind: "cloudflare".into(),
+                url: Some(relay_base),
+                relay_secret: None,
+                ..Default::default()
+            });
+            if let Some(p) = c.provider_mut("mock") {
+                p.relay_id = Some("cf".into());
+            }
+            Ok(())
+        })
+        .expect("seed relay");
+
+    let provider = state.config().provider("mock").expect("provider").clone();
+    let config = state.config();
+    let err = crate::openrouter_check::build_openrouter_plan(&provider, &config)
+        .expect_err("секрет релея обязателен");
+    assert!(err.contains("секрет"), "{err}");
+
+    // До сети дело не дошло: эхо-релей не получил ни одного запроса.
+    assert!(echo.hits().is_empty(), "прямой запрос молча не шёл: {:?}", echo.hits());
     let _ = std::fs::remove_dir_all(&dir);
 }

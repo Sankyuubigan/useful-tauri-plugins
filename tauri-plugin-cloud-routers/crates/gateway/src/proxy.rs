@@ -183,9 +183,17 @@ pub async fn chat_completions(state: axum::extract::State<AppState>, headers: He
 
     let mut last: Option<Response> = None;
     let mut attempted: Vec<String> = Vec::new();
+    // Запрос расходует дневную бесплатную квоту OpenRouter (`:free`-модель)?
+    // Предикат чистый, вычисляется один раз до цикла.
+    let count_free = crate::free_usage::counts_toward_free_limit(&provider, &upstream_model);
 
     for (key_id, api_key) in attempts {
         attempted.push(key_id.clone());
+        // OpenRouter засчитывает НЕУДАЧНЫЕ попытки тоже — инкремент до запроса,
+        // на каждую пару ключ/ретрай (одна точка, не рассыпать).
+        if count_free {
+            state.free_usage().increment(&provider_id);
+        }
 
         let up = match adapter.chat_request(
             &provider,
@@ -229,6 +237,29 @@ pub async fn chat_completions(state: axum::extract::State<AppState>, headers: He
             Some(kind) => {
                 // ── Отказ, который имеет смысл повторить ────────────────────
                 let retry_after = parse_retry_after(response.headers().get("retry-after").and_then(|v| v.to_str().ok()));
+                // Платформенный 429 — истина о расходе дневной квоты:
+                // синхронизируем счётчик заголовками (best-effort — заголовков
+                // нет, ничего не меняем: попытка уже посчитана инкрементом).
+                if count_free && status.as_u16() == 429 {
+                    let parse_num = |name: &str| {
+                        response
+                            .headers()
+                            .get(name)
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|v| v.trim().parse::<u64>().ok())
+                    };
+                    match (parse_num("x-ratelimit-limit"), parse_num("x-ratelimit-remaining")) {
+                        (Some(limit), Some(remaining)) => {
+                            state.free_usage().correct(&provider_id, limit, remaining);
+                        }
+                        _ => {
+                            state.events().warn(format!(
+                                "429 «{}»: заголовков X-RateLimit нет — счётчик бесплатных запросов оставлен как есть (инкремент)",
+                                provider_id
+                            ));
+                        }
+                    }
+                }
                 let detail = response.text().await.unwrap_or_default();
                 let is_oauth = key_id == "oauth";
                 if !is_oauth {
@@ -785,11 +816,18 @@ mod tests {
         let dir = std::env::temp_dir().join("cr_gw_proxy_relaycfg");
         let _ = std::fs::remove_dir_all(&dir);
         let mut cfg = cloud_routers_core::GatewayConfig::default();
+        // Провайдер привязан к слоту релея, у которого URL не задан (разворачивали
+        // настройки, но воркер ещё не деплоился) — конфигурационная ошибка.
+        cfg.relays.push(cloud_routers_core::config::RelaySlot {
+            id: "vercel".into(),
+            kind: cloud_routers_core::config::RELAY_KIND_VERCEL.into(),
+            ..Default::default()
+        });
         cfg.providers.push(ProviderConfig {
             id: "groq".into(),
             name: "Groq".into(),
             base_url: "https://api.groq.com/openai/v1".into(),
-            use_relay: true,
+            relay_id: Some("vercel".into()),
             keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true, name: None }],
             models: vec![cloud_routers_core::DiscoveredModel { id: "m1".into(), ..Default::default() }],
             ..Default::default()

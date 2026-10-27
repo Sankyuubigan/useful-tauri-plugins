@@ -25,11 +25,18 @@ export async function refreshAll() {
     const [status, config] = await Promise.all([api('/api/status'), api('/api/config')]);
     state.status = status;
     state.config = config;
+    // Слоты релеев — ДО рендера провайдеров: селект привязки в карточке
+    // рисует опции из state.relaySlots. Слоты не критичны для страницы:
+    // при отказе селект показывает только «напрямую», вкладка «Релей» — пустоту.
+    let slots = null;
+    try { slots = await api('/api/relay/slots'); } catch { /* не критично */ }
+    state.relaySlots = slots ? (slots.slots || []) : [];
+    state.activeRelay = slots ? (slots.active ?? null) : null;
     renderHeader();
     renderProviders();
     renderModels();
     renderRelay();
-    void loadRelaySlots();
+    renderRelaySlots(slots);
   } catch (e) {
     fail('Не удалось загрузить настройки', e);
   }
@@ -181,15 +188,9 @@ function relayKindSync() {
 
 const SLOT_KIND_NAMES = { vercel: 'Vercel', cloudflare: 'Cloudflare Workers' };
 
-async function loadRelaySlots() {
-  try {
-    const r = await api('/api/relay/slots');
-    renderRelaySlots(r);
-  } catch (e) { /* слоты не блокируют остальную страницу */ }
-}
-
 function renderRelaySlots(r) {
   const box = $('#relay-slots');
+  if (!box) return;
   const slots = (r && r.slots) || [];
   if (!slots.length) {
     box.innerHTML =
@@ -208,11 +209,11 @@ function renderRelaySlots(r) {
     return `<div class="gw-card">` +
       `<div class="gw-card-head"><span class="gw-name">${esc(SLOT_KIND_NAMES[s.kind] || s.kind)}</span>` +
       `<span class="gw-id">${esc(s.id)}</span>` +
-      `${s.active ? '<span class="gw-badge">активен</span>' : ''}</div>` +
+      `${s.active ? '<span class="gw-badge">по умолчанию</span>' : ''}</div>` +
       urlRow + cfRows +
       `<div class="gw-kv"><span>Секрет RELAY_TOKEN</span><b>${secret}</b></div>` +
       `<div class="gw-row">` +
-      `${s.active ? '' : `<button class="gw-ghost" data-slot-activate="${esc(s.id)}">Сделать активным</button>`}` +
+      `${s.active ? '' : `<button class="gw-ghost" data-slot-activate="${esc(s.id)}">Назначить по умолчанию</button>`}` +
       `<button class="gw-ghost" data-slot-delete="${esc(s.id)}">Удалить</button>` +
       `</div></div>`;
   }).join('');
@@ -226,7 +227,7 @@ async function activateRelaySlot(id, btn) {
   busy(btn, true);
   try {
     await api('/api/relay/slots/activate', { method: 'POST', body: JSON.stringify({ id }) });
-    toast(`Активный релей: ${id}`);
+    toast(`Релей по умолчанию: ${id}`);
     await refreshAll();
     notifyHost('relay-slot-activated');
   } catch (e) { fail('Не удалось переключить релей', e); }
@@ -234,7 +235,7 @@ async function activateRelaySlot(id, btn) {
 }
 
 async function deleteRelaySlot(id, btn) {
-  if (!window.confirm(`Удалить релей «${id}»? Если он активен, провайдеры с галочкой «через релей» перестанут работать.`)) return;
+  if (!window.confirm(`Удалить релей «${id}»? Удалится только привязка в шлюзе — воркер на Vercel/Cloudflare останется работать; чтобы его убрать, удаляйте деплой в панели соответствующего сервиса. Провайдеры, привязанные к этому релею, потеряют привязку и пойдут напрямую.`)) return;
   busy(btn, true);
   try {
     await api('/api/relay/slots/delete', { method: 'POST', body: JSON.stringify({ id }) });

@@ -137,8 +137,12 @@ SSE-передаётся чанками через `Body::from_stream`, без �
 ## Релей (Vercel Edge)
 
 Нужен, когда провайдер недоступен из сети пользователя. Запрос уходит через
-Edge-функцию: `assets/relay-worker.js`, ставится на Vercel как
-`api/gateway/[...path].js`.
+Edge-функцию: `assets/relay-worker.js`. Деплой кладёт в проект три файла:
+`package.json`, `api/relay.js` (воркер) и `vercel.json` с rewrite
+`/(.*) → /api/relay`. Rewrite обязателен: без него Vercel не регистрирует
+маршрут и деплой-URL отвечает `NOT_FOUND` на любой путь (регресс 27.10.2026 —
+воркер в `api/gateway/[...path].js` без `vercel.json` не поднялся функцией).
+Ручной деплой повторяет ту же форму.
 
 Шлюз передаёт **абсолютный** URL цели в `x-target-url`, а не пару
 «хост + путь»: склейка host и pathname даёт у провайдеров, чей `base_url`

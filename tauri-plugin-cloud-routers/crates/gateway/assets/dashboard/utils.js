@@ -19,6 +19,10 @@ export const state = {
   events: [],
   lastSeq: 0,
   logTimer: null,
+  // Слоты релеев (/api/relay/slots): селект привязки в карточке провайдера
+  // рисует опции из relaySlots, activeRelay — слот по умолчанию.
+  relaySlots: [],
+  activeRelay: null,
 };
 
 export async function api(path, options = {}) {

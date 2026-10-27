@@ -72,7 +72,7 @@
     <div class="gw-kv"><span>URL</span><b id="relay-url">—</b></div>
     <div class="gw-kv"><span>Секрет</span><b id="relay-token">—</b></div>
     <div class="gw-row">
-      <button id="btn-relay-test" class="gw-ghost">Проверить активный релей</button>
+      <button id="btn-relay-test" class="gw-ghost">Проверить релей по умолчанию</button>
       <a id="relay-worker-link" class="gw-ghost gw-btn" target="_blank" rel="noopener"
          href="/api/relay/worker">Исходник воркера (Vercel)</a>
     </div>
@@ -83,9 +83,10 @@
     <h3>Мои релеи</h3>
     <div id="relay-slots" class="gw-cards"></div>
     <div class="gw-hint">
-      Активный релей обслуживает провайдеров с галочкой «через релей».
-      Остальные хранятся напоследок — включаются кнопкой «Сделать активным».
-      Секрет <code>RELAY_TOKEN</code> общий для всех релеев.
+      Каждый провайдер выбирает свой релей в своей карточке на вкладке
+      «Провайдеры»; новые провайдеры наследуют релей по умолчанию (кнопка
+      «Назначить по умолчанию»). Секрет <code>RELAY_TOKEN</code> общий для всех
+      релеев.
     </div>
   </div>
 
@@ -143,7 +144,7 @@
 
   <div class="gw-card">
     <h3>Маршрутизация через релей</h3>
-    <div class="gw-hint">Для каждого провайдера галочка «через релей» в карточке на вкладке «Провайдеры».</div>
+    <div class="gw-hint">Для каждого провайдера — селект «релей» в его карточке на вкладке «Провайдеры».</div>
   </div>
 </section>
 

@@ -217,10 +217,16 @@ mod tests {
         // x-relay-token» на «Обновить модели» любого relay-провайдера.
         let p = OpenAiProtocol;
         let mut provider = provider();
-        provider.use_relay = true;
+        // Релей назначается провайдеру привязкой к слоту (27.10.2026).
+        provider.relay_id = Some("vercel".into());
         let cfg = GatewayConfig {
-            vercel_relay_url: Some("https://relay.workers.dev".into()),
-            vercel_relay_token: Some("s3cret".into()),
+            relays: vec![cloud_routers_core::config::RelaySlot {
+                id: "vercel".into(),
+                kind: cloud_routers_core::config::RELAY_KIND_VERCEL.into(),
+                url: Some("https://relay.workers.dev".into()),
+                relay_secret: Some("s3cret".into()),
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let req = p.models_request(&provider, &cfg, "gsk-1").expect("req");

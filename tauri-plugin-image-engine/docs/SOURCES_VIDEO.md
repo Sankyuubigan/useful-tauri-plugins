@@ -42,23 +42,51 @@ Community License). Пользователь принимает лицензию
 - **Видео-референсы не рекомендуются** авторами воркфлоу (медленно, плохо
   следование).
 
-## Turbo-LoRA / разгон — гипотезы, НЕ внедрено (требует bench)
+## Turbo-LoRA — внедрено: DMAD 4-step (бенч 26.10.26)
 
-Поле `lora[]` в vid_gen есть, но LoRA для H3 в docs/minimax_h3.md НЕ
-документированы (проверено grep). Кандидаты будущих фаз:
+Поле `lora[]` vid_gen подтверждено живым прогоном (замер —
+`king_orch_3/test/bench/video_h3_turbo/`, гейты — `tasks/26.10.26 Ускорение
+видео H3 — turbo-LoRA бенч (Фаза 0-1).md`):
 
-- **DMAD 4-шага (ByteDance)**: `https://huggingface.co/ZhengmingYu/DMAD/tree/main/minimax_h3`
+- **Файл**: `ZhengmingYu/DMAD/minimax_h3/dmad_minimax_h3_4step_full_critic.safetensors`
+  (1 383 674 320 Б, diffusers-формат, rank-128, 312 модулей) — в каталоге роль
+  `lora_draft`, доставка кнопкой «Скачать» (как остальные файлы бандла).
+- **Доказательство применения**: `server_dmad4.log:165` —
+  `lora.hpp:1046 — (600 / 600) LoRA tensors have been applied` (runtime,
+  без Python). В файле 624 тензора: 24 token_refiner не видны в счётчике —
+  риск качества закрывает A/B юзера.
+- **Условие (операционная точка DMAD, README)**: 4 шага, cfg 1.0,
+  **lcm-сэмплер + simple-шедулер, flow_shift 12** — «ODE samplers such as euler
+  are not their operating point». euler/discrete остаётся путём final и
+  draft-без-LoRA. Все четыре параметра — поля каталога (`steps_draft`,
+  `turbo_sampler`, `turbo_scheduler`, `turbo_flow_shift`), код их не дублирует.
+- **Скорость (q4km, 5 с, 864×480, seed 42)**: dmad4 медиана **130.8 с** против
+  ctrl20f (final, 20 шагов euler) **505.6 с** → **3.87×** (гейт ≥2.5× PASS);
+  dmad8 255.8 с. VRAM-пик 15.6 ГБ.
+- **Серверный контракт**: спавн с `--lora-model-dir <папка бандла>`, в payload
+  `lora[].path` — имя файла относительно этого каталога (temp/api.md:332-333,
+  1201-1207).
+- **`flow_shift: 0.0` запрещён** — вырожденная сигма-сетка → CUDA crash
+  (диагностика матрицей 2×2, `diag_report.json`); payload опускает ключ при
+  отсутствии явного shift, валидатор каталога отклоняет неположительный
+  `turbo_flow_shift`.
+
+Кандидаты на будущее (НЕ внедрено, без замеров):
+
+- **RunningHubAI `rh-minimax-h3-dmd-fl2va-8step-turbo-pruned`** (8 шагов,
+  обучен на pruned fl2va; ComfyUI-формат ключей) — запасной, если DMAD-ключи
+  на другом кванте не лягут.
 - **Merge LoRA Larry step-6**: `https://huggingface.co/noname1992/loras/tree/main`
 - **FastH3 DMD2 4-step (FastVideo)**
 - **lightx2v** (как для Wan-стека)
-- **De-oil LoRA** (снимает «oily skin»/выжженные блики H3) — из ролика
-  t02ttse7Qhw; кандидат в постоянный пост-набор.
+- **De-oil LoRA** (снимает «oily skin»/выжженные блики H3) — кандидат в
+  постоянный пост-набор.
 - **Character Swap LoRA v1.5**: `https://huggingface.co/akatz-ai/MiniMax-H3-Character-Swap-LoRA`
-  (safetensors) — кандидат в роль `lora_swap`; тест «грузит ли vid_gen
-  safetensors-LoRA у H3» — отдельный bench.
+  — кандидат в роль `lora_swap`; отдельный bench.
 
-Статус каждой — только после замера; до тех пор работает 6-шаговый draft
-(`steps_draft_nolora`) без LoRA.
+Статус каждой — только после замера; до подтверждения работает
+`steps_draft_nolora` (6 шагов euler) без LoRA (роль lora_draft есть, файла
+нет → fallback сэмплинг-плана).
 
 ## Качество/апскейл — будущие фазы (справочно, НЕ внедряем)
 

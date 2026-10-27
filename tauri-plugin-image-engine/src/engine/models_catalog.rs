@@ -179,10 +179,13 @@ pub fn bundle_weights_files(
 
 /// Дефолтный пресет генерации видео-бандла (SSOT — тот же принцип, что у image).
 ///
-/// steps_draft — шаги черновика с Turbo-LoRA (по воркфлоу ролика Ngc6vmyGOyU:
-/// черновик 3 шага); если `lora_draft`-файл отсутствует в бандле (LoRA ещё
-/// не подтверждена бенчем) — движок берёт steps_draft_nolora (6) и логирует
-/// факт. steps_final — качество-режим (20 шагов, замер ролика Ngc6vmyGOyU).
+/// steps_draft — шаги черновика при наличии Turbo-LoRA (операционная точка
+/// DMAD 4-step, подтверждена бенчем 26.10.26: 130.8 с против 505.6 с у final,
+/// 3.87×); если `lora_draft`-файл отсутствует в бандле — движок берёт
+/// steps_draft_nolora (6) и логирует факт. steps_final — качество-режим
+/// (20 шагов, замер ролика Ngc6vmyGOyU). Турбо-точка сэмплинга —
+/// turbo_sampler/turbo_scheduler/turbo_flow_shift (lcm/simple/12.0); euler
+/// остаётся путём final и draft-без-LoRA.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct VideoPreset {
     /// Шаги черновика при наличии Turbo-LoRA (из каталога, не из кода).
@@ -210,6 +213,16 @@ pub struct VideoPreset {
     pub width: u32,
     #[serde(default = "v_height")]
     pub height: u32,
+    /// Сэмплер турбо-точки (DMAD: lcm; euler — НЕ операционная точка DMAD).
+    #[serde(default = "v_turbo_sampler")]
+    pub turbo_sampler: String,
+    /// Шедулер турбо-точки (DMAD: simple).
+    #[serde(default = "v_turbo_scheduler")]
+    pub turbo_scheduler: String,
+    /// flow_shift турбо-точки (DMAD: 12.0). 0.0 у H3 вырождает сигма-сетку →
+    /// CUDA crash — запрещён валидатором всегда (бенч 26.10.26, diag_report).
+    #[serde(default = "v_turbo_flow_shift")]
+    pub turbo_flow_shift: f32,
 }
 
 fn v_steps_draft() -> u32 { 3 }
@@ -222,6 +235,9 @@ fn v_sampler() -> String { "euler".to_string() }
 fn v_seed() -> i64 { -1 }
 fn v_width() -> u32 { 864 }
 fn v_height() -> u32 { 480 }
+fn v_turbo_sampler() -> String { "lcm".to_string() }
+fn v_turbo_scheduler() -> String { "simple".to_string() }
+fn v_turbo_flow_shift() -> f32 { 12.0 }
 
 impl Default for VideoPreset {
     fn default() -> Self {
@@ -236,12 +252,15 @@ impl Default for VideoPreset {
             seed: v_seed(),
             width: v_width(),
             height: v_height(),
+            turbo_sampler: v_turbo_sampler(),
+            turbo_scheduler: v_turbo_scheduler(),
+            turbo_flow_shift: v_turbo_flow_shift(),
         }
     }
 }
 
 /// Один бандл видео-каталога. Роли файлов: "diffusion" | "llm" | "vae" |
-/// "audio_vae" (+ опционально "lora_draft" после бенча Turbo-LoRA).
+/// "audio_vae" | "lora_draft" (Turbo-LoRA DMAD 4-step, бенч 26.10.26).
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct VideoBundleEntry {
     pub name: String,
@@ -316,6 +335,29 @@ pub fn validate_video_entry(entry: &VideoBundleEntry) -> Result<(), String> {
     }
     if entry.preset.sampler.trim().is_empty() {
         return Err("пустой sampler".to_string());
+    }
+    // flow_shift 0.0 у H3 вырождает сигма-сетку → CUDA illegal memory access
+    // (любой сэмплер; бенч 26.10.26, test/bench/video_h3_turbo/diag_report.json,
+    // матрица 2×2). Делаем отказ структурно невозможным: неположительный shift
+    // запрещён ВСЕГДА, не только в турбо-ветке.
+    if entry.preset.turbo_flow_shift <= 0.0 {
+        return Err(format!(
+            "turbo_flow_shift = {} — 0.0 у H3 вырождает сигма-сетку → CUDA crash (бенч 26.10.26); \
+             положительный shift обязателен всегда",
+            entry.preset.turbo_flow_shift
+        ));
+    }
+    // Бандл с ролью lora_draft обязан описать турбо-точку целиком: сэмплер и
+    // шедулер непусты (shift уже проверен выше). Иначе draft-ветка ушла бы в
+    // несуществующую операционную точку DMAD.
+    if entry.files.iter().any(|f| f.role == "lora_draft")
+        && (entry.preset.turbo_sampler.trim().is_empty() || entry.preset.turbo_scheduler.trim().is_empty())
+    {
+        return Err(
+            "в бандле есть роль lora_draft, но turbo_sampler/turbo_scheduler пусты — \
+             операционная точка Turbo-LoRA обязана быть описана в каталоге (SSOT)"
+                .to_string(),
+        );
     }
     Ok(())
 }
@@ -577,7 +619,7 @@ mod video_tests {
     fn video_buttons_follow_prp_numbers() {
         let catalog = load_video_catalog();
         for e in &catalog {
-            assert_eq!(e.preset.steps_draft, 3, "draft с Turbo-LoRA = 3 шага (Ngc6vmyGOyU) у {}", e.name);
+            assert_eq!(e.preset.steps_draft, 4, "draft с Turbo-LoRA = 4 шага (операционная точка DMAD, бенч 26.10.26) у {}", e.name);
             assert_eq!(e.preset.steps_draft_nolora, 6, "fallback без LoRA = 6 шагов у {}", e.name);
             assert_eq!(e.preset.steps_final, 20, "final = 20 шагов у {}", e.name);
             assert_eq!(e.preset.fps, 24);
@@ -589,6 +631,51 @@ mod video_tests {
             // SSOT: H3 без model-args (икс ключей нет) — и не должно быть.
             assert!(e.model_args.is_none(), "{}: model_args не должен быть", e.name);
         }
+    }
+
+    /// Turbo-точка DMAD во всех записях каталога: роль lora_draft +
+    /// lcm/simple/shift12, записи проходят валидацию (бенч 26.10.26).
+    #[test]
+    fn turbo_fields_valid_for_all_video_entries() {
+        let catalog = load_video_catalog();
+        assert!(!catalog.is_empty(), "каталог не должен быть пуст");
+        for e in &catalog {
+            let roles: Vec<&str> = e.files.iter().map(|f| f.role.as_str()).collect();
+            assert!(roles.contains(&"lora_draft"), "нет роли lora_draft у {}", e.name);
+            assert_eq!(e.preset.turbo_sampler, "lcm", "операционная точка DMAD: lcm у {}", e.name);
+            assert_eq!(e.preset.turbo_scheduler, "simple", "операционная точка DMAD: simple у {}", e.name);
+            assert!((e.preset.turbo_flow_shift - 12.0).abs() < f32::EPSILON, "турбо shift 12.0 у {}", e.name);
+            // Полный прогон валидатора — запись с lora_draft обязана проходить.
+            validate_video_entry(e).unwrap_or_else(|err| panic!("{}: {}", e.name, err));
+        }
+    }
+
+    /// Краш-регрессия 26.10.26: flow_shift 0.0 у H3 = CUDA crash. Валидатор
+    /// обязан отказать записи с неположительным turbo_flow_shift (и с
+    /// lora_draft, и без), упоминая flow_shift.
+    #[test]
+    fn video_entry_with_zero_turbo_flow_shift_is_rejected() {
+        let base = video_bundle_by_name("minimax_h3_fl2va_pruned-q4km").expect("бандл");
+        // С lora_draft: 0.0 → отказ с именем поля.
+        let mut bad = base.clone();
+        bad.preset.turbo_flow_shift = 0.0;
+        let msg = validate_video_entry(&bad).unwrap_err();
+        assert!(msg.contains("flow_shift"), "валидатор должен называть flow_shift, got: {}", msg);
+        // Без lora_draft — тоже отказ: неположительный shift запрещён всегда.
+        let mut bad_no_lora = base.clone();
+        bad_no_lora.files.retain(|f| f.role != "lora_draft");
+        bad_no_lora.preset.turbo_flow_shift = 0.0;
+        let msg2 = validate_video_entry(&bad_no_lora).unwrap_err();
+        assert!(msg2.contains("flow_shift"), "запрет 0.0 действует всегда, got: {}", msg2);
+        // lora_draft без описания турбо-сэмплера — отказ (точка неполна).
+        let mut bad_empty_turbo = base;
+        bad_empty_turbo.preset.turbo_sampler = "  ".to_string();
+        let msg3 = validate_video_entry(&bad_empty_turbo).unwrap_err();
+        assert!(
+            msg3.contains("turbo_sampler"),
+            "lora_draft требует непустую турбо-точку, got: {}",
+            msg3
+        );
     }
 
     #[test]
@@ -609,8 +696,8 @@ mod video_tests {
             q4km.vram_min_gb.unwrap_or(0.0) > q3k.vram_min_gb.unwrap_or(0.0),
             "Q4_K обязан требовать больше VRAM, чем Q3_K"
         );
-        // Полный бандл — 4 файла; and_sizes точные из API unsloth (не «примерно»).
-        assert_eq!(q4km.files.len(), 4);
+        // Полный бандл — 4 файла + lora_draft (Turbo-LoRA DMAD, бенч 26.10.26).
+        assert_eq!(q4km.files.len(), 5);
         let diff = |e: &VideoBundleEntry, role: &str| {
             e.files
                 .iter()

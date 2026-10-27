@@ -984,7 +984,8 @@ fn default_video_out_path(bundle_dir: &Path) -> PathBuf {
 
 /// vid_gen-запрос из GUI: промпт + опциональные кадры (локальные пути или
 /// data-URL') + параметры. Дефолты размеров/качества/seed/fps — ИЗ ПРЕСЕТА
-/// каталога; draft/final решает steps_for_quality по наличию файла lora_draft.
+/// каталога; draft/final решает sampling_plan_for_quality по наличию файла
+/// lora_draft (турбо-точка lcm/simple/shift из каталога).
 #[tauri::command]
 pub async fn generate_video(
     app: AppHandle,
@@ -1021,10 +1022,13 @@ pub async fn generate_video(
     let h = height.unwrap_or(preset.height);
     let cfgs = cfg_scale.unwrap_or(preset.cfg_scale);
     let sd = seed.unwrap_or(preset.seed);
-    let st = match steps {
-        Some(s) => s,
-        None => engine::steps_for_quality(&entry, &bdir, final_quality.unwrap_or(false)),
-    };
+    // Сэмплинг-план (шаги/сэмплер/шедулер/shift/LoRA) — из каталога; явные
+    // шаги переопределяют ТОЛЬКО шаги, остальная турбо-точка не трогается.
+    let mut plan = engine::sampling_plan_for_quality(&entry, &bdir, final_quality.unwrap_or(false));
+    if let Some(s) = steps {
+        plan.steps = s;
+    }
+    let st = plan.steps;
     // Лимит каталога — честный clamp с warn (сетку кадров всё равно держит сервер).
     let mut secs = seconds.unwrap_or(5);
     if secs == 0 {
@@ -1073,6 +1077,10 @@ pub async fn generate_video(
         fps,
         vae_tiling: vae_tiling.unwrap_or(true),
         strength: strength.unwrap_or(0.75),
+        sample_method: plan.sample_method,
+        scheduler: plan.scheduler,
+        flow_shift: plan.flow_shift,
+        lora: plan.lora,
     };
 
     let out = out_path.map(PathBuf::from).unwrap_or_else(|| default_video_out_path(&bdir));

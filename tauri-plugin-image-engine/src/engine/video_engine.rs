@@ -16,8 +16,10 @@
 //!   сетка 17k+5) — клиент шлёт кадры как есть и честно отдаёт `frame_count`.
 //! - `ref_images` валиден только для H3 Ref2VA и не смешивается с
 //!   `init_image`/`end_image`; `control_frames` H3 не поддерживает — пусто.
-//! - `lora[]` поле API существует, но Turbo-LoRA для H3 vid_gen — гипотеза до
-//!   бенча (docs/minimax_h3.md LoRA не документирует): фаза 1 — не шлём.
+//! - `lora[]` подтверждён бенчем 26.10.26 (600/600 тензоров DMAD applied,
+//!   dmad4 130.8 с против ctrl20f 505.6 с): поле шлётся из сэмплинг-плана
+//!   `sampling_plan_for_quality` (draft с файлом роли lora_draft); путь
+//!   относительно `--lora-model-dir` (спавн, папка бандла).
 //!
 //! Жизнь — per-request spawn: создал → сгенерировал → Drop убил дерево.
 
@@ -29,7 +31,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::engine::models_catalog::{bundle_files_weights, video_bundle_disk_bytes, VideoBundleEntry};
+use crate::engine::models_catalog::{bundle_files_weights, video_bundle_disk_bytes, BundleFile, VideoBundleEntry};
 use crate::engine::process_util::{
     assign_child_to_kill_job, kill_process_tree, register_engine_pid, unregister_engine_pid,
 };
@@ -100,6 +102,31 @@ pub fn resolve_mode(init: Option<&str>, end: Option<&str>, refs: &[String]) -> R
     }
 }
 
+/// Одна LoRA vid_gen-запроса. `path` — ОТНОСИТЕЛЬНО каталога LoRA сервера
+/// (`--lora-model-dir`; контракт temp/api.md:1201-1207).
+#[derive(Clone, Debug)]
+pub struct VideoLoraRef {
+    pub path: String,
+    pub multiplier: f32,
+}
+
+/// Сэмплинг-план vid_gen: что именно уйдёт в `sample_params` и `lora[]`
+/// payload'а. Единственный источник шагов/сэмплера/шедулера/shift —
+/// `sampling_plan_for_quality` (каталог, SSOT).
+#[derive(Clone, Debug)]
+pub struct VideoSamplingPlan {
+    pub steps: u32,
+    /// "euler" (final / draft-без-LoRA) | "lcm" (турбо-точка DMAD).
+    pub sample_method: String,
+    /// "discrete" (euler-путь) | "simple" (турбо-точка DMAD).
+    pub scheduler: String,
+    /// None = НЕ слать ключ (модельный дефолт). 0.0 у H3 вырождает сигма-сетку
+    /// → CUDA crash — неположительный shift сюда не попадает (валидатор каталога).
+    pub flow_shift: Option<f32>,
+    /// Пусто = без LoRA.
+    pub lora: Vec<VideoLoraRef>,
+}
+
 /// Параметры одного vid_gen-запроса (на один вызов `generate`).
 #[derive(Clone, Debug)]
 pub struct VideoRequest {
@@ -113,7 +140,7 @@ pub struct VideoRequest {
     pub ref_images_b64: Vec<String>,
     pub width: u32,
     pub height: u32,
-    /// Шаги (draft/final решает командный слой через steps_for_quality).
+    /// Шаги (draft/final решает командный слой через sampling_plan_for_quality).
     pub steps: u32,
     pub cfg_scale: f32,
     pub seed: i64,
@@ -124,6 +151,14 @@ pub struct VideoRequest {
     pub vae_tiling: bool,
     /// image-to-video сила (поле `strength`; дефолт примера 0.75).
     pub strength: f32,
+    /// Сэмплер payload'а (sample_params.sample_method).
+    pub sample_method: String,
+    /// Шедулер payload'а (sample_params.scheduler).
+    pub scheduler: String,
+    /// flow_shift payload'а; None — ключ не шлётся (модельный дефолт).
+    pub flow_shift: Option<f32>,
+    /// LoRA vid_gen (пусто = без LoRA).
+    pub lora: Vec<VideoLoraRef>,
 }
 
 impl VideoRequest {
@@ -160,24 +195,48 @@ fn ext_for_mime(mime: &str) -> &'static str {
     }
 }
 
-/// Шаги по качеству: draft с файлом роли `lora_draft` → steps_draft;
-/// draft без LoRA (файла нет / роль не в каталоге) → steps_draft_nolora;
-/// final → steps_final. Роли lora_draft у H3 пока нет — фаза 1 федерально
-/// уходит в steps_draft_nolora.
-pub fn steps_for_quality(entry: &VideoBundleEntry, bundle_dir: &Path, final_quality: bool) -> u32 {
+/// Файл роли `lora_draft` записи каталога (None — роли нет).
+fn lora_draft_file(entry: &VideoBundleEntry) -> Option<&BundleFile> {
+    entry.files.iter().find(|f| f.role == "lora_draft")
+}
+
+/// Сэмплинг-план по качеству (SSOT шагов/сэмплера/шедулера/shift/LoRA — каталог):
+/// - final → {steps_final, сэмплер каталога (euler), discrete, shift не шлётся, без LoRA};
+/// - draft + файл роли `lora_draft` есть в bundle_dir → турбо-точка каталога
+///   {steps_draft, turbo_sampler, turbo_scheduler, Some(turbo_flow_shift), lora_draft ×1.0};
+/// - draft без LoRA (файла нет / роль не в каталоге) → {steps_draft_nolora,
+///   сэмплер каталога, discrete, shift не шлётся, без LoRA}.
+pub fn sampling_plan_for_quality(
+    entry: &VideoBundleEntry,
+    bundle_dir: &Path,
+    final_quality: bool,
+) -> VideoSamplingPlan {
+    let p = &entry.preset;
+    let base = VideoSamplingPlan {
+        steps: if final_quality { p.steps_final } else { p.steps_draft_nolora },
+        sample_method: p.sampler.clone(),
+        scheduler: "discrete".to_string(),
+        flow_shift: None,
+        lora: Vec::new(),
+    };
     if final_quality {
-        return entry.preset.steps_final;
+        return base;
     }
-    let lora_ready = entry
-        .files
-        .iter()
-        .find(|f| f.role == "lora_draft")
+    let lora_ready = lora_draft_file(entry)
         .map(|f| bundle_dir.join(&f.filename).exists())
         .unwrap_or(false);
-    if lora_ready {
-        entry.preset.steps_draft
-    } else {
-        entry.preset.steps_draft_nolora
+    if !lora_ready {
+        return base;
+    }
+    let lora_path = lora_draft_file(entry)
+        .map(|f| f.filename.clone())
+        .unwrap_or_default();
+    VideoSamplingPlan {
+        steps: p.steps_draft,
+        sample_method: p.turbo_sampler.clone(),
+        scheduler: p.turbo_scheduler.clone(),
+        flow_shift: Some(p.turbo_flow_shift),
+        lora: vec![VideoLoraRef { path: lora_path, multiplier: 1.0 }],
     }
 }
 
@@ -290,6 +349,35 @@ pub fn build_payload(params: &VideoRequest) -> Result<serde_json::Value, String>
     // Режим — заодно честная проверка запретных комбинаций init/end/ref.
     params.mode()?;
 
+    // sample_params собирается как Map (не json!-литерал): flow_shift вставляется
+    // ТОЛЬКО при Some(v). Инвариант: flow_shift == 0.0 у H3 вырождает сигма-сетку
+    // → CUDA illegal memory access (diag 26.10.26); ключ опускается при None —
+    // работает модельный дефолт, «шлём ноль» невозможно конструктивно.
+    let mut sample_params = serde_json::Map::new();
+    sample_params.insert("scheduler".to_string(), serde_json::json!(params.scheduler));
+    sample_params.insert("sample_method".to_string(), serde_json::json!(params.sample_method));
+    sample_params.insert("sample_steps".to_string(), serde_json::json!(params.steps));
+    sample_params.insert("eta".to_string(), serde_json::json!(1.0));
+    sample_params.insert("shifted_timestep".to_string(), serde_json::json!(0));
+    sample_params.insert("custom_sigmas".to_string(), serde_json::json!([]));
+    if let Some(shift) = params.flow_shift {
+        sample_params.insert("flow_shift".to_string(), serde_json::json!(shift));
+    }
+    sample_params.insert(
+        "guidance".to_string(),
+        serde_json::json!({
+            "txt_cfg": params.cfg_scale,
+            "img_cfg": params.cfg_scale,
+            "distilled_guidance": 3.5,
+            "slg": {
+                "layers": [7, 8, 9],
+                "layer_start": 0.01,
+                "layer_end": 0.2,
+                "scale": 0.0
+            }
+        }),
+    );
+
     Ok(serde_json::json!({
         "prompt": params.prompt,
         "negative_prompt": params.negative_prompt.clone().unwrap_or_default(),
@@ -310,32 +398,18 @@ pub fn build_payload(params: &VideoRequest) -> Result<serde_json::Value, String>
         // H3 не поддерживает control_frames — «leave that array empty» (api.md).
         "control_frames": [],
 
-        "sample_params": {
-            "scheduler": "discrete",
-            "sample_method": "euler",
-            "sample_steps": params.steps,
-            "eta": 1.0,
-            "shifted_timestep": 0,
-            "custom_sigmas": [],
-            "flow_shift": 0.0,
-            "guidance": {
-                "txt_cfg": params.cfg_scale,
-                "img_cfg": params.cfg_scale,
-                "distilled_guidance": 3.5,
-                "slg": {
-                    "layers": [7, 8, 9],
-                    "layer_start": 0.01,
-                    "layer_end": 0.2,
-                    "scale": 0.0
-                }
-            }
-        },
+        "sample_params": serde_json::Value::Object(sample_params),
 
         // Высокошумный первый проход отключён (пример допускает null/пропуск).
         "high_noise_sample_params": null,
 
-        // Turbo-LoRA для H3 vid_gen — гипотеза до бенча: фаза 1 шлёт пусто.
-        "lora": [],
+        // LoRA из запроса (сэмплинг-план кладёт файл роли lora_draft ×1.0
+        // для draft-турбо; путь относительно --lora-model-dir спавна).
+        "lora": params.lora.iter().map(|l| serde_json::json!({
+            "path": l.path,
+            "multiplier": l.multiplier,
+            "is_high_noise": false
+        })).collect::<Vec<_>>(),
 
         "vae_tiling_params": {
             "enabled": params.vae_tiling,
@@ -601,7 +675,13 @@ impl VideoEngine {
         let weights = bundle_files_weights(bundle_dir, &entry.files);
         let port = pick_free_port()
             .ok_or_else(|| "Не найден свободный порт для sd-server (19400..20900).".to_string())?;
-        let args = build_spawn_args(entry, &weights, port)?;
+        let mut args = build_spawn_args(entry, &weights, port)?;
+        // LoRA-каталог сервера: файл роли lora_draft лежит плоско в bundle_dir
+        // (SSOT каталога), lora[].path в payload — имя файла относительно него.
+        if lora_draft_file(entry).is_some() {
+            args.push("--lora-model-dir".to_string());
+            args.push(bundle_dir.to_string_lossy().to_string());
+        }
         log_cb(format!("🎬 spawn args: {}", args.join(" ")));
 
         let mut cmd = std::process::Command::new(&server_exe);
@@ -855,8 +935,9 @@ impl Drop for VideoEngine {
 /// One-shot видео (t2va): spawn → vid_gen → Drop. Точка входа host-tools:
 /// дефолты ИЗ ПРЕСЕТА каталога (SSOT — tools-слой не дублирует константы),
 /// seconds клампится по образцу GUI-команды `generate_video` (0 → 5, свыше
-/// max_seconds → кламп с warn), steps решает `steps_for_quality` (draft/final
-/// по роли lora_draft). init/end/refs — не на этом уровне: все четыре режима
+/// max_seconds → кламп с warn), сэмплинг решает `sampling_plan_for_quality`
+/// (draft/final по наличию файла lora_draft; турбо-точка lcm/simple/shift —
+/// из каталога). init/end/refs — не на этом уровне: все четыре режима
 /// доступны через `VideoEngine::generate` напрямую.
 pub fn generate_video_simple<L>(
     engine_dir: &Path,
@@ -885,7 +966,7 @@ where
         ));
         secs = preset.max_seconds;
     }
-    let steps = steps_for_quality(entry, bundle_dir, final_quality);
+    let plan = sampling_plan_for_quality(entry, bundle_dir, final_quality);
     let req = VideoRequest {
         prompt: prompt.to_string(),
         negative_prompt: None,
@@ -894,13 +975,17 @@ where
         ref_images_b64: Vec::new(),
         width: preset.width,
         height: preset.height,
-        steps,
+        steps: plan.steps,
         cfg_scale: preset.cfg_scale,
         seed: preset.seed,
         video_frames: secs * preset.fps,
         fps: preset.fps,
         vae_tiling: true,
         strength: 0.75,
+        sample_method: plan.sample_method,
+        scheduler: plan.scheduler,
+        flow_shift: plan.flow_shift,
+        lora: plan.lora,
     };
     let engine = VideoEngine::new(engine_dir, bundle_dir, entry, None, log_cb.clone())?;
     engine.generate(&req, out_path, cancel_flag, log_cb)
@@ -950,11 +1035,16 @@ mod tests {
 
     /// Каталожный бандл с реально созданными файлами в temp-папке
     /// (build_spawn_args проверяет существование — файлы должны быть на диске).
+    /// Файлы роли lora_draft НЕ создаются: это дефолтное состояние продукта
+    /// (роль в каталоге, файл ещё не скачан) — draft обязан уходить в fallback.
     fn catalog_bundle_with_files() -> (VideoBundleEntry, PathBuf) {
         let entry = default_video_bundle_entry().expect("дефолтный видео-бандл обязан существовать");
         let dir = std::env::temp_dir().join(format!("ko_video_engine_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("temp папка создалась");
         for f in &entry.files {
+            if f.role == "lora_draft" {
+                continue;
+            }
             let p = dir.join(&f.filename);
             if !p.exists() {
                 std::fs::write(&p, b"weights-placeholder").expect("temp файл создан");
@@ -1038,22 +1128,45 @@ mod tests {
     }
 
     #[test]
-    fn steps_follow_quality_ladder() {
+    fn plan_follows_quality_ladder() {
         let (entry, dir) = catalog_bundle_with_files();
-        // Роли lora_draft у каталога пока нет → draft обязан уйти на steps_draft_nolora.
-        assert_eq!(steps_for_quality(&entry, &dir, false), entry.preset.steps_draft_nolora);
-        assert_eq!(steps_for_quality(&entry, &dir, true), entry.preset.steps_final);
-        // Синтетика с ролью lora_draft и реальным файлом → draft на steps_draft.
+        // Роль lora_draft в каталоге есть, но файла в bundle_dir нет (хелпер
+        // lora-файлы не создаёт) → draft уходит в fallback: nolora-шаги,
+        // euler/discrete, shift не шлётся, без LoRA.
+        let draft = sampling_plan_for_quality(&entry, &dir, false);
+        assert_eq!(draft.steps, entry.preset.steps_draft_nolora);
+        assert_eq!(draft.sample_method, "euler");
+        assert_eq!(draft.scheduler, "discrete");
+        assert!(draft.flow_shift.is_none());
+        assert!(draft.lora.is_empty());
+        // final — лестница качества: steps_final, euler/discrete, без LoRA.
+        let fin = sampling_plan_for_quality(&entry, &dir, true);
+        assert_eq!(fin.steps, entry.preset.steps_final);
+        assert_eq!(fin.sample_method, "euler");
+        assert_eq!(fin.scheduler, "discrete");
+        assert!(fin.flow_shift.is_none());
+        assert!(fin.lora.is_empty());
+        // Синтетика с файлом lora_draft на диске → турбо-точка каталога:
+        // steps_draft, lcm/simple/shift 12, одна LoRA ×1.0. Роль в каталоге уже
+        // есть (DMAD) — переименовываем её файл на заглушку, а не дублируем роль
+        // (find берёт первую lora_draft).
         let mut with_lora = entry.clone();
-        with_lora.files.push(BundleFile {
-            role: "lora_draft".to_string(),
-            filename: "fake_turbo_lora.safetensors".to_string(),
-            download_url: String::new(),
-            size_bytes: Some(1),
-        });
+        let lora_ref = with_lora
+            .files
+            .iter_mut()
+            .find(|f| f.role == "lora_draft")
+            .expect("роль lora_draft в каталожной записи");
+        lora_ref.filename = "fake_turbo_lora.safetensors".to_string();
         let p = dir.join("fake_turbo_lora.safetensors");
         std::fs::write(&p, b"lora-stub").expect("lora stub создан");
-        assert_eq!(steps_for_quality(&with_lora, &dir, false), entry.preset.steps_draft);
+        let turbo = sampling_plan_for_quality(&with_lora, &dir, false);
+        assert_eq!(turbo.steps, entry.preset.steps_draft);
+        assert_eq!(turbo.sample_method, "lcm");
+        assert_eq!(turbo.scheduler, "simple");
+        assert_eq!(turbo.flow_shift, Some(12.0));
+        assert_eq!(turbo.lora.len(), 1);
+        assert_eq!(turbo.lora[0].path, "fake_turbo_lora.safetensors");
+        assert!((turbo.lora[0].multiplier - 1.0).abs() < f32::EPSILON);
         let _ = std::fs::remove_file(&p);
     }
 
@@ -1074,6 +1187,11 @@ mod tests {
             fps: 24,
             vae_tiling: true,
             strength: 0.75,
+            // euler-путь (final / draft-без-LoRA): shift не шлётся, без LoRA.
+            sample_method: "euler".into(),
+            scheduler: "discrete".into(),
+            flow_shift: None,
+            lora: vec![],
         };
         let body = build_payload(&p).expect("t2va payload собран");
         assert_eq!(body["prompt"], "кот на волне");
@@ -1084,6 +1202,8 @@ mod tests {
         assert_eq!(body["seed"], -1);
         assert_eq!(body["strength"], 0.75);
         assert_eq!(body["sample_params"]["sample_steps"], 6);
+        assert_eq!(body["sample_params"]["sample_method"], "euler");
+        assert_eq!(body["sample_params"]["scheduler"], "discrete");
         assert_eq!(body["sample_params"]["guidance"]["txt_cfg"], 1.0);
         assert_eq!(body["output_format"], "webm");
         assert_eq!(body["control_frames"], serde_json::json!([]));
@@ -1095,6 +1215,83 @@ mod tests {
         assert_eq!(body["init_image"], serde_json::Value::Null);
         assert_eq!(body["end_image"], serde_json::Value::Null);
         assert_eq!(body["ref_images"], serde_json::json!([]));
+    }
+
+    /// Контракт турбо-ветки (DMAD): lcm/simple/shift 12 уходят в payload,
+    /// lora[] содержит путь + множитель + is_high_noise:false (формат бенча
+    /// 26.10.26, подтверждён логом 600/600 applied).
+    #[test]
+    fn payload_lora_turbo_contract() {
+        let p = VideoRequest {
+            prompt: "танцор в неоне".into(),
+            negative_prompt: None,
+            init_b64: None,
+            end_b64: None,
+            ref_images_b64: vec![],
+            width: 864,
+            height: 480,
+            steps: 4,
+            cfg_scale: 1.0,
+            seed: 42,
+            video_frames: seconds_to_frames(5, 24),
+            fps: 24,
+            vae_tiling: true,
+            strength: 0.75,
+            sample_method: "lcm".into(),
+            scheduler: "simple".into(),
+            flow_shift: Some(12.0),
+            lora: vec![VideoLoraRef {
+                path: "dmad_minimax_h3_4step_full_critic.safetensors".into(),
+                multiplier: 1.0,
+            }],
+        };
+        let body = build_payload(&p).expect("turbo payload собран");
+        assert_eq!(body["sample_params"]["flow_shift"], 12.0);
+        assert_eq!(body["sample_params"]["sample_method"], "lcm");
+        assert_eq!(body["sample_params"]["scheduler"], "simple");
+        assert_eq!(body["sample_params"]["sample_steps"], 4);
+        assert_eq!(
+            body["lora"],
+            serde_json::json!([{
+                "path": "dmad_minimax_h3_4step_full_critic.safetensors",
+                "multiplier": 1.0,
+                "is_high_noise": false
+            }])
+        );
+    }
+
+    /// Краш-регрессия 26.10.26: flow_shift: 0.0 ронял движок (CUDA illegal
+    /// memory access). При None ключ flow_shift ОБЯЗАН ОТСУТСТВОВАТЬ в
+    /// sample_params (не null — отсутствие), работает модельный дефолт.
+    #[test]
+    fn payload_omits_flow_shift_when_none() {
+        let p = VideoRequest {
+            prompt: "сцена".into(),
+            negative_prompt: None,
+            init_b64: None,
+            end_b64: None,
+            ref_images_b64: vec![],
+            width: 864,
+            height: 480,
+            steps: 20,
+            cfg_scale: 1.0,
+            seed: -1,
+            video_frames: 120,
+            fps: 24,
+            vae_tiling: true,
+            strength: 0.75,
+            sample_method: "euler".into(),
+            scheduler: "discrete".into(),
+            flow_shift: None,
+            lora: vec![],
+        };
+        let body = build_payload(&p).expect("payload собран");
+        let sp = body["sample_params"].as_object().expect("sample_params — объект");
+        assert!(
+            !sp.contains_key("flow_shift"),
+            "ключ flow_shift при None обязан отсутствовать (0.0 = CUDA crash у H3), got: {:?}",
+            sp.get("flow_shift")
+        );
     }
 
     #[test]
@@ -1114,6 +1311,10 @@ mod tests {
             fps: 24,
             vae_tiling: true,
             strength: 0.75,
+            sample_method: "euler".into(),
+            scheduler: "discrete".into(),
+            flow_shift: None,
+            lora: vec![],
         };
         let i2va = build_payload(&base(Some("AA"), None, vec![])).expect("i2va");
         assert_eq!(i2va["init_image"], "AA");
@@ -1146,6 +1347,10 @@ mod tests {
             fps: 24,
             vae_tiling: true,
             strength: 0.75,
+            sample_method: "euler".into(),
+            scheduler: "discrete".into(),
+            flow_shift: None,
+            lora: vec![],
         };
         assert!(build_payload(&p).unwrap_err().contains("промпт"));
         p.prompt = "ок".into();

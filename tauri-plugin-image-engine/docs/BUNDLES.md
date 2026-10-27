@@ -254,29 +254,49 @@ steps/cfg, load_time_s, free/total/peak/free-after VRAM, число провал
   `seconds_to_frames` — только арифметика, без сетки).
 - **`hires` в vid_gen НЕ поддерживается** (он только у img_gen): «draft →
   final» = ДВА вызова vid_gen, а не один.
-- **Draft/final — один стек**: шаговый пресет (draft 3 при Turbo-LoRA,
+- **Draft/final — один стек**: шаговый пресет (draft 4 при Turbo-LoRA DMAD,
   fallback `steps_draft_nolora` 6; final 20), НЕ две разные модели.
-- **Turbo-LoRA — гипотеза до бенча**: поле `lora[]` в vid_gen есть, но LoRA
-  для H3 в docs/minimax_h3.md НЕ документированы (проверено). Пока каталог
-  использует 6-шаговый drift без lora (роль `lora_draft` отложена).
+- **Turbo-LoRA DMAD — подтверждена бенчем 26.10.26** (гипотеза снята): LoRA
+  грузится и применяется в vid_gen runtime (`lora.hpp:1046 — (600 / 600) LoRA
+  tensors have been applied`, без Python/конвертаций). Скорость на 5-сек клипе
+  864×480 (seed 42): dmad4 медиана **130.8 с** против ctrl20f (final, euler 20
+  шагов) **505.6 с** → **ускорение 3.87×** (гейт ≥2.5× PASS); dmad8 255.8 с.
+  Операционная точка DMAD — **4 шага, lcm/simple/shift 12** (euler — НЕ
+  операционная точка дистиллята, README DMAD); euler/discrete остаётся путём
+  final и draft-без-LoRA. Турбо-параметры — поля `turbo_sampler` /
+  `turbo_scheduler` / `turbo_flow_shift` пресета каталога (SSOT), в коде
+  payload их нет; draft берёт их из сэмплинг-плана при наличии файла роли
+  `lora_draft` в папке бандла. Нюанс: 24 тензора token_refiner не видны в
+  счётчике применения (600 из 624) — влияние на стиль закрывает A/B юзера.
+- **`flow_shift: 0.0` у H3 = CUDA crash** (изолировано матрицей 2×2 в
+  `test/bench/video_h3_turbo/diag_report.json`): shift 0 вырождает сигма-сетку
+  → CUDA illegal memory access на первом шаге сэмплинга, НЕЗАВИСИМО от
+  сэмплера (падали euler и lcm). Payload обязан ОПУСКАТЬ ключ при отсутствии
+  явного shift (модельный дефолт) — регресс-тест `payload_omits_flow_shift_when_none`;
+  валидатор каталога запрещает неположительный `turbo_flow_shift` всегда.
 - Русская речь — нативно: озвучка приходит из текстового промпта (модель
   T2VAaudio-архитектура), отдельного audio-флага не нужно (see test `H3
   прямо говорит` docs/minimax_h3.md, T2VA audio-guide).
 
 ### Выбор бандла
 
-Каталог `video_models_catalog.json` (21.10.2026):
+Каталог `video_models_catalog.json` (21.10.2026; lora_draft добавлен 26.10.2026):
 
-| Бандл | Diffusion | Размер | VRAM (fast/min) | RAM | Кому |
+| Бандл | Diffusion | Размер (с LoRA) | VRAM (fast/min) | RAM | Кому |
 |---|---|---|---|---|---|
-| `minimax_h3_fl2va_pruned-q4km` (дефолт) | fl2va Q4_K_M | 30.3 ГБ | 28 / 12 ГБ | ≥30 ГБ | карты ≥12 ГБ |
-| `minimax_h3_fl2va_pruned-q3k` | fl2va Q3_K | 27.7 ГБ | 27 / 8.5 ГБ | ≥28 ГБ | карты ~8 ГБ |
-| `minimax_h3_ref2va_pruned-q3k` | ref2va Q3_K | 27.6 ГБ | 27 / 8.5 ГБ | ≥28 ГБ | референсы, ~8 ГБ |
+| `minimax_h3_fl2va_pruned-q4km` (дефолт) | fl2va Q4_K_M | 31.7 ГБ | 28 / 12 ГБ | ≥30 ГБ | карты ≥12 ГБ |
+| `minimax_h3_fl2va_pruned-q3k` | fl2va Q3_K | 29.1 ГБ | 27 / 8.5 ГБ | ≥28 ГБ | карты ~8 ГБ |
+| `minimax_h3_ref2va_pruned-q3k` | ref2va Q3_K | 29.0 ГБ | 27 / 8.5 ГБ | ≥28 ГБ | референсы, ~8 ГБ |
 
+В комплекте каждого бандла — роль `lora_draft` (`dmad_minimax_h3_4step_full_critic.safetensors`,
+1.29 ГБ, `ZhengmingYu/DMAD`); имя одинаково у всех трёх, поэтому в общей папке
+она скачивается/adopt-ится один раз. Дефолт draft = 4 шага (турбо-точка DMAD).
 Q3_K квант мягче по качеству, чем Q4_K — предупреждение честное (частично
-снимется замером draft/final). Общие файлы (llm/VAE/audio-VAE) — одинаковые
-имена у всех трёх бандлов: в общей папке скачивания downloader пропускает
-существующее («Уже скачан»), новый бандл качает только свой diffusion-файл.
+снимется замером draft/final). Замер бенча 26.10.26 сделан на q4km; для
+q3k/ref2va-бандлов замеров нет (файл LoRA общий). Общие файлы
+(llm/VAE/audio-VAE/lora_draft) — одинаковые имена у всех трёх бандлов: в общей
+папке скачивания downloader пропускает существующее («Уже скачан»), новый бандл
+качает только свой diffusion-файл.
 Ref-режим: по субтитрам верифицировано — **>6 референсов ломает следование**;
 агент ограничит ≤3 (image) и аудио-референс тембра голоса; character sheet
 4-view сильно помогает; видео-референсы не советуют (медленно и плохо).
@@ -321,8 +341,9 @@ VRAM-проверка честно пропускается (`vram_txt: "N/A (NV
   (`init_image` + `strength`, ~50 с, report.upscale_ab.json); hires
   остаётся только bench-инфраструктурой (test_bench.bat).
 - **MiniMax H3 (видео):** ветка по теме в отдельном документе
-  `docs/SOURCES_VIDEO.md` (PRP 21.10.26); бандлы — §9. Turbo-LoRA и
-  lora_draft / lora_swap — отложены до bench (role отложена).
+  `docs/SOURCES_VIDEO.md` (PRP 21.10.26); бандлы — §9. Turbo-LoRA DMAD
+  внедрена 26.10.2026 (бенч + роль `lora_draft` в каталоге, §9); `lora_swap`
+  остаётся отложенной до bench.
 - **RGBA-прозрачность** — prompt-конвенция
   `This is an RGBA image with transparency. ...` (нативная фича модели).
 - **Krea 2 tiled-diffusion («хитрый апскейл» до ~40 МП):** в sd.cpp tiled

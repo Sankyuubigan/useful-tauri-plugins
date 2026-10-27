@@ -3,7 +3,7 @@
     "name": "minimax_h3_fl2va_pruned-q4km",
     "label": "MiniMax H3 FL2VA pruned (Q4_K) — видео+речь; для карт ≥12 ГБ",
     "spawn_flags": "--offload-to-cpu --rng cpu",
-    "note": "Дефолт для VRAM ≥12 ГБ (16 ГБ юзера): diffusion Q4_K целиком живёт в VRAM (offload почти не нужен). Режимы motorista: text→video, image→video (init), первый+последний кадр. Русская речь — нативно (prompt). Шаги: draft 3 (Turbo-LoRA; если не подтверждена бенчем — 6 fallback-поля steps_draft_nolora), final 20 (замеры ролика Ngc6vmyGOyU). Euler, cfg 1.0, 864×480, 24 fps, ≤15 сек. Preflight VRAM/RAM/диск — ОЦЕНКИ (бенч фазы 1 зафиксирует факты). Турбо-LoRA добавится отдельной ролью lora_draft после подтверждения загрузки LoRA в vid_gen (гипотеза, docs/minimax_h3.md LoRA для H3 не документирует).",
+    "note": "Дефолт для VRAM ≥12 ГБ (16 ГБ юзера): diffusion Q4_K целиком живёт в VRAM (offload почти не нужен). Режимы motorista: text→video, image→video (init), первый+последний кадр. Русская речь — нативно (prompt). Шаги: draft 4 (Turbo-LoRA DMAD; без LoRA-файла — 6, fallback-поле steps_draft_nolora), final 20 (замеры ролика Ngc6vmyGOyU). Euler/discrete — путь final и draft-без-LoRA; турбо-точка — lcm/simple/shift 12 (поля turbo_* этого пресета). cfg 1.0, 864×480, 24 fps, ≤15 сек. Turbo-LoRA DMAD 4-step подтверждена бенчем 26.10.26: медиана 130.8 с против 505.6 с у 20-шагового final (ускорение 3.87×), lcm/simple/shift12; см. tasks/26.10.26 Ускорение видео H3 — turbo-LoRA бенч (Фаза 0-1).md и test/bench/video_h3_turbo/report.json. VRAM-пик замерен: 15.6 ГБ (клип 5 с, 864×480); порог ram_min_gb не снижать — RSS-пик контрольных конфигов 26.8–28.2 ГБ подтверждает оценку (аномально низкий RSS dmad4 6.2 ГБ не объяснён).",
     "is_default": true,
     "files": [
       {
@@ -29,10 +29,16 @@
         "filename": "minimax_h3_audio_vae_fp32.safetensors",
         "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors?download=true",
         "size_bytes": 605254808
+      },
+      {
+        "role": "lora_draft",
+        "filename": "dmad_minimax_h3_4step_full_critic.safetensors",
+        "download_url": "https://huggingface.co/ZhengmingYu/DMAD/resolve/main/minimax_h3/dmad_minimax_h3_4step_full_critic.safetensors?download=true",
+        "size_bytes": 1383674320
       }
     ],
     "preset": {
-      "steps_draft": 3,
+      "steps_draft": 4,
       "steps_draft_nolora": 6,
       "steps_final": 20,
       "fps": 24,
@@ -41,9 +47,12 @@
       "sampler": "euler",
       "seed": -1,
       "width": 864,
-      "height": 480
+      "height": 480,
+      "turbo_sampler": "lcm",
+      "turbo_scheduler": "simple",
+      "turbo_flow_shift": 12.0
     },
-    "size_gb": "30.3",
+    "size_gb": "31.7",
     "vram_fast_gb": 28.0,
     "vram_min_gb": 12.0,
     "ram_min_gb": 30.0
@@ -52,7 +61,7 @@
     "name": "minimax_h3_fl2va_pruned-q3k",
     "label": "MiniMax H3 FL2VA pruned (Q3_K) — видео+речь; для карт ~8 ГБ",
     "spawn_flags": "--offload-to-cpu --rng cpu",
-    "note": "Класс 8 ГБ: diffusion Q3_K (8.16 ГиБ) + vae_tiling + offload. Тот же стек, что у Q4_K: TE qwen3vl_32b Q2_K_M (12.2 ГиБ), video VAE fp16 (4.85 ГиБ), audio VAE fp32 (605 МБ). Предупреждение честно: Q3_K квант мягче по качеству, чем Q4_K; точную дельту покажет бенч Draft/final. Preflight VRAM/RAM — ОЦЕНКИ.",
+    "note": "Класс 8 ГБ: diffusion Q3_K (8.16 ГиБ) + vae_tiling + offload. Тот же стек, что у Q4_K: TE qwen3vl_32b Q2_K_M (12.2 ГиБ), video VAE fp16 (4.85 ГиБ), audio VAE fp32 (605 МБ). Предупреждение честно: Q3_K квант мягче по качеству, чем Q4_K; точную дельту покажет бенч Draft/final. Шаги: draft 4 (Turbo-LoRA DMAD; без LoRA-файла — 6), final 20; турбо-точка lcm/simple/shift 12 (поля turbo_* пресета), euler/discrete — final и draft-без-LoRA. Turbo-LoRA DMAD 4-step подтверждена бенчем 26.10.26 (замер на q4km, 130.8 с против 505.6 с у final, 3.87×); для q3k-бандла замеров нет — файл LoRA общий, см. tasks/26.10.26 Ускорение видео H3 — turbo-LoRA бенч (Фаза 0-1).md. Preflight VRAM/RAM — ОЦЕНКИ.",
     "is_default": false,
     "files": [
       {
@@ -78,10 +87,16 @@
         "filename": "minimax_h3_audio_vae_fp32.safetensors",
         "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors?download=true",
         "size_bytes": 605254808
+      },
+      {
+        "role": "lora_draft",
+        "filename": "dmad_minimax_h3_4step_full_critic.safetensors",
+        "download_url": "https://huggingface.co/ZhengmingYu/DMAD/resolve/main/minimax_h3/dmad_minimax_h3_4step_full_critic.safetensors?download=true",
+        "size_bytes": 1383674320
       }
     ],
     "preset": {
-      "steps_draft": 3,
+      "steps_draft": 4,
       "steps_draft_nolora": 6,
       "steps_final": 20,
       "fps": 24,
@@ -90,9 +105,12 @@
       "sampler": "euler",
       "seed": -1,
       "width": 864,
-      "height": 480
+      "height": 480,
+      "turbo_sampler": "lcm",
+      "turbo_scheduler": "simple",
+      "turbo_flow_shift": 12.0
     },
-    "size_gb": "27.7",
+    "size_gb": "29.1",
     "vram_fast_gb": 27.0,
     "vram_min_gb": 8.5,
     "ram_min_gb": 28.0
@@ -101,7 +119,7 @@
     "name": "minimax_h3_ref2va_pruned-q3k",
     "label": "MiniMax H3 Ref2VA pruned (Q3_K) — мультимодальные референсы; карты ~8 ГБ",
     "spawn_flags": "--offload-to-cpu --rng cpu",
-    "note": "Тот же стек, но diffusion ref2va_pruned: референс-режим (до 3–9 картинок, аудио-референс тембра голоса; консистентное лицо по character sheet). По субтитрам роликов: референсов >6 модель ломает следование — правила агента ограничат ≤3. Русская речь всегда доступна. Реф-советы: character sheet 4-view сильно помогает; видео-референсы авторы роликов не советуют (медленно, плохо). Preflight VRAM/RAM — ОЦЕНКИ.",
+    "note": "Тот же стек, но diffusion ref2va_pruned: референс-режим (до 3–9 картинок, аудио-референс тембра голоса; консистентное лицо по character sheet). По субтитрам роликов: референсов >6 модель ломает следование — правила агента ограничат ≤3. Русская речь всегда доступна. Реф-советы: character sheet 4-view сильно помогает; видео-референсы авторы роликов не советуют (медленно, плохо). Шаги: draft 4 (Turbo-LoRA DMAD; без LoRA-файла — 6), final 20; турбо-точка lcm/simple/shift 12 (поля turbo_* пресета), euler/discrete — final и draft-без-LoRA. Turbo-LoRA DMAD 4-step подтверждена бенчем 26.10.26 (замер на q4km, 130.8 с против 505.6 с у final, 3.87×); для ref2va-бандла замеров нет — файл LoRA общий, см. tasks/26.10.26 Ускорение видео H3 — turbo-LoRA бенч (Фаза 0-1).md. Preflight VRAM/RAM — ОЦЕНКИ.",
     "is_default": false,
     "files": [
       {
@@ -127,10 +145,16 @@
         "filename": "minimax_h3_audio_vae_fp32.safetensors",
         "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors?download=true",
         "size_bytes": 605254808
+      },
+      {
+        "role": "lora_draft",
+        "filename": "dmad_minimax_h3_4step_full_critic.safetensors",
+        "download_url": "https://huggingface.co/ZhengmingYu/DMAD/resolve/main/minimax_h3/dmad_minimax_h3_4step_full_critic.safetensors?download=true",
+        "size_bytes": 1383674320
       }
     ],
     "preset": {
-      "steps_draft": 3,
+      "steps_draft": 4,
       "steps_draft_nolora": 6,
       "steps_final": 20,
       "fps": 24,
@@ -139,9 +163,12 @@
       "sampler": "euler",
       "seed": -1,
       "width": 864,
-      "height": 480
+      "height": 480,
+      "turbo_sampler": "lcm",
+      "turbo_scheduler": "simple",
+      "turbo_flow_shift": 12.0
     },
-    "size_gb": "27.6",
+    "size_gb": "29.0",
     "vram_fast_gb": 27.0,
     "vram_min_gb": 8.5,
     "ram_min_gb": 28.0

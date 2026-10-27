@@ -50,8 +50,8 @@ pub fn get_image_engine_dir(app: &AppHandle) -> PathBuf {
     engine_dir(app)
 }
 
-/// Папка бандлов: явная из конфига, иначе `<exe>/image_models`. Одна
-/// папка-пул для ВСЕХ бандлов (имена общих ролей совпадают → downloader
+/// Папка бандлов: явная из конфига, иначе `<хранилище KingOrchData>/image_models`.
+/// Одна папка-пул для ВСЕХ бандлов (имена общих ролей совпадают → downloader
 /// пропускает существующее); per-bundle подпапки убраны 25.10.2026 —
 /// они порождали перекачку общих файлов и «3 файла есть, 1 нет» при
 /// переключении активного бандла.
@@ -62,7 +62,7 @@ fn bundle_dir(app: &AppHandle) -> PathBuf {
             return PathBuf::from(p);
         }
     }
-    exe_dir(app).join("image_models")
+    engine::default_image_bundle_dir()
 }
 
 fn preferred_variant(app: &AppHandle) -> Option<String> {
@@ -669,10 +669,11 @@ pub struct VideoBundleValidate {
     pub missing: Vec<String>,
 }
 
-/// Папка видео-бандлов: явная из конфига, иначе `<exe>/video_models`. Тот же
-/// пул-принцип, что у image (25.10.2026): diffusion-файлы разных бандлов
-/// имеют разные имена, общие роли (llm/vae/audio_vae) — одинаковые, downloader
-/// пропускает существующее. Per-bundle подпапки порождали перекачку.
+/// Папка видео-бандлов: явная из конфига, иначе
+/// `<хранилище KingOrchData>/video_models`. Тот же пул-принцип, что у image
+/// (25.10.2026): diffusion-файлы разных бандлов имеют разные имена, общие
+/// роли (llm/vae/audio_vae/lora_draft) — одинаковые, downloader пропускает
+/// существующее. Per-bundle подпапки порождали перекачку.
 fn video_bundle_dir(app: &AppHandle) -> PathBuf {
     let cfg = engine::load_image_config(app);
     if let Some(p) = &cfg.video_bundle_dir {
@@ -680,7 +681,7 @@ fn video_bundle_dir(app: &AppHandle) -> PathBuf {
             return PathBuf::from(p);
         }
     }
-    exe_dir(app).join("video_models")
+    engine::default_video_bundle_dir()
 }
 
 /// Взять запись: имя → каталог; без имени → selected_video_bundle → дефолт.

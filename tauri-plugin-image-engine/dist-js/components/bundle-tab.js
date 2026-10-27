@@ -1,8 +1,9 @@
 /**
  * <image-bundle-tab service="image|video"> — одна вкладка медиа-блока:
- * селектор бандлов («скачать → активировать»), файлы, диск/память/папка и
- * custom-папка-режим (add/resume/remove/delete — наследие ImageModelsPanel).
- * Работает поверх BundleService (services.ts) — один рендер на обе модальности.
+ * селектор бандлов («скачать → активировать»), файлы, диск/память и папка
+ * набора («Изменить путь…» — диалог → проверка файлов → set; «Сбросить путь» —
+ * возврат к дефолту хранилища KingOrchData). Работает поверх BundleService
+ * (services.ts) — один рендер на обе модальности.
  */
 import { STYLE, esc, formatBytes, toast, progressText } from './ui-shared';
 import { notifyBundleChanged } from '../index';
@@ -42,12 +43,15 @@ export class BundleTabElement extends HTMLElement {
         <ul class="files" id="files"></ul>
         <div class="row" style="margin-top:8px;"><label>Диск:</label><span id="disk" class="hint"></span></div>
         <div class="row"><label>Память:</label><span id="mem" class="hint"></span></div>
-        <div class="row"><label>Папка:</label><span id="dir" class="hint" style="word-break:break-all; flex:1;"></span></div>
+        <div class="row">
+          <label>Папка:</label>
+          <span id="dir" class="hint" style="word-break:break-all; flex:1;"></span>
+          <button id="changeDir" class="secondary">Изменить путь…</button>
+          <button id="resetDir" class="secondary" style="display:none;">Сбросить путь</button>
+        </div>
         <div class="row" style="margin-top:10px;">
           <button id="download" class="primary">Скачать набор</button>
-          <button id="add" class="secondary">+ Добавить набор</button>
           <button id="resume" class="primary" style="display:none;">Докачать файлы</button>
-          <button id="removeFromList" class="secondary" style="display:none;">Удалить из списка</button>
           <button id="deleteFiles" class="danger" style="display:none;">Удалить файлы</button>
         </div>
         <div id="progress" class="progress-container">
@@ -68,9 +72,9 @@ export class BundleTabElement extends HTMLElement {
         this.root.getElementById('bundle').addEventListener('change', () => this.onBundleChange());
         this.root.getElementById('activate').addEventListener('click', () => this.onActivate());
         this.root.getElementById('download').addEventListener('click', () => this.onDownload());
-        this.root.getElementById('add').addEventListener('click', () => this.onAddCustomDir());
+        this.root.getElementById('changeDir').addEventListener('click', () => this.onChangeDir());
+        this.root.getElementById('resetDir').addEventListener('click', () => this.onResetDir());
         this.root.getElementById('resume').addEventListener('click', () => this.onResume());
-        this.root.getElementById('removeFromList').addEventListener('click', () => this.onRemoveFromList());
         this.root.getElementById('deleteFiles').addEventListener('click', () => this.confirmDelete());
         this.root.getElementById('modalCancel').addEventListener('click', () => this.closeModal());
         this.root.getElementById('modalOk').addEventListener('click', () => void this.doDeleteFiles());
@@ -182,7 +186,9 @@ export class BundleTabElement extends HTMLElement {
         const resumeBtn = this.root.getElementById('resume');
         resumeBtn.style.display = info.fully_downloaded ? 'none' : 'inline-block';
         resumeBtn.disabled = !anyExists; // «Докачать» без ни одного файла = то же, что «Скачать»
-        this.root.getElementById('removeFromList').style.display = info.save_dir ? 'inline-block' : 'none';
+        // «Сбросить путь» виден только когда путь кастомный (вернёт к дефолту
+        // хранилища KingOrchData); дефолт сбрасывать нечего.
+        this.root.getElementById('resetDir').style.display = info.save_dir ? 'inline-block' : 'none';
         this.root.getElementById('deleteFiles').style.display = info.fully_downloaded ? 'inline-block' : 'none';
         if (svc.memoryProbe) {
             try {
@@ -265,13 +271,14 @@ export class BundleTabElement extends HTMLElement {
             await this.refresh();
         }
     }
-    /** Custom-папка (add): диалог → validate → set → честный тост о нехватке. */
-    async onAddCustomDir() {
+    /** «Изменить путь…»: диалог → проверка наличия файлов → set → честный тост
+     * о нехватке. Выбранная папка становится пулом этого набора. */
+    async onChangeDir() {
         const svc = this.service;
         if (!svc || this.busy)
             return;
         this.busy = true;
-        const btn = this.root.getElementById('add');
+        const btn = this.root.getElementById('changeDir');
         btn.disabled = true;
         try {
             const sel = await openDialog({ directory: true, title: `Папка набора ${svc.kind === 'video' ? 'VideoGEN' : 'ImageGEN'}` });
@@ -291,7 +298,7 @@ export class BundleTabElement extends HTMLElement {
             await svc.setCustomDir(path);
             notifyBundleChanged();
             if (valid.valid) {
-                toast('Набор добавлен: все файлы на месте.');
+                toast('Папка набора обновлена: все файлы на месте.');
             }
             else {
                 toast(`Папка выбрана. Не хватает файлов: ${valid.missing.length}. Нажмите «Докачать файлы».`);
@@ -299,11 +306,30 @@ export class BundleTabElement extends HTMLElement {
             await this.refresh();
         }
         catch (e) {
-            toast(`Не удалось добавить набор: ${e}`, 'error');
+            toast(`Не удалось сменить папку набора: ${e}`, 'error');
         }
         finally {
             btn.disabled = false;
             this.busy = false;
+        }
+    }
+    /** «Сбросить путь»: вернуть папку набора к дефолту хранилища. */
+    async onResetDir() {
+        const svc = this.service;
+        if (!svc || this.busy)
+            return;
+        this.busy = true;
+        try {
+            await svc.clearCustomDir();
+            notifyBundleChanged();
+            toast('Папка сброшена: вернулись к хранилищу по умолчанию.');
+        }
+        catch (e) {
+            toast(`Ошибка: ${e}`, 'error');
+        }
+        finally {
+            this.busy = false;
+            await this.refresh();
         }
     }
     /** Custom-папка (resume): докачать недостающие в текущую папку. */
@@ -330,24 +356,6 @@ export class BundleTabElement extends HTMLElement {
             if (btn)
                 btn.disabled = false;
             this.showProgress(false);
-            await this.refresh();
-        }
-    }
-    async onRemoveFromList() {
-        const svc = this.service;
-        if (!svc || this.busy)
-            return;
-        this.busy = true;
-        try {
-            await svc.clearCustomDir();
-            notifyBundleChanged();
-            toast('Custom-папка снята: вернулись к стандартной.');
-        }
-        catch (e) {
-            toast(`Ошибка: ${e}`, 'error');
-        }
-        finally {
-            this.busy = false;
             await this.refresh();
         }
     }

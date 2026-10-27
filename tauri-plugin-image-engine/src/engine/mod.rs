@@ -28,7 +28,11 @@ pub use bench_upscale::{
 };
 pub use bench_ext::{phash_diff_vs, phash_mean, run_edit_bench, run_hires_bench, PhashRow};
 pub use bench_prompts::{DEFAULT_PROMPTS, EDIT_PROMPTS};
-pub use config::{bundle_dir_early, engine_dir_early, load_image_config, load_image_config_early, save_image_config, video_bundle_dir_early, ImageEngineConfig};
+pub use config::{
+    bundle_dir_early, data_root, default_image_bundle_dir, default_video_bundle_dir,
+    engine_dir_early, load_image_config, load_image_config_early, save_image_config,
+    video_bundle_dir_early, ImageEngineConfig,
+};
 pub use image_engine::{
     edit_image_files, generate_image_simple, upscale_image_files, upscale_target_dims, ImageEngine,
     ImageGenResult, Img2Img, UPSCALE_STRENGTH_DEFAULT,

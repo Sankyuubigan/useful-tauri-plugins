@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tauri::AppHandle;
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -42,6 +42,85 @@ pub fn get_config_path(_app: &AppHandle) -> PathBuf {
 /// Идентификатор приложения-хоста: имя папки данных King Orch.
 const HOST_APP_IDENTIFIER: &str = "com.kingorch.app";
 
+/// Имя папки общего хранилища данных хоста — зеркало
+/// `infra::data_dir::DATA_DIR_NAME` хоста. Плагин не может импортировать хост,
+/// поэтому приоритет пути повторён 1:1: явный `data_dir` из общего конфига →
+/// диск с макс. свободным местом + `KingOrchData` → фоллбэк `<exe>/KingOrchData`.
+pub const HOST_DATA_DIR_NAME: &str = "KingOrchData";
+
+/// Нормализация пути хранилища (зеркало `data_dir::normalize` хоста): последний
+/// компонент обязан быть KingOrchData (без учёта регистра), иначе приклеивается.
+/// Чистая функция, без обращений к файловой системе.
+fn normalize_data_root(raw: &str) -> PathBuf {
+    let trimmed = raw.trim().trim_end_matches(['/', '\\']);
+    if trimmed.is_empty() {
+        return PathBuf::from(HOST_DATA_DIR_NAME);
+    }
+    let p = Path::new(trimmed);
+    let needs_suffix = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| !n.eq_ignore_ascii_case(HOST_DATA_DIR_NAME))
+        .unwrap_or(true);
+    if needs_suffix {
+        p.join(HOST_DATA_DIR_NAME)
+    } else {
+        p.to_path_buf()
+    }
+}
+
+/// Диск с макс. свободным местом (зеркало `data_dir::best_drive_letter` хоста).
+fn best_drive_letter() -> Option<String> {
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let mut best: Option<(String, u64)> = None;
+    for disk in disks.list() {
+        let mount = disk.mount_point().to_string_lossy().to_string();
+        if mount.len() >= 2 && mount.as_bytes()[1] == b':' {
+            let letter = mount[..1].to_uppercase();
+            let available = disk.available_space();
+            match &best {
+                Some((_, best_avail)) if available <= *best_avail => {}
+                _ => best = Some((letter, available)),
+            }
+        }
+    }
+    best.map(|(letter, _)| letter)
+}
+
+/// Корень общего хранилища данных хоста (`KingOrchData`) без AppHandle:
+/// `data_dir` из общего app_config.json (тот же файл, что читают все методы
+/// конфига) → диск с макс. свободным местом → фоллбэк `<exe>/KingOrchData`.
+pub fn data_root() -> PathBuf {
+    let path = ko_json_store::roots::app_dir(HOST_APP_IDENTIFIER, "").join("app_config.json");
+    if let Ok(Some(text)) = ko_json_store::read_text(&path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(raw) = v.get("data_dir").and_then(|x| x.as_str()) {
+                if !raw.trim().is_empty() {
+                    return normalize_data_root(raw);
+                }
+            }
+        }
+    }
+    match best_drive_letter() {
+        Some(letter) => PathBuf::from(format!("{}:\\{}", letter, HOST_DATA_DIR_NAME)),
+        None => std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(HOST_DATA_DIR_NAME),
+    }
+}
+
+/// Дефолтная папка image-бандлов: `<хранилище>/image_models` (пул всех наборов).
+pub fn default_image_bundle_dir() -> PathBuf {
+    data_root().join("image_models")
+}
+
+/// Дефолтная папка видео-бандлов: `<хранилище>/video_models`.
+pub fn default_video_bundle_dir() -> PathBuf {
+    data_root().join("video_models")
+}
+
 /// Читает image-ключи ДО создания Tauri-приложения (тулы оркестратора, рантайм
 /// без AppHandle). Путь — тот же корень, что и у хоста.
 pub fn load_image_config_early() -> ImageEngineConfig {
@@ -71,7 +150,8 @@ pub fn engine_dir_early() -> PathBuf {
     crate::engine::sdcpp_installer::default_dir(&exe_dir)
 }
 
-/// Папка бандлов без AppHandle: явная из конфига, иначе `<exe>/image_models`.
+/// Папка бандлов без AppHandle: явная из конфига, иначе
+/// `<хранилище KingOrchData>/image_models` (пул всех наборов).
 /// Одна папка-пул для ВСЕХ бандлов (имена общих ролей совпадают, downloader
 /// пропускает существующее) — per-bundle подпапки убрали 25.10.2026: они
 /// порождали перекачку общих файлов и «3 файла есть, 1 нет» при переключении
@@ -83,16 +163,13 @@ pub fn bundle_dir_early() -> PathBuf {
             return PathBuf::from(p);
         }
     }
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
-    exe_dir.join("image_models")
+    default_image_bundle_dir()
 }
 
-/// Папка видео-бандлов без AppHandle: явная из конфига, иначе `<exe>/video_models`.
-/// Тот же пул-принцип, что у image: diffusion-файлы разных бандлов имеют
-/// разные имена, общие роли (llm/vae/audio_vae) — одинаковые.
+/// Папка видео-бандлов без AppHandle: явная из конфига, иначе
+/// `<хранилище KingOrchData>/video_models`. Тот же пул-принцип, что у image:
+/// diffusion-файлы разных бандлов имеют разные имена, общие роли
+/// (llm/vae/audio_vae/lora_draft) — одинаковые.
 pub fn video_bundle_dir_early() -> PathBuf {
     let cfg = load_image_config_early();
     if let Some(p) = &cfg.video_bundle_dir {
@@ -100,11 +177,7 @@ pub fn video_bundle_dir_early() -> PathBuf {
             return PathBuf::from(p);
         }
     }
-    let exe_dir = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."));
-    exe_dir.join("video_models")
+    default_video_bundle_dir()
 }
 
 /// Читает ТОЛЬКО image-ключи (остальное игнорируется serde по умолчанию).
@@ -132,4 +205,40 @@ pub fn save_image_config(app: &AppHandle, config: &ImageEngineConfig) -> Result<
             }
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Зеркало тестов `data_dir::normalize` хоста: конвенция одна, ломаться
+    /// должна одинаково.
+    #[test]
+    fn normalize_data_root_appends_suffix() {
+        assert_eq!(normalize_data_root("D:\\foo"), PathBuf::from("D:\\foo\\KingOrchData"));
+        assert_eq!(normalize_data_root("D:\\foo\\"), PathBuf::from("D:\\foo\\KingOrchData"));
+        assert_eq!(normalize_data_root("D:\\foo\\bar"), PathBuf::from("D:\\foo\\bar\\KingOrchData"));
+    }
+
+    #[test]
+    fn normalize_data_root_keeps_existing_suffix() {
+        assert_eq!(
+            normalize_data_root("D:\\foo\\KingOrchData"),
+            PathBuf::from("D:\\foo\\KingOrchData")
+        );
+        assert_eq!(
+            normalize_data_root("D:\\foo\\kingorchdata\\"),
+            PathBuf::from("D:\\foo\\kingorchdata")
+        );
+    }
+
+    #[test]
+    fn normalize_data_root_no_partial_match_and_empty() {
+        assert_eq!(
+            normalize_data_root("D:\\MyKingOrchData"),
+            PathBuf::from("D:\\MyKingOrchData\\KingOrchData")
+        );
+        assert_eq!(normalize_data_root(""), PathBuf::from("KingOrchData"));
+        assert_eq!(normalize_data_root("   "), PathBuf::from("KingOrchData"));
+    }
 }

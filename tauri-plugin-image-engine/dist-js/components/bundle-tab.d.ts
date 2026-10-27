@@ -20,11 +20,13 @@ export declare class BundleTabElement extends HTMLElement {
      * она порождала перекачку общих файлов и «3 файла есть, 1 нет» при
      * переключении активного бандла (инцидент 25.10.2026). */
     private onDownload;
-    /** Custom-папка (add): диалог → validate → set → честный тост о нехватке. */
-    private onAddCustomDir;
+    /** «Изменить путь…»: диалог → проверка наличия файлов → set → честный тост
+     * о нехватке. Выбранная папка становится пулом этого набора. */
+    private onChangeDir;
+    /** «Сбросить путь»: вернуть папку набора к дефолту хранилища. */
+    private onResetDir;
     /** Custom-папка (resume): докачать недостающие в текущую папку. */
     private onResume;
-    private onRemoveFromList;
     private confirmDelete;
     private closeModal;
     private doDeleteFiles;

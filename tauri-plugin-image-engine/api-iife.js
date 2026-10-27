@@ -467,12 +467,15 @@
         <ul class="files" id="files"></ul>
         <div class="row" style="margin-top:8px;"><label>\u0414\u0438\u0441\u043A:</label><span id="disk" class="hint"></span></div>
         <div class="row"><label>\u041F\u0430\u043C\u044F\u0442\u044C:</label><span id="mem" class="hint"></span></div>
-        <div class="row"><label>\u041F\u0430\u043F\u043A\u0430:</label><span id="dir" class="hint" style="word-break:break-all; flex:1;"></span></div>
+        <div class="row">
+          <label>\u041F\u0430\u043F\u043A\u0430:</label>
+          <span id="dir" class="hint" style="word-break:break-all; flex:1;"></span>
+          <button id="changeDir" class="secondary">\u0418\u0437\u043C\u0435\u043D\u0438\u0442\u044C \u043F\u0443\u0442\u044C\u2026</button>
+          <button id="resetDir" class="secondary" style="display:none;">\u0421\u0431\u0440\u043E\u0441\u0438\u0442\u044C \u043F\u0443\u0442\u044C</button>
+        </div>
         <div class="row" style="margin-top:10px;">
           <button id="download" class="primary">\u0421\u043A\u0430\u0447\u0430\u0442\u044C \u043D\u0430\u0431\u043E\u0440</button>
-          <button id="add" class="secondary">+ \u0414\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u043D\u0430\u0431\u043E\u0440</button>
           <button id="resume" class="primary" style="display:none;">\u0414\u043E\u043A\u0430\u0447\u0430\u0442\u044C \u0444\u0430\u0439\u043B\u044B</button>
-          <button id="removeFromList" class="secondary" style="display:none;">\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0438\u0437 \u0441\u043F\u0438\u0441\u043A\u0430</button>
           <button id="deleteFiles" class="danger" style="display:none;">\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0444\u0430\u0439\u043B\u044B</button>
         </div>
         <div id="progress" class="progress-container">
@@ -493,9 +496,9 @@
       this.root.getElementById("bundle").addEventListener("change", () => this.onBundleChange());
       this.root.getElementById("activate").addEventListener("click", () => this.onActivate());
       this.root.getElementById("download").addEventListener("click", () => this.onDownload());
-      this.root.getElementById("add").addEventListener("click", () => this.onAddCustomDir());
+      this.root.getElementById("changeDir").addEventListener("click", () => this.onChangeDir());
+      this.root.getElementById("resetDir").addEventListener("click", () => this.onResetDir());
       this.root.getElementById("resume").addEventListener("click", () => this.onResume());
-      this.root.getElementById("removeFromList").addEventListener("click", () => this.onRemoveFromList());
       this.root.getElementById("deleteFiles").addEventListener("click", () => this.confirmDelete());
       this.root.getElementById("modalCancel").addEventListener("click", () => this.closeModal());
       this.root.getElementById("modalOk").addEventListener("click", () => void this.doDeleteFiles());
@@ -601,7 +604,7 @@
       const resumeBtn = this.root.getElementById("resume");
       resumeBtn.style.display = info.fully_downloaded ? "none" : "inline-block";
       resumeBtn.disabled = !anyExists;
-      this.root.getElementById("removeFromList").style.display = info.save_dir ? "inline-block" : "none";
+      this.root.getElementById("resetDir").style.display = info.save_dir ? "inline-block" : "none";
       this.root.getElementById("deleteFiles").style.display = info.fully_downloaded ? "inline-block" : "none";
       if (svc.memoryProbe) {
         try {
@@ -673,12 +676,13 @@
         await this.refresh();
       }
     }
-    /** Custom-папка (add): диалог → validate → set → честный тост о нехватке. */
-    async onAddCustomDir() {
+    /** «Изменить путь…»: диалог → проверка наличия файлов → set → честный тост
+     * о нехватке. Выбранная папка становится пулом этого набора. */
+    async onChangeDir() {
       const svc = this.service;
       if (!svc || this.busy) return;
       this.busy = true;
-      const btn = this.root.getElementById("add");
+      const btn = this.root.getElementById("changeDir");
       btn.disabled = true;
       try {
         const sel = await open({ directory: true, title: `\u041F\u0430\u043F\u043A\u0430 \u043D\u0430\u0431\u043E\u0440\u0430 ${svc.kind === "video" ? "VideoGEN" : "ImageGEN"}` });
@@ -695,16 +699,32 @@
         await svc.setCustomDir(path);
         notifyBundleChanged();
         if (valid.valid) {
-          toast("\u041D\u0430\u0431\u043E\u0440 \u0434\u043E\u0431\u0430\u0432\u043B\u0435\u043D: \u0432\u0441\u0435 \u0444\u0430\u0439\u043B\u044B \u043D\u0430 \u043C\u0435\u0441\u0442\u0435.");
+          toast("\u041F\u0430\u043F\u043A\u0430 \u043D\u0430\u0431\u043E\u0440\u0430 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0430: \u0432\u0441\u0435 \u0444\u0430\u0439\u043B\u044B \u043D\u0430 \u043C\u0435\u0441\u0442\u0435.");
         } else {
           toast(`\u041F\u0430\u043F\u043A\u0430 \u0432\u044B\u0431\u0440\u0430\u043D\u0430. \u041D\u0435 \u0445\u0432\u0430\u0442\u0430\u0435\u0442 \u0444\u0430\u0439\u043B\u043E\u0432: ${valid.missing.length}. \u041D\u0430\u0436\u043C\u0438\u0442\u0435 \xAB\u0414\u043E\u043A\u0430\u0447\u0430\u0442\u044C \u0444\u0430\u0439\u043B\u044B\xBB.`);
         }
         await this.refresh();
       } catch (e) {
-        toast(`\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0434\u043E\u0431\u0430\u0432\u0438\u0442\u044C \u043D\u0430\u0431\u043E\u0440: ${e}`, "error");
+        toast(`\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043C\u0435\u043D\u0438\u0442\u044C \u043F\u0430\u043F\u043A\u0443 \u043D\u0430\u0431\u043E\u0440\u0430: ${e}`, "error");
       } finally {
         btn.disabled = false;
         this.busy = false;
+      }
+    }
+    /** «Сбросить путь»: вернуть папку набора к дефолту хранилища. */
+    async onResetDir() {
+      const svc = this.service;
+      if (!svc || this.busy) return;
+      this.busy = true;
+      try {
+        await svc.clearCustomDir();
+        notifyBundleChanged();
+        toast("\u041F\u0430\u043F\u043A\u0430 \u0441\u0431\u0440\u043E\u0448\u0435\u043D\u0430: \u0432\u0435\u0440\u043D\u0443\u043B\u0438\u0441\u044C \u043A \u0445\u0440\u0430\u043D\u0438\u043B\u0438\u0449\u0443 \u043F\u043E \u0443\u043C\u043E\u043B\u0447\u0430\u043D\u0438\u044E.");
+      } catch (e) {
+        toast(`\u041E\u0448\u0438\u0431\u043A\u0430: ${e}`, "error");
+      } finally {
+        this.busy = false;
+        await this.refresh();
       }
     }
     /** Custom-папка (resume): докачать недостающие в текущую папку. */
@@ -727,21 +747,6 @@
         this.busy = false;
         if (btn) btn.disabled = false;
         this.showProgress(false);
-        await this.refresh();
-      }
-    }
-    async onRemoveFromList() {
-      const svc = this.service;
-      if (!svc || this.busy) return;
-      this.busy = true;
-      try {
-        await svc.clearCustomDir();
-        notifyBundleChanged();
-        toast("Custom-\u043F\u0430\u043F\u043A\u0430 \u0441\u043D\u044F\u0442\u0430: \u0432\u0435\u0440\u043D\u0443\u043B\u0438\u0441\u044C \u043A \u0441\u0442\u0430\u043D\u0434\u0430\u0440\u0442\u043D\u043E\u0439.");
-      } catch (e) {
-        toast(`\u041E\u0448\u0438\u0431\u043A\u0430: ${e}`, "error");
-      } finally {
-        this.busy = false;
         await this.refresh();
       }
     }

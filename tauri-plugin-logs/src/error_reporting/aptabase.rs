@@ -250,22 +250,47 @@ fn requeue_front(items: Vec<Value>) {
     }
 }
 
-/// Отправка ошибки (`/api/v0/error`, + поле `project`).
-pub fn send_error(cfg: ReportingConfig, report: ErrorReport) {
-    let url = format!("{}/api/v0/error", region_base(&cfg.app_key));
-    let app_key = cfg.app_key;
-    let body = json!({
-        "errorMessage": report.message,
-        "errorType": report.error_type,
-        "stackTrace": report.stack,
+/// Усечение строки до лимита сервера. Сервер (`ErrorBody.cs` → `IsValid`)
+/// отвергает ВЕСЬ отчёт (400) на превышающем лимит поле, поэтому режем на
+/// границе `chars()` — частичная доставка лучше нулевой.
+fn cap(s: &str, max: usize) -> String {
+    s.chars().take(max).collect()
+}
+
+/// Тело ошибки для `/api/v0/error`. Чистая функция — тестовая точка.
+///
+/// Сервер принимает ровно поля `ErrorBody.cs`; неизвестные молча отбрасывает
+/// (`project`, `breadcrumbs` — не доходят, см. docs/README.md), а превышение
+/// любого лимита (errorMessage ≤5000, errorType ≤100, stackTrace ≤10000,
+/// platform ≤30, osName ≤30, osVersion ≤100, appVersion ≤50, sdkVersion ≤40,
+/// sessionId ≤100) → 400 на весь отчёт — поэтому все строки усекаются.
+fn error_body(report: &ErrorReport, cfg: &ReportingConfig, app_version: &str, session_id: &str) -> Value {
+    json!({
+        "errorMessage": cap(&report.message, 5000),
+        "errorType": cap(&report.error_type, 100),
+        "stackTrace": report.stack.as_deref().map(|s| cap(s, 10_000)),
         "timestamp": Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true),
         "inBackground": false,
         "severity": report.severity,
         "kind": report.kind,
         "isDebug": cfg!(debug_assertions),
+        "platform": cap("tauri", 30),
+        "osName": cap(std::env::consts::OS, 30),
+        "osVersion": cap(&std::env::var("OS").unwrap_or_else(|_| std::env::consts::OS.to_string()), 100),
+        "appVersion": cap(app_version, 50),
+        "sdkVersion": cap(concat!("tauri-plugin-logs@", env!("CARGO_PKG_VERSION")), 40),
+        "sessionId": cap(session_id, 100),
         "project": cfg.project,
         "breadcrumbs": report.breadcrumbs,
-    });
+    })
+}
+
+/// Отправка ошибки (`/api/v0/error`, + поле `project`).
+pub fn send_error(cfg: ReportingConfig, report: ErrorReport) {
+    let app_version = APP_VERSION.get().cloned().unwrap_or_default();
+    let body = error_body(&report, &cfg, &app_version, &session_id());
+    let url = format!("{}/api/v0/error", region_base(&cfg.app_key));
+    let app_key = cfg.app_key;
     tauri::async_runtime::spawn(async move {
         // Единый ленивый клиент (см. http_client) — без новой коннекции на каждую ошибку.
         let Some(client) = http_client() else { return };
@@ -290,6 +315,70 @@ pub fn send_error(cfg: ReportingConfig, report: ErrorReport) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn synthetic_report() -> ErrorReport {
+        ErrorReport {
+            error_type: "SyntheticType".to_string(),
+            message: "synthetic error message".to_string(),
+            stack: None,
+            severity: "error",
+            kind: "handled",
+            breadcrumbs: Vec::new(),
+        }
+    }
+
+    fn synthetic_cfg() -> ReportingConfig {
+        ReportingConfig {
+            enabled: true,
+            project: "synthetic-project".to_string(),
+            app_key: "A-EU-test".to_string(),
+            events: true,
+        }
+    }
+
+    /// Обогащённое тело содержит контекст, которого раньше не было
+    /// (GAP: дашборд не мог фильтровать по версии/ОС и связать с сессией).
+    #[test]
+    fn error_body_contains_context_fields() {
+        let body = error_body(&synthetic_report(), &synthetic_cfg(), "26.10.14", "sess-123");
+        assert_eq!(body["appVersion"], "26.10.14");
+        assert_eq!(body["sessionId"], "sess-123");
+        assert_eq!(body["osName"], std::env::consts::OS);
+        assert_eq!(body["platform"], "tauri");
+        assert_eq!(body["severity"], "error");
+        assert_eq!(body["kind"], "handled");
+        assert_eq!(body["project"], "synthetic-project");
+        let sdk = body["sdkVersion"].as_str().expect("sdkVersion строка");
+        assert!(sdk.starts_with("tauri-plugin-logs@"), "неожиданный sdkVersion: {sdk}");
+        assert!(sdk.chars().count() <= 40, "sdkVersion длиннее лимита ErrorBody");
+        let os_version = body["osVersion"].as_str().expect("osVersion строка");
+        assert!(os_version.chars().count() <= 100);
+    }
+
+    /// sessionId берётся из той же сессии, что и события (единая сессия).
+    #[test]
+    fn error_body_session_matches_event_session() {
+        let sid = session_id();
+        let body = error_body(&synthetic_report(), &synthetic_cfg(), "26.10.14", &sid);
+        assert_eq!(body["sessionId"], sid);
+        assert!(!sid.is_empty());
+    }
+
+    /// Длинные поля усекаются до лимитов сервера — иначе весь отчёт
+    /// отвергается с 400 (ErrorBody.cs IsValid), а не только это поле.
+    #[test]
+    fn error_body_truncates_to_server_limits() {
+        let mut report = synthetic_report();
+        report.message = "m".repeat(6000);
+        report.error_type = "t".repeat(150);
+        report.stack = Some("s".repeat(11_000));
+        let body = error_body(&report, &synthetic_cfg(), &"v".repeat(60), &"x".repeat(120));
+        assert_eq!(body["errorMessage"].as_str().unwrap().chars().count(), 5000);
+        assert_eq!(body["errorType"].as_str().unwrap().chars().count(), 100);
+        assert_eq!(body["stackTrace"].as_str().unwrap().chars().count(), 10_000);
+        assert_eq!(body["appVersion"].as_str().unwrap().chars().count(), 50);
+        assert_eq!(body["sessionId"].as_str().unwrap().chars().count(), 100);
+    }
 
     #[test]
     fn region_selected_from_app_key() {

@@ -113,6 +113,61 @@ import { logFront, logFrontendEvent, onLogMessage, setReportingEnabled, trackEve
 cargo test -p tauri-plugin-logs
 ```
 
+## Чтение отчётов из Aptabase (скрипт aptabase_read)
+
+`scripts/aptabase_read.mjs` — CLI для чтения отчётов об ошибках и аналитики
+Aptabase (проверка багов юзеров без открытия дашборда). Только GET: тестовые
+события/ошибки в прод-облако из скрипта не отправляются.
+
+### Доступ (кука auth-session)
+
+У облачного Aptabase **нет публичного query-API и read-ключей** — чтение идёт
+через cookie `auth-session` дашборда (срок жизни ~365 дней, обновлять при 401).
+Ключ `A-EU-*` в `tauri.conf.json` — ключ **отправки**, читать им нельзя.
+
+1. Войти на `https://eu.aptabase.com` в браузере.
+2. DevTools (F12) → Application → Cookies → `https://eu.aptabase.com` →
+   скопировать значение куки `auth-session`.
+3. Сохранить значение в `%APPDATA%\aptabase\auth-session.txt`
+   (или передавать через env `APTABASE_AUTH_SESSION`).
+
+**Кука = полный доступ к дашборду**: не коммитить, не печатать в логах/чатах.
+
+4. `%APPDATA%\aptabase\config.json`: `{"baseUrl": "https://eu.aptabase.com", "appId": "<id из list-apps>"}`.
+
+### Команды
+
+```
+node scripts/aptabase_read.mjs list-apps                     # приложения (найти appId)
+node scripts/aptabase_read.mjs errors --days 30 --kind crash # ошибки за 30 дней
+node scripts/aptabase_read.mjs error-types --days 30         # уникальные типы
+node scripts/aptabase_read.mjs error-detail <errorId>        # полный стек одной ошибки
+node scripts/aptabase_read.mjs metrics --period 30d          # DAU/сессии/события
+node scripts/aptabase_read.mjs top-events --period 90d       # топ событий
+node scripts/aptabase_read.mjs top-versions --period 90d     # топ версий приложения
+node scripts/aptabase_read.mjs usage                         # месячный расход (квота 20 000/мес free)
+```
+
+Фильтры `errors`: `--days N | --from YYYY-MM-DD --to YYYY-MM-DD`, `--type`,
+`--severity fatal|error`, `--kind crash|unhandled|taskException|handled`,
+`--os`, `--limit` (1..100, по умолчанию 50), `--offset`, `--json`.
+Общие: `--app <appId>`, `--debug` (buildMode=debug, по умолчанию release),
+`--base-url`, `--period` (`24h|48h|today|yesterday|7d|14d|30d|month|last-month|90d|180d|365d|all`).
+
+Exit-коды: `0` — успех, `1` — ошибка запроса/формата, `2` — кука не найдена,
+`3` — кука истекла/не принята (HTTP 401). HTTP 429 — rate limit (~1000 req/час).
+
+### Известные ограничения данных (важно при анализе)
+
+- **Breadcrumbs в облако не доходят**: сервер Aptabase (`ErrorBody.cs`) поле
+  `breadcrumbs` игнорирует (молча отбрасывает). Хроника действий перед ошибкой
+  живёт только в локальном `king_orch.log` юзера — для контекста просить файл у юзера.
+- Поле `project` в error-теле сервером **сейчас игнорируется** (задел на
+  несколько приложений на одном App-Key, не действующий контракт).
+- Обрыв «какой версией приложено» — до релиза бинаря с обогащённым телом
+  (`appVersion`/`osName`/`sessionId`, см. `src/error_reporting/aptabase.rs`)
+  в дашборде Errors фильтров по версии/ОС не будет.
+
 ## Структура
 
 ```
@@ -124,5 +179,5 @@ src/error_reporting/ — облачный репорт + Aptabase (mod.rs, aptab
 guest-js/         — TS-обвязка + web-components + shims (dist-js/, api-iife.js — производное)
 permissions/      — капабилити ("logs:default")
 build.rs          — сборка плагина (COMMANDS + global_api_script_path)
-scripts/          — build-global.cjs (сборка api-iife.js через esbuild, npm run build:global)
+scripts/          — build-global.cjs (сборка api-iife.js), aptabase_read.mjs (чтение отчётов Aptabase)
 ```

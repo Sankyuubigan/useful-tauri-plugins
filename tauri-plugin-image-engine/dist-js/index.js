@@ -55,6 +55,15 @@ export function removeImageBundle(bundleName) {
 export function removeImageBundleFromList() {
     return invoke('plugin:image-engine|remove_image_bundle_from_list');
 }
+/** Неиспользуемые файлы пула image-бандлов (остатки удалённых из каталога
+ * бандлов + сторонний мусор). Только перечисление — удаление отдельной командой. */
+export function getImagePoolOrphans() {
+    return invoke('plugin:image-engine|get_image_pool_orphans');
+}
+/** Удалить перечисленные неиспользуемые файлы пула (явное действие юзера). */
+export function removeImagePoolOrphans(filenames) {
+    return invoke('plugin:image-engine|remove_image_pool_orphans', { filenames });
+}
 export function estimateImageMemory(bundleName) {
     return invoke('plugin:image-engine|estimate_image_memory', { bundleName: bundleName ?? null });
 }

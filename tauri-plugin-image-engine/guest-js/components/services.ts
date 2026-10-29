@@ -11,10 +11,12 @@ import {
   estimateImageMemory,
   getImageBundleInfo,
   getImageModelsCatalog,
+  getImagePoolOrphans,
   getVideoBundleInfo,
   getVideoBundles,
   removeImageBundle,
   removeImageBundleFromList,
+  removeImagePoolOrphans,
   removeVideoBundleFiles,
   setImageBundleDir,
   setSelectedImageBundle,
@@ -22,6 +24,7 @@ import {
   setVideoBundleDir,
   validateImageBundleDir,
   validateVideoBundleDir,
+  type PoolOrphansInfo,
 } from '../index'
 
 export type TabFileInfo = {
@@ -77,6 +80,11 @@ export interface BundleService {
   /** Удалить файлы бандла (null = активный). Вкладка передаёт ВЫБРАННОЕ имя
    * (PRP 29.10.26 D1) — удаление выбранного не должно трогать активный. */
   removeFiles(name?: string | null): Promise<TabInfo>
+  /** Неиспользуемые файлы пула (только image: общий склад image_models).
+   * Остатки бандлов, удалённых из каталога, + сторонний мусор. */
+  poolOrphans?(): Promise<PoolOrphansInfo>
+  /** Удалить перечисленные неиспользуемые файлы пула. */
+  removePoolOrphans?(filenames: string[]): Promise<PoolOrphansInfo>
   /** Текст прогноза памяти (только image: NVML-замер estimate). */
   memoryProbe?(name?: string | null): Promise<string>
 }
@@ -96,6 +104,8 @@ export const imageService: BundleService = {
   clearCustomDir: () => removeImageBundleFromList().then((i) => i as unknown as TabInfo),
   download: (saveDir, name) => downloadImageBundle(saveDir, name).then((i) => i as unknown as TabInfo),
   removeFiles: (name) => removeImageBundle(name ?? null).then((i) => i as unknown as TabInfo),
+  poolOrphans: () => getImagePoolOrphans(),
+  removePoolOrphans: (filenames) => removeImagePoolOrphans(filenames),
   memoryProbe: async (name) => {
     const cur = await getImageBundleInfo(name)
     const info = (await imageSizeInfo(cur.bundle_name)) as TabInfo

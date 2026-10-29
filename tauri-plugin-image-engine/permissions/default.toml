@@ -70,9 +70,19 @@ description = "Allow pointing the image bundle to an existing valid directory."
 commands.allow = ["set_image_bundle_dir"]
 
 [[permission]]
-identifier = "allow-remove-image-bundle"
-description = "Allow deleting the downloaded image bundle files."
-commands.allow = ["remove_image_bundle"]
+identifier = "allow-remove-image-bundle-from-list"
+description = "Allow resetting the image bundle directory to the storage default."
+commands.allow = ["remove_image_bundle_from_list"]
+
+[[permission]]
+identifier = "allow-get-image-pool-orphans"
+description = "Allow listing unused image pool files (orphans of removed catalog bundles)."
+commands.allow = ["get_image_pool_orphans"]
+
+[[permission]]
+identifier = "allow-remove-image-pool-orphans"
+description = "Allow deleting explicitly listed unused image pool files."
+commands.allow = ["remove_image_pool_orphans"]
 
 [[permission]]
 identifier = "allow-estimate-image-memory"
@@ -151,6 +161,8 @@ permissions = [
   "allow-set-image-bundle-dir",
   "allow-remove-image-bundle",
   "allow-remove-image-bundle-from-list",
+  "allow-get-image-pool-orphans",
+  "allow-remove-image-pool-orphans",
   "allow-estimate-image-memory",
   "allow-generate-image",
   "allow-edit-image",

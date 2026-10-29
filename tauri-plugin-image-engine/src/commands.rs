@@ -501,16 +501,37 @@ pub async fn download_image_bundle(
     get_image_bundle_info(app, bundle_name)
 }
 
+/// Имена файлов, на которые ссылаются бандлы каталога КРОМЕ `except` (для
+/// refcount-удаления: файл общего пула жив, пока нужен хотя бы одному бандлу).
+fn catalog_filenames_except(except: &str) -> std::collections::HashSet<String> {
+    engine::load_image_catalog()
+        .iter()
+        .filter(|e| e.name != except)
+        .flat_map(|e| e.files.iter().map(|f| f.filename.clone()))
+        .collect()
+}
+
 #[tauri::command]
 pub fn remove_image_bundle(app: AppHandle, bundle_name: Option<String>) -> Result<ImageBundleInfo, String> {
     let entry = bundle_entry(&app, bundle_name.as_deref())?;
     let dir = bundle_dir(&app);
-    for f in &entry.files {
-        let p = dir.join(&f.filename);
+    // Refcount-удаление (29.10.26): пул общий, файл, нужный ХОТЬ ОДНОМУ
+    // другому бандлу каталога, остаётся — удаление одного из двух Qwen
+    // больше не ломает второй (общие 8B-llm/mmproj/vae делятся).
+    let other_referenced = catalog_filenames_except(&entry.name);
+    let (removable, kept) = crate::pool::split_removable(&entry.files, &other_referenced);
+    for name in &removable {
+        let p = dir.join(name);
         if p.exists() {
             std::fs::remove_file(&p)
                 .map_err(|e| format!("Не удалось удалить {}: {}", p.display(), e))?;
         }
+    }
+    if !kept.is_empty() {
+        log::info!(
+            "[IMG] Общие файлы остались в пуле (нужны другим бандлам): {}",
+            kept.join(", ")
+        );
     }
     // Если удаляли активный бандл — снимаем выбор (иначе все операции будут
     // падать с «активный бандл отсутствует»).
@@ -528,6 +549,61 @@ pub fn remove_image_bundle_from_list(app: AppHandle) -> Result<ImageBundleInfo, 
     cfg.image_bundle_dir = None;
     engine::save_image_config(&app, &cfg)?;
     Ok(get_image_bundle_info(app, None)?)
+}
+
+// ─────────── Пул: неиспользуемые файлы (reconcile, 29.10.26) ───────────
+
+/// Сводка по файлам пула, не нужным ни одному бандлу каталога.
+#[derive(Serialize, Clone)]
+pub struct PoolOrphansInfo {
+    pub dir: String,
+    pub orphans: Vec<crate::pool::PoolOrphan>,
+    pub total_bytes: u64,
+}
+
+fn pool_orphans_info(dir: &Path) -> PoolOrphansInfo {
+    let referenced: std::collections::HashSet<String> = engine::load_image_catalog()
+        .iter()
+        .flat_map(|e| e.files.iter().map(|f| f.filename.clone()))
+        .collect();
+    let orphans = crate::pool::find_pool_orphans(dir, &referenced);
+    let total_bytes = orphans.iter().map(|o| o.size_bytes).sum();
+    PoolOrphansInfo {
+        dir: dir.to_string_lossy().to_string(),
+        orphans,
+        total_bytes,
+    }
+}
+
+/// Файлы пула, оставшиеся от бандлов, которых больше нет в каталоге (плюс
+/// любой сторонний мусор в корне пула). Ничего не удаляет — только
+/// перечисляет; удаление — отдельная явная команда по решению юзера.
+#[tauri::command]
+pub fn get_image_pool_orphans(app: AppHandle) -> Result<PoolOrphansInfo, String> {
+    Ok(pool_orphans_info(&bundle_dir(&app)))
+}
+
+/// Удалить перечисленные неиспользуемые файлы пула (явное действие юзера).
+/// Имена перепроверяются перед удалением (pool::remove_orphans): нужное
+/// каталогу и пути вне пула — отказ.
+#[tauri::command]
+pub fn remove_image_pool_orphans(
+    app: AppHandle,
+    filenames: Vec<String>,
+) -> Result<PoolOrphansInfo, String> {
+    let dir = bundle_dir(&app);
+    let referenced: std::collections::HashSet<String> = engine::load_image_catalog()
+        .iter()
+        .flat_map(|e| e.files.iter().map(|f| f.filename.clone()))
+        .collect();
+    let removed = crate::pool::remove_orphans(&dir, &filenames, &referenced)?;
+    if !removed.is_empty() {
+        log::info!(
+            "[IMG] Удалены неиспользуемые файлы пула: {}",
+            removed.join(", ")
+        );
+    }
+    Ok(pool_orphans_info(&dir))
 }
 
 #[derive(Serialize, Clone)]
@@ -880,16 +956,30 @@ pub fn set_video_bundle_dir(app: AppHandle, path: Option<String>) -> Result<Vide
 /// Удалить файлы видео-бандла на диске (зеркало `remove_image_bundle`):
 /// решает бандл как `video_entry` (selected → дефолт), удаляет файлы, снимает
 /// выбор, если удаляли активный; custom-папку НЕ трогает (путь остаётся).
+/// Удаление refcount-aware: общий файл (llm/vae/audio_vae/lora_draft),
+/// нужный другому видео-бандлу, остаётся в пуле.
 #[tauri::command]
 pub fn remove_video_bundle_files(app: AppHandle, bundle_name: Option<String>) -> Result<VideoBundleInfo, String> {
     let entry = video_entry(&app, bundle_name.as_deref())?;
     let dir = video_bundle_dir(&app);
-    for f in &entry.files {
-        let p = dir.join(&f.filename);
+    let other_referenced: std::collections::HashSet<String> = engine::load_video_catalog()
+        .iter()
+        .filter(|e| e.name != entry.name)
+        .flat_map(|e| e.files.iter().map(|f| f.filename.clone()))
+        .collect();
+    let (removable, kept) = crate::pool::split_removable(&entry.files, &other_referenced);
+    for name in &removable {
+        let p = dir.join(name);
         if p.exists() {
             std::fs::remove_file(&p)
                 .map_err(|e| format!("Не удалось удалить {}: {}", p.display(), e))?;
         }
+    }
+    if !kept.is_empty() {
+        log::info!(
+            "[VIDEO] Общие файлы остались в пуле (нужны другим бандлам): {}",
+            kept.join(", ")
+        );
     }
     if engine::load_image_config(&app)
         .selected_video_bundle

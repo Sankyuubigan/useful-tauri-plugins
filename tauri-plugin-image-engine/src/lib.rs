@@ -62,6 +62,8 @@ pub fn init() -> TauriPlugin<Wry> {
             commands::download_image_bundle,
             commands::remove_image_bundle,
             commands::remove_image_bundle_from_list,
+            commands::get_image_pool_orphans,
+            commands::remove_image_pool_orphans,
             commands::estimate_image_memory,
             commands::generate_image,
             commands::edit_image,

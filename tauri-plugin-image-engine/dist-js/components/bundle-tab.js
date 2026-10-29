@@ -22,6 +22,10 @@ export class BundleTabElement extends HTMLElement {
         /** Статусы бандлов из последнего refresh (fully_downloaded и файлы) —
          * рендер панели и гейт кнопок читают ТОЛЬКО отсюда (SSOT). */
         this.statuses = new Map();
+        /** Что подтверждает модалка: файлы выбранного бандла или orphan-очистка пула. */
+        this.modalAction = 'bundle';
+        /** Имена orphan-файлов из последнего рендера — список для удаления (SSOT). */
+        this.orphanNames = [];
     }
     connectedCallback() {
         if (this.root)
@@ -46,6 +50,14 @@ export class BundleTabElement extends HTMLElement {
         <div class="row"><label>Набор:</label><span id="label" class="hint">…</span></div>
         <div id="note" class="hint"></div>
         <ul class="files" id="files"></ul>
+        <div id="orphans" style="display:none;">
+          <div class="row">
+            <label>Неиспользуемые:</label>
+            <span id="orphansSize" class="hint" style="flex:1;"></span>
+            <button id="removeOrphans" class="danger">Удалить</button>
+          </div>
+          <ul class="files" id="orphanFiles"></ul>
+        </div>
         <div class="row" style="margin-top:8px;"><label>Диск:</label><span id="disk" class="hint"></span></div>
         <div class="row"><label>Память:</label><span id="mem" class="hint"></span></div>
         <div class="row">
@@ -81,6 +93,7 @@ export class BundleTabElement extends HTMLElement {
         this.root.getElementById('resetDir').addEventListener('click', () => this.onResetDir());
         this.root.getElementById('resume').addEventListener('click', () => this.onResume());
         this.root.getElementById('deleteFiles').addEventListener('click', () => this.confirmDelete());
+        this.root.getElementById('removeOrphans').addEventListener('click', () => this.confirmRemoveOrphans());
         this.root.getElementById('modalCancel').addEventListener('click', () => this.closeModal());
         this.root.getElementById('modalOk').addEventListener('click', () => void this.doDeleteFiles());
         void this.refresh();
@@ -283,6 +296,39 @@ export class BundleTabElement extends HTMLElement {
             }
             catch { /* NVML может отсутствовать — остаётся строка пресета */ }
         }
+        // Неиспользуемые файлы пула (только image-сервис): остатки бандлов,
+        // исчезнувших из каталога, + сторонний мусор в корне пула. Ничего не
+        // удаляется само — видимый список и явная кнопка (решение юзера).
+        const orphBox = this.root.getElementById('orphans');
+        if (svc.poolOrphans) {
+            try {
+                const info = await svc.poolOrphans();
+                this.orphanNames = info.orphans.map((o) => o.filename);
+                if (info.orphans.length === 0) {
+                    orphBox.style.display = 'none';
+                }
+                else {
+                    orphBox.style.display = 'block';
+                    const ul = this.root.getElementById('orphanFiles');
+                    ul.innerHTML = '';
+                    for (const o of info.orphans) {
+                        const li = document.createElement('li');
+                        li.className = 'missing';
+                        li.textContent = `${esc(o.filename)} — ${formatBytes(o.size_bytes)}`;
+                        ul.appendChild(li);
+                    }
+                    this.root.getElementById('orphansSize').textContent =
+                        `${info.orphans.length} шт., ${formatBytes(info.total_bytes)} — не нужны ни одному бандлу каталога`;
+                }
+            }
+            catch {
+                // Вспомогательная секция: сбой её загрузки не блокирует вкладку.
+                orphBox.style.display = 'none';
+            }
+        }
+        else {
+            orphBox.style.display = 'none';
+        }
     }
     /** Смена выбора в селекте: панель целиком перерисовывается под выбранный
      * бандл (строка состояния, файлы, кнопки) — больше не только «показать/
@@ -446,6 +492,20 @@ export class BundleTabElement extends HTMLElement {
         }
     }
     confirmDelete() {
+        this.modalAction = 'bundle';
+        this.root.getElementById('overlayTitle').textContent = 'Удалить файлы набора?';
+        this.root.getElementById('overlayMsg').textContent =
+            'Файлы с диска будут удалены БЕЗВОЗВРАТНО. Общие с другими бандлами файлы останутся в пуле.';
+        this.root.getElementById('overlay').classList.add('open');
+    }
+    /** Подтверждение очистки неиспользуемых файлов пула (image-сервис). */
+    confirmRemoveOrphans() {
+        if (this.orphanNames.length === 0)
+            return;
+        this.modalAction = 'orphans';
+        this.root.getElementById('overlayTitle').textContent = 'Удалить неиспользуемые файлы пула?';
+        this.root.getElementById('overlayMsg').textContent =
+            `Файлов: ${this.orphanNames.length}. Они не нужны ни одному бандлу каталога и будут удалены БЕЗВОЗВРАТНО.`;
         this.root.getElementById('overlay').classList.add('open');
     }
     closeModal() {
@@ -458,10 +518,20 @@ export class BundleTabElement extends HTMLElement {
         this.busy = true;
         this.closeModal();
         try {
-            // Удаляем файлы ВЫБРАННОГО бандла (D1): null удалял бы активный.
-            await svc.removeFiles(this.selected || null);
-            notifyBundleChanged();
-            toast('Файлы набора удалены.');
+            if (this.modalAction === 'orphans') {
+                if (!svc.removePoolOrphans || this.orphanNames.length === 0)
+                    return;
+                const names = this.orphanNames;
+                await svc.removePoolOrphans(names);
+                notifyBundleChanged();
+                toast(`Удалено неиспользуемых файлов: ${names.length}.`);
+            }
+            else {
+                // Удаляем файлы ВЫБРАННОГО бандла (D1): null удалял бы активный.
+                await svc.removeFiles(this.selected || null);
+                notifyBundleChanged();
+                toast('Файлы набора удалены.');
+            }
         }
         catch (e) {
             toast(`Ошибка удаления: ${e}`, 'error');

@@ -15,6 +15,8 @@ const COMMANDS: &[&str] = &[
     "download_image_bundle",
     "remove_image_bundle",
     "remove_image_bundle_from_list",
+    "get_image_pool_orphans",
+    "remove_image_pool_orphans",
     "estimate_image_memory",
     // ── Видео бандлы ──
     "get_video_bundles",

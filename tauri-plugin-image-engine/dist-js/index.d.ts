@@ -116,6 +116,21 @@ export declare function validateImageBundleDir(path: string, bundleName?: string
 export declare function setImageBundleDir(path: string): Promise<ImageBundleInfo>;
 export declare function removeImageBundle(bundleName?: string | null): Promise<ImageBundleInfo>;
 export declare function removeImageBundleFromList(): Promise<ImageBundleInfo>;
+/** Файл пула, не нужный ни одному бандлу каталога. */
+export interface PoolOrphan {
+    filename: string;
+    size_bytes: number;
+}
+export interface PoolOrphansInfo {
+    dir: string;
+    orphans: PoolOrphan[];
+    total_bytes: number;
+}
+/** Неиспользуемые файлы пула image-бандлов (остатки удалённых из каталога
+ * бандлов + сторонний мусор). Только перечисление — удаление отдельной командой. */
+export declare function getImagePoolOrphans(): Promise<PoolOrphansInfo>;
+/** Удалить перечисленные неиспользуемые файлы пула (явное действие юзера). */
+export declare function removeImagePoolOrphans(filenames: string[]): Promise<PoolOrphansInfo>;
 export declare function estimateImageMemory(bundleName?: string | null): Promise<ImageMemoryInfo>;
 export interface GenerateOptions {
     prompt: string;

@@ -11,6 +11,10 @@ export declare class BundleTabElement extends HTMLElement {
     /** Статусы бандлов из последнего refresh (fully_downloaded и файлы) —
      * рендер панели и гейт кнопок читают ТОЛЬКО отсюда (SSOT). */
     private statuses;
+    /** Что подтверждает модалка: файлы выбранного бандла или orphan-очистка пула. */
+    private modalAction;
+    /** Имена orphan-файлов из последнего рендера — список для удаления (SSOT). */
+    private orphanNames;
     connectedCallback(): void;
     disconnectedCallback(): void;
     private setProgress;
@@ -56,6 +60,8 @@ export declare class BundleTabElement extends HTMLElement {
      * бандл было невозможно догнать). */
     private onResume;
     private confirmDelete;
+    /** Подтверждение очистки неиспользуемых файлов пула (image-сервис). */
+    private confirmRemoveOrphans;
     private closeModal;
     private doDeleteFiles;
 }

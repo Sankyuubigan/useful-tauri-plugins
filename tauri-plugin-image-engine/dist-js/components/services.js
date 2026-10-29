@@ -5,7 +5,7 @@
  * интерфейс: дубли ImageBundlePanel/ImageModelsPanel вынесены структурно —
  * рендер один, меняются только команды бэкенда.
  */
-import { downloadImageBundle, downloadVideoBundle, estimateImageMemory, getImageBundleInfo, getImageModelsCatalog, getVideoBundleInfo, getVideoBundles, removeImageBundle, removeImageBundleFromList, removeVideoBundleFiles, setImageBundleDir, setSelectedImageBundle, setSelectedVideoBundle, setVideoBundleDir, validateImageBundleDir, validateVideoBundleDir, } from '../index';
+import { downloadImageBundle, downloadVideoBundle, estimateImageMemory, getImageBundleInfo, getImageModelsCatalog, getImagePoolOrphans, getVideoBundleInfo, getVideoBundles, removeImageBundle, removeImageBundleFromList, removeImagePoolOrphans, removeVideoBundleFiles, setImageBundleDir, setSelectedImageBundle, setSelectedVideoBundle, setVideoBundleDir, validateImageBundleDir, validateVideoBundleDir, } from '../index';
 export const imageService = {
     kind: 'image',
     kindLabel: 'Бандл',
@@ -18,6 +18,8 @@ export const imageService = {
     clearCustomDir: () => removeImageBundleFromList().then((i) => i),
     download: (saveDir, name) => downloadImageBundle(saveDir, name).then((i) => i),
     removeFiles: (name) => removeImageBundle(name ?? null).then((i) => i),
+    poolOrphans: () => getImagePoolOrphans(),
+    removePoolOrphans: (filenames) => removeImagePoolOrphans(filenames),
     memoryProbe: async (name) => {
         const cur = await getImageBundleInfo(name);
         const info = (await imageSizeInfo(cur.bundle_name));

@@ -1,3 +1,11 @@
+/**
+ * Адаптеры BundleService для вкладок «Картинки» / «Видео».
+ *
+ * Одна вкладка (image-bundle-tab) работает с обоими бэкендами через этот
+ * интерфейс: дубли ImageBundlePanel/ImageModelsPanel вынесены структурно —
+ * рендер один, меняются только команды бэкенда.
+ */
+import { type PoolOrphansInfo } from '../index';
 export type TabFileInfo = {
     role: string;
     filename: string;
@@ -47,6 +55,11 @@ export interface BundleService {
     /** Удалить файлы бандла (null = активный). Вкладка передаёт ВЫБРАННОЕ имя
      * (PRP 29.10.26 D1) — удаление выбранного не должно трогать активный. */
     removeFiles(name?: string | null): Promise<TabInfo>;
+    /** Неиспользуемые файлы пула (только image: общий склад image_models).
+     * Остатки бандлов, удалённых из каталога, + сторонний мусор. */
+    poolOrphans?(): Promise<PoolOrphansInfo>;
+    /** Удалить перечисленные неиспользуемые файлы пула. */
+    removePoolOrphans?(filenames: string[]): Promise<PoolOrphansInfo>;
     /** Текст прогноза памяти (только image: NVML-замер estimate). */
     memoryProbe?(name?: string | null): Promise<string>;
 }

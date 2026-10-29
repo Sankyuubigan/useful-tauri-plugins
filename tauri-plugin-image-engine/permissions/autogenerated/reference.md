@@ -19,6 +19,8 @@ Default permissions for the image-engine plugin.
 - `allow-set-image-bundle-dir`
 - `allow-remove-image-bundle`
 - `allow-remove-image-bundle-from-list`
+- `allow-get-image-pool-orphans`
+- `allow-remove-image-pool-orphans`
 - `allow-estimate-image-memory`
 - `allow-generate-image`
 - `allow-edit-image`
@@ -303,6 +305,32 @@ Denies the get_image_models_catalog command without any pre-configured scope.
 <tr>
 <td>
 
+`image-engine:allow-get-image-pool-orphans`
+
+</td>
+<td>
+
+Enables the get_image_pool_orphans command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:deny-get-image-pool-orphans`
+
+</td>
+<td>
+
+Denies the get_image_pool_orphans command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `image-engine:allow-get-video-bundle-info`
 
 </td>
@@ -478,6 +506,32 @@ Enables the remove_image_engine command without any pre-configured scope.
 <td>
 
 Denies the remove_image_engine command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-remove-image-pool-orphans`
+
+</td>
+<td>
+
+Enables the remove_image_pool_orphans command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:deny-remove-image-pool-orphans`
+
+</td>
+<td>
+
+Denies the remove_image_pool_orphans command without any pre-configured scope.
 
 </td>
 </tr>
@@ -862,12 +916,38 @@ Allow pointing the image bundle to an existing valid directory.
 <tr>
 <td>
 
-`image-engine:allow-remove-image-bundle`
+`image-engine:allow-remove-image-bundle-from-list`
 
 </td>
 <td>
 
-Allow deleting the downloaded image bundle files.
+Allow resetting the image bundle directory to the storage default.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-get-image-pool-orphans`
+
+</td>
+<td>
+
+Allow listing unused image pool files (orphans of removed catalog bundles).
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-remove-image-pool-orphans`
+
+</td>
+<td>
+
+Allow deleting explicitly listed unused image pool files.
 
 </td>
 </tr>

@@ -185,6 +185,31 @@ export function removeImageBundleFromList(): Promise<ImageBundleInfo> {
   return invoke<ImageBundleInfo>('plugin:image-engine|remove_image_bundle_from_list')
 }
 
+// ─────────────────────────── Пул: неиспользуемые файлы ───────────────────────────
+
+/** Файл пула, не нужный ни одному бандлу каталога. */
+export interface PoolOrphan {
+  filename: string
+  size_bytes: number
+}
+
+export interface PoolOrphansInfo {
+  dir: string
+  orphans: PoolOrphan[]
+  total_bytes: number
+}
+
+/** Неиспользуемые файлы пула image-бандлов (остатки удалённых из каталога
+ * бандлов + сторонний мусор). Только перечисление — удаление отдельной командой. */
+export function getImagePoolOrphans(): Promise<PoolOrphansInfo> {
+  return invoke<PoolOrphansInfo>('plugin:image-engine|get_image_pool_orphans')
+}
+
+/** Удалить перечисленные неиспользуемые файлы пула (явное действие юзера). */
+export function removeImagePoolOrphans(filenames: string[]): Promise<PoolOrphansInfo> {
+  return invoke<PoolOrphansInfo>('plugin:image-engine|remove_image_pool_orphans', { filenames })
+}
+
 export function estimateImageMemory(bundleName?: string | null): Promise<ImageMemoryInfo> {
   return invoke<ImageMemoryInfo>('plugin:image-engine|estimate_image_memory', { bundleName: bundleName ?? null })
 }

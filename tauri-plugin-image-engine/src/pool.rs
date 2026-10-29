@@ -17,6 +17,10 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// Суффикс недокачанного файла загрузчика (зеркало `PART_SUFFIX`
+/// tauri-plugin-downloader): sparse-загрузка идёт в `<имя>.part`.
+const PART_SUFFIX: &str = ".part";
+
 /// Чем adoption перенёс файл в пул.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AdoptHow {
@@ -118,6 +122,111 @@ pub fn verify_files(files: &[(&str, Option<u64>)], dir: &Path) -> Result<(), Str
     }
 }
 
+// ─────────── Reconcile пула с каталогом (29.10.26) ───────────
+
+/// Один файл пула, не нужный ни одному бандлу текущего каталога.
+#[derive(serde::Serialize, Clone, Debug, PartialEq)]
+pub struct PoolOrphan {
+    pub filename: String,
+    pub size_bytes: u64,
+}
+
+/// Прямое имя файла без пути (защита от traversal в командах удаления):
+/// «a.gguf» — допустимо, «sub/a.gguf», «..\a.gguf», «..» — нет.
+fn is_plain_filename(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains('/')
+        && !name.contains('\\')
+        && name != "."
+        && name != ".."
+        && !name.contains("..")
+}
+
+/// Файлы ВЕРХНЕГО уровня пула, имена которых не встречаются ни в одном бандле
+/// каталога. Подкаталоги не трогаются принципиально: `outputs/` — артефакты
+/// генераций, остальные — легаси/пользовательское. `*.part` пропускается —
+/// это живой файл идущей загрузки, а не мусор.
+///
+/// Классификация — по одному имени (инвариант каталога «одно имя = один
+/// контент» делает имя достаточным). Удаление — отдельная явная команда,
+/// ничего не удаляется само.
+pub fn find_pool_orphans(
+    pool: &Path,
+    referenced: &std::collections::HashSet<String>,
+) -> Vec<PoolOrphan> {
+    let mut out = Vec::new();
+    let Ok(rd) = std::fs::read_dir(pool) else {
+        return out; // пула ещё нет — пусто, не ошибка
+    };
+    for e in rd.flatten() {
+        let path = e.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = e.file_name().to_string_lossy().to_string();
+        if name.ends_with(PART_SUFFIX) || referenced.contains(&name) {
+            continue;
+        }
+        out.push(PoolOrphan {
+            filename: name,
+            size_bytes: file_size(&path).unwrap_or(0),
+        });
+    }
+    out.sort_by(|a, b| a.filename.cmp(&b.filename));
+    out
+}
+
+/// Удалить перечисленные orphan-файлы пула. Каждое имя ПЕРЕД удалением
+/// перепроверяется: (1) всё ещё не нужное каталогу — защита от гонки
+/// «каталог обновился между показом списка и кликом»; (2) простое имя без
+/// пути — удаление не может выйти за пределы пула. Отсутствующий файл —
+/// не ошибка (уже удалён). Возвращает список фактически удалённых.
+pub fn remove_orphans(
+    pool: &Path,
+    filenames: &[String],
+    referenced: &std::collections::HashSet<String>,
+) -> Result<Vec<String>, String> {
+    let mut removed = Vec::new();
+    for name in filenames {
+        if referenced.contains(name) {
+            return Err(format!(
+                "«{}» больше не считается неиспользуемым (нужен каталогу) — удаление отменено",
+                name
+            ));
+        }
+        if !is_plain_filename(name) {
+            return Err(format!("«{}» — недопустимое имя файла пула", name));
+        }
+        let p = pool.join(name);
+        match std::fs::remove_file(&p) {
+            Ok(()) => removed.push(name.clone()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("Не удалось удалить {}: {}", p.display(), e)),
+        }
+    }
+    Ok(removed)
+}
+
+/// Классификация файлов удаляемого бандла при refcount-удалении:
+/// `(удаляемые, остающиеся)`. Остающийся файл — тот, чьё имя нужно хотя бы
+/// одному ДРУГОМУ бандлу каталога: пул общий, и удаление одного из двух
+/// бандлов, делящих llm/mmproj/vae, не должно ломать второй.
+pub fn split_removable<'a>(
+    bundle_files: &'a [crate::engine::models_catalog::BundleFile],
+    other_referenced: &std::collections::HashSet<String>,
+) -> (Vec<&'a str>, Vec<&'a str>) {
+    let mut removable = Vec::new();
+    let mut kept = Vec::new();
+    for f in bundle_files {
+        if other_referenced.contains(&f.filename) {
+            kept.push(f.filename.as_str());
+        } else {
+            removable.push(f.filename.as_str());
+        }
+    }
+    (removable, kept)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,5 +318,96 @@ mod tests {
 
         let err2 = verify_files(&[("a.gguf", Some(999))], &dir).unwrap_err();
         assert!(err2.contains("размер 1000 Б, ожидается 999 Б"), "{}", err2);
+    }
+
+    // ─────────── Reconcile пула с каталогом ───────────
+
+    fn set_of(items: &[&str]) -> std::collections::HashSet<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn find_pool_orphans_lists_only_unreferenced_top_level_files() {
+        let pool = tmpdir("orphans");
+        write(&pool.join("catalog-file.gguf"), 100);
+        write(&pool.join("dead-bundle-diffusion.gguf"), 200);
+        write(&pool.join("user-extra.gguf"), 300);
+        write(&pool.join("in-progress.gguf.part"), 50);
+        std::fs::create_dir_all(pool.join("outputs")).unwrap();
+        write(&pool.join("outputs").join("img.png"), 10);
+        std::fs::create_dir_all(pool.join("legacy-subdir")).unwrap();
+        write(&pool.join("legacy-subdir").join("old.gguf"), 20);
+
+        let orphans = find_pool_orphans(&pool, &set_of(&["catalog-file.gguf"]));
+        let names: Vec<&str> = orphans.iter().map(|o| o.filename.as_str()).collect();
+        // Только плоские файлы вне каталога; .part, outputs/ и подпапки не тронуты.
+        assert_eq!(names, vec!["dead-bundle-diffusion.gguf", "user-extra.gguf"]);
+        assert_eq!(orphans[1].size_bytes, 300);
+    }
+
+    #[test]
+    fn find_pool_orphans_empty_when_pool_missing() {
+        let pool = tmpdir("missing_pool");
+        // Папку не создаём — каталога нет = сирот нет (не ошибка).
+        assert!(find_pool_orphans(&pool, &set_of(&[])).is_empty());
+    }
+
+    #[test]
+    fn remove_orphans_deletes_only_listed_and_reports() {
+        let pool = tmpdir("rm_orphans");
+        write(&pool.join("gone.gguf"), 100);
+        write(&pool.join("stay.gguf"), 200);
+
+        let removed = remove_orphans(&pool, &["gone.gguf".to_string()], &set_of(&["stay.gguf"])).unwrap();
+        assert_eq!(removed, vec!["gone.gguf".to_string()]);
+        assert!(!pool.join("gone.gguf").exists());
+        assert!(pool.join("stay.gguf").exists());
+    }
+
+    #[test]
+    fn remove_orphans_rejects_referenced_and_traversal() {
+        let pool = tmpdir("rm_guard");
+        write(&pool.join("needed.gguf"), 100);
+
+        // Имя снова стало нужным каталогу (гонка с обновлением) — отказ.
+        let err = remove_orphans(&pool, &["needed.gguf".to_string()], &set_of(&["needed.gguf"])).unwrap_err();
+        assert!(err.contains("больше не считается неиспользуемым"), "{}", err);
+        assert!(pool.join("needed.gguf").exists(), "нужный файл не удалён");
+
+        // Path traversal — отказ.
+        for bad in ["../escape.gguf", "sub/x.gguf", "..", ""] {
+            assert!(remove_orphans(&pool, &[bad.to_string()], &set_of(&[])).is_err(), "{}", bad);
+        }
+        assert!(!pool.parent().unwrap().join("escape.gguf").exists());
+    }
+
+    #[test]
+    fn remove_orphans_missing_file_is_not_an_error() {
+        let pool = tmpdir("rm_missing");
+        // Уже удалён кем-то другим — не ошибка, в списке удалённых его нет.
+        let removed = remove_orphans(&pool, &["ghost.gguf".to_string()], &set_of(&[])).unwrap();
+        assert!(removed.is_empty());
+    }
+
+    #[test]
+    fn split_removable_keeps_shared_and_removes_unique() {
+        let files = vec![
+            crate::engine::models_catalog::BundleFile {
+                role: "llm".into(),
+                filename: "shared-llm.gguf".into(),
+                download_url: "u".into(),
+                size_bytes: Some(1),
+            },
+            crate::engine::models_catalog::BundleFile {
+                role: "diffusion".into(),
+                filename: "own-diffusion.gguf".into(),
+                download_url: "u".into(),
+                size_bytes: Some(2),
+            },
+        ];
+        let others = set_of(&["shared-llm.gguf"]);
+        let (removable, kept) = split_removable(&files, &others);
+        assert_eq!(removable, vec!["own-diffusion.gguf"]);
+        assert_eq!(kept, vec!["shared-llm.gguf"]);
     }
 }

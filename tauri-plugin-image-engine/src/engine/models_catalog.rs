@@ -255,10 +255,11 @@ const EMBEDDED_CATALOG: &str = include_str!("../../image_models_catalog.json");
 
 /// Встроенный каталог бандлов. Битая запись НЕ молчит: пропускается с
 /// log::error (тот же принцип, что у load_video_catalog — «сломанный бандл
-/// не должен выглядеть рабочим»).
+/// не должен выглядеть рабочим»). Поверх по-бандловой валидации — инвариант
+/// пула «одно имя файла = один контент» (`enforce_pool_filename_invariant`).
 pub fn load_image_catalog() -> Vec<ImageBundleEntry> {
     let parsed: Vec<ImageBundleEntry> = serde_json::from_str(EMBEDDED_CATALOG).unwrap_or_default();
-    parsed
+    let valid: Vec<ImageBundleEntry> = parsed
         .into_iter()
         .filter(|e| {
             if let Err(msg) = validate_image_entry(e) {
@@ -270,6 +271,62 @@ pub fn load_image_catalog() -> Vec<ImageBundleEntry> {
                 false
             } else {
                 true
+            }
+        })
+        .collect();
+    enforce_pool_filename_invariant(valid)
+}
+
+/// Инвариант плоского пула: одно имя файла = один контент.
+///
+/// Пул резолвит веса ТОЛЬКО по имени файла (`<пул>/<filename>`), поэтому имя,
+/// объявленное двумя бандлами с разным URL/размером, означало бы молчаливое
+/// переиспользование чужого файла (совпал размер) или невидимую поломку
+/// второго бандла после перезаписи общего файла при докачке (размер разный).
+///
+/// Нарушившая запись удаляется из каталога ЦЕЛИКОМ (fail-closed, «сломанный
+/// бандл не должен выглядеть рабочим»): первый по порядку объявления владелец
+/// имени остаётся, конфликтующий бандл пропускается с log::error. Боевой
+/// каталог держит инвариант тестом `embedded_catalog_satisfies_pool_filename_invariant`.
+pub fn enforce_pool_filename_invariant(entries: Vec<ImageBundleEntry>) -> Vec<ImageBundleEntry> {
+    // имя файла → (download_url, size_bytes, бандл-владелец) первого объявления
+    let mut seen: std::collections::HashMap<String, (String, Option<u64>, String)> =
+        std::collections::HashMap::new();
+    entries
+        .into_iter()
+        .filter(|e| {
+            let mut conflict: Option<String> = None;
+            for f in &e.files {
+                if let Some((prev_url, prev_size, prev_owner)) = seen.get(&f.filename) {
+                    if prev_url != &f.download_url || prev_size != &f.size_bytes {
+                        conflict = Some(format!(
+                            "файл «{}» уже объявлен бандлом «{}» с другим URL/размером ({} байт ≠ {} байт)",
+                            f.filename,
+                            prev_owner,
+                            prev_size.map(|s| s.to_string()).unwrap_or_else(|| "?".into()),
+                            f.size_bytes.map(|s| s.to_string()).unwrap_or_else(|| "?".into())
+                        ));
+                        break;
+                    }
+                }
+            }
+            match conflict {
+                Some(msg) => {
+                    log::error!(
+                        "[IMG] Бандл «{}» пропущен: нарушен инвариант пула (одно имя = один контент) — {}",
+                        e.name,
+                        msg
+                    );
+                    false
+                }
+                None => {
+                    for f in &e.files {
+                        seen.entry(f.filename.clone()).or_insert_with(|| {
+                            (f.download_url.clone(), f.size_bytes, e.name.clone())
+                        });
+                    }
+                    true
+                }
             }
         })
         .collect()
@@ -1097,5 +1154,111 @@ mod video_tests {
         assert!(validate_video_entry(&bad).unwrap_err().contains("t2va"));
         bad.modes = vec!["t2va".to_string(), "hypervideo".to_string()];
         assert!(validate_video_entry(&bad).unwrap_err().contains("hypervideo"));
+    }
+
+    // ─────────── Инвариант пула: одно имя файла = один контент ───────────
+
+    fn entry_from_json(v: serde_json::Value) -> ImageBundleEntry {
+        serde_json::from_value(v).expect("тестовый entry из JSON")
+    }
+
+    #[test]
+    fn pool_filename_invariant_keeps_consistent_sharing() {
+        // Два бандла делят vae: тот же URL и размер — оба остаются.
+        let cat = enforce_pool_filename_invariant(vec![
+            entry_from_json(serde_json::json!({
+                "name": "a",
+                "files": [
+                    {"role": "vae", "filename": "v.safetensors", "download_url": "u1", "size_bytes": 10},
+                    {"role": "diffusion", "filename": "a.gguf", "download_url": "u2", "size_bytes": 20}
+                ]
+            })),
+            entry_from_json(serde_json::json!({
+                "name": "b",
+                "files": [
+                    {"role": "vae", "filename": "v.safetensors", "download_url": "u1", "size_bytes": 10},
+                    {"role": "diffusion", "filename": "b.gguf", "download_url": "u3", "size_bytes": 30}
+                ]
+            })),
+        ]);
+        assert_eq!(cat.len(), 2, "согласное разделение файла не выбрасывает бандлы");
+        assert_eq!(cat[0].name, "a");
+        assert_eq!(cat[1].name, "b");
+    }
+
+    #[test]
+    fn pool_filename_invariant_drops_conflicting_entry() {
+        // b переиспользует имя v.safetensors с другим размером — b целиком
+        // пропускается, a (первый владелец имени) остаётся.
+        let cat = enforce_pool_filename_invariant(vec![
+            entry_from_json(serde_json::json!({
+                "name": "a",
+                "files": [
+                    {"role": "vae", "filename": "v.safetensors", "download_url": "u1", "size_bytes": 10}
+                ]
+            })),
+            entry_from_json(serde_json::json!({
+                "name": "b",
+                "files": [
+                    {"role": "vae", "filename": "v.safetensors", "download_url": "u1", "size_bytes": 999}
+                ]
+            })),
+        ]);
+        assert_eq!(cat.len(), 1, "конфликтующее имя выбрасывает весь бандл");
+        assert_eq!(cat[0].name, "a");
+    }
+
+    #[test]
+    fn pool_filename_invariant_drops_conflicting_url_at_same_size() {
+        // Одинаковый размер, другой URL — другой контент, тоже конфликт
+        // (размер-сверка не ловит его, инвариант обязан).
+        let cat = enforce_pool_filename_invariant(vec![
+            entry_from_json(serde_json::json!({
+                "name": "a",
+                "files": [
+                    {"role": "vae", "filename": "v.safetensors", "download_url": "u1", "size_bytes": 10}
+                ]
+            })),
+            entry_from_json(serde_json::json!({
+                "name": "b",
+                "files": [
+                    {"role": "vae", "filename": "v.safetensors", "download_url": "u1-reup", "size_bytes": 10}
+                ]
+            })),
+        ]);
+        assert_eq!(cat.len(), 1);
+        assert_eq!(cat[0].name, "a");
+    }
+
+    /// Гвардейский тест боевого каталога: инвариант пула выполняется, общие
+    /// файлы реально делятся (иначе проверка была бы вырожденной).
+    #[test]
+    fn embedded_catalog_satisfies_pool_filename_invariant() {
+        let cat = load_image_catalog();
+        assert_eq!(cat.len(), 4, "все 4 бандла боевого каталога обязаны грузиться без пропусков");
+        let names: std::collections::HashSet<&str> = cat.iter().map(|e| e.name.as_str()).collect();
+        for expected in [
+            "qwen-image-2.1-turbo-unsloth-q5_ks",
+            "qwen-image-2.1-turbo-viggle-q4km",
+            "krea2-turbo-q4km",
+            "krea2-turbo-q3km",
+        ] {
+            assert!(names.contains(expected), "в каталоге нет бандла {}", expected);
+        }
+        // Общие файлы делятся честно: ровно два владельца на каждую общую роль.
+        for shared in [
+            "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
+            "mmproj-Qwen3VL-8B-Instruct-F16.gguf",
+            "qwen_image_2.1_vae_bf16.safetensors",
+            "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
+            "mmproj-Qwen3VL-4B-Instruct-F16.gguf",
+            "wan_2.1_vae.safetensors",
+        ] {
+            let owners = cat
+                .iter()
+                .filter(|e| e.files.iter().any(|f| f.filename == shared))
+                .count();
+            assert_eq!(owners, 2, "файл {} ожиданно общий для двух бандлов", shared);
+        }
     }
 }

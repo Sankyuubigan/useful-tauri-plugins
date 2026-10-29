@@ -402,6 +402,8 @@
     clearCustomDir: () => removeImageBundleFromList().then((i) => i),
     download: (saveDir, name) => downloadImageBundle(saveDir, name).then((i) => i),
     removeFiles: (name) => removeImageBundle(name ?? null).then((i) => i),
+    poolOrphans: () => getImagePoolOrphans(),
+    removePoolOrphans: (filenames) => removeImagePoolOrphans(filenames),
     memoryProbe: async (name) => {
       const cur = await getImageBundleInfo(name);
       const info = await imageSizeInfo(cur.bundle_name);
@@ -447,6 +449,10 @@
       /** Статусы бандлов из последнего refresh (fully_downloaded и файлы) —
        * рендер панели и гейт кнопок читают ТОЛЬКО отсюда (SSOT). */
       this.statuses = /* @__PURE__ */ new Map();
+      /** Что подтверждает модалка: файлы выбранного бандла или orphan-очистка пула. */
+      this.modalAction = "bundle";
+      /** Имена orphan-файлов из последнего рендера — список для удаления (SSOT). */
+      this.orphanNames = [];
     }
     connectedCallback() {
       if (this.root) return;
@@ -470,6 +476,14 @@
         <div class="row"><label>\u041D\u0430\u0431\u043E\u0440:</label><span id="label" class="hint">\u2026</span></div>
         <div id="note" class="hint"></div>
         <ul class="files" id="files"></ul>
+        <div id="orphans" style="display:none;">
+          <div class="row">
+            <label>\u041D\u0435\u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0435\u043C\u044B\u0435:</label>
+            <span id="orphansSize" class="hint" style="flex:1;"></span>
+            <button id="removeOrphans" class="danger">\u0423\u0434\u0430\u043B\u0438\u0442\u044C</button>
+          </div>
+          <ul class="files" id="orphanFiles"></ul>
+        </div>
         <div class="row" style="margin-top:8px;"><label>\u0414\u0438\u0441\u043A:</label><span id="disk" class="hint"></span></div>
         <div class="row"><label>\u041F\u0430\u043C\u044F\u0442\u044C:</label><span id="mem" class="hint"></span></div>
         <div class="row">
@@ -505,6 +519,7 @@
       this.root.getElementById("resetDir").addEventListener("click", () => this.onResetDir());
       this.root.getElementById("resume").addEventListener("click", () => this.onResume());
       this.root.getElementById("deleteFiles").addEventListener("click", () => this.confirmDelete());
+      this.root.getElementById("removeOrphans").addEventListener("click", () => this.confirmRemoveOrphans());
       this.root.getElementById("modalCancel").addEventListener("click", () => this.closeModal());
       this.root.getElementById("modalOk").addEventListener("click", () => void this.doDeleteFiles());
       void this.refresh();
@@ -681,6 +696,31 @@ ${missing.join("\n")}`;
         } catch {
         }
       }
+      const orphBox = this.root.getElementById("orphans");
+      if (svc.poolOrphans) {
+        try {
+          const info = await svc.poolOrphans();
+          this.orphanNames = info.orphans.map((o) => o.filename);
+          if (info.orphans.length === 0) {
+            orphBox.style.display = "none";
+          } else {
+            orphBox.style.display = "block";
+            const ul2 = this.root.getElementById("orphanFiles");
+            ul2.innerHTML = "";
+            for (const o of info.orphans) {
+              const li = document.createElement("li");
+              li.className = "missing";
+              li.textContent = `${esc(o.filename)} \u2014 ${formatBytes(o.size_bytes)}`;
+              ul2.appendChild(li);
+            }
+            this.root.getElementById("orphansSize").textContent = `${info.orphans.length} \u0448\u0442., ${formatBytes(info.total_bytes)} \u2014 \u043D\u0435 \u043D\u0443\u0436\u043D\u044B \u043D\u0438 \u043E\u0434\u043D\u043E\u043C\u0443 \u0431\u0430\u043D\u0434\u043B\u0443 \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u0430`;
+          }
+        } catch {
+          orphBox.style.display = "none";
+        }
+      } else {
+        orphBox.style.display = "none";
+      }
     }
     /** Смена выбора в селекте: панель целиком перерисовывается под выбранный
      * бандл (строка состояния, файлы, кнопки) — больше не только «показать/
@@ -823,6 +863,17 @@ ${missing.join("\n")}`;
       }
     }
     confirmDelete() {
+      this.modalAction = "bundle";
+      this.root.getElementById("overlayTitle").textContent = "\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u0444\u0430\u0439\u043B\u044B \u043D\u0430\u0431\u043E\u0440\u0430?";
+      this.root.getElementById("overlayMsg").textContent = "\u0424\u0430\u0439\u043B\u044B \u0441 \u0434\u0438\u0441\u043A\u0430 \u0431\u0443\u0434\u0443\u0442 \u0443\u0434\u0430\u043B\u0435\u043D\u044B \u0411\u0415\u0417\u0412\u041E\u0417\u0412\u0420\u0410\u0422\u041D\u041E. \u041E\u0431\u0449\u0438\u0435 \u0441 \u0434\u0440\u0443\u0433\u0438\u043C\u0438 \u0431\u0430\u043D\u0434\u043B\u0430\u043C\u0438 \u0444\u0430\u0439\u043B\u044B \u043E\u0441\u0442\u0430\u043D\u0443\u0442\u0441\u044F \u0432 \u043F\u0443\u043B\u0435.";
+      this.root.getElementById("overlay").classList.add("open");
+    }
+    /** Подтверждение очистки неиспользуемых файлов пула (image-сервис). */
+    confirmRemoveOrphans() {
+      if (this.orphanNames.length === 0) return;
+      this.modalAction = "orphans";
+      this.root.getElementById("overlayTitle").textContent = "\u0423\u0434\u0430\u043B\u0438\u0442\u044C \u043D\u0435\u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0435\u043C\u044B\u0435 \u0444\u0430\u0439\u043B\u044B \u043F\u0443\u043B\u0430?";
+      this.root.getElementById("overlayMsg").textContent = `\u0424\u0430\u0439\u043B\u043E\u0432: ${this.orphanNames.length}. \u041E\u043D\u0438 \u043D\u0435 \u043D\u0443\u0436\u043D\u044B \u043D\u0438 \u043E\u0434\u043D\u043E\u043C\u0443 \u0431\u0430\u043D\u0434\u043B\u0443 \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u0430 \u0438 \u0431\u0443\u0434\u0443\u0442 \u0443\u0434\u0430\u043B\u0435\u043D\u044B \u0411\u0415\u0417\u0412\u041E\u0417\u0412\u0420\u0410\u0422\u041D\u041E.`;
       this.root.getElementById("overlay").classList.add("open");
     }
     closeModal() {
@@ -834,9 +885,17 @@ ${missing.join("\n")}`;
       this.busy = true;
       this.closeModal();
       try {
-        await svc.removeFiles(this.selected || null);
-        notifyBundleChanged();
-        toast("\u0424\u0430\u0439\u043B\u044B \u043D\u0430\u0431\u043E\u0440\u0430 \u0443\u0434\u0430\u043B\u0435\u043D\u044B.");
+        if (this.modalAction === "orphans") {
+          if (!svc.removePoolOrphans || this.orphanNames.length === 0) return;
+          const names = this.orphanNames;
+          await svc.removePoolOrphans(names);
+          notifyBundleChanged();
+          toast(`\u0423\u0434\u0430\u043B\u0435\u043D\u043E \u043D\u0435\u0438\u0441\u043F\u043E\u043B\u044C\u0437\u0443\u0435\u043C\u044B\u0445 \u0444\u0430\u0439\u043B\u043E\u0432: ${names.length}.`);
+        } else {
+          await svc.removeFiles(this.selected || null);
+          notifyBundleChanged();
+          toast("\u0424\u0430\u0439\u043B\u044B \u043D\u0430\u0431\u043E\u0440\u0430 \u0443\u0434\u0430\u043B\u0435\u043D\u044B.");
+        }
       } catch (e) {
         toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u0443\u0434\u0430\u043B\u0435\u043D\u0438\u044F: ${e}`, "error");
       } finally {
@@ -936,6 +995,12 @@ ${missing.join("\n")}`;
   }
   function removeImageBundleFromList() {
     return invoke("plugin:image-engine|remove_image_bundle_from_list");
+  }
+  function getImagePoolOrphans() {
+    return invoke("plugin:image-engine|get_image_pool_orphans");
+  }
+  function removeImagePoolOrphans(filenames) {
+    return invoke("plugin:image-engine|remove_image_pool_orphans", { filenames });
   }
   function estimateImageMemory(bundleName) {
     return invoke("plugin:image-engine|estimate_image_memory", { bundleName: bundleName ?? null });

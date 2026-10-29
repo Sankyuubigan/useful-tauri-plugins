@@ -169,7 +169,8 @@ where
         entry.preset.scheduler.as_deref(),
         None, // hires: t2i-бенч однофазный
         None, // img2img: t2i-бенч не использует
-        &[], // loras: бенч — метрики без LoRA-стека
+        &[],  // loras: бенч — метрики без LoRA-стека
+        None, // ref_image_args: t2i-бенч без референсов
     )?;
     Ok(BenchRun {
         prompt_idx,

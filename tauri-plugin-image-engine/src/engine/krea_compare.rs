@@ -125,6 +125,12 @@ pub fn krea2_entry() -> ImageBundleEntry {
         // Синтетический бенч-бандл вне каталога продукта — легаси-плоский
         // каталог лор (None), чтобы не менять поведение бенчей.
         lora_base: None,
+        // F4: бенч-стенд не в каталоге — контракт ref-edit не объявлен
+        // (сравнение идёт по t2i/img2img, ref-edit бенчу не нужен).
+        ref_edit_mode: None,
+        ref_edit_lora: None,
+        ref_edit_preset: None,
+        ref_edit_lora_strength: 1.0,
         size_gb: None,
         vram_fast_gb: None,
         vram_min_gb: None,
@@ -420,7 +426,8 @@ where
                     init_b64,
                     strength,
                 }),
-                &[], // loras: krea_compare — метрики без LoRA-стека
+                &[],  // loras: krea_compare — метрики без LoRA-стека
+                None, // ref_image_args: img2img и ref_images взаимоисключающие
             ) {
                 Ok(res) => cells.push(KreaCell {
                     source_id: src.id.clone(),

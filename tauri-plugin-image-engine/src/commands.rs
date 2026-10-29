@@ -646,19 +646,30 @@ pub async fn edit_image(
     // LoRA-резолв по SSOT-плагиновому модулю (PRP 29.10.26): несуществующее
     // имя — честный отказ команды (текст включает папку и доступные стемы).
     // F3 29.10.26: ресолв scoped на базу бандла — лоры чужой базы не найдутся.
-    let loras = engine::resolve_lora_names_for_base(
+    let user_loras = engine::resolve_lora_names_for_base(
         &engine::image_lora_dir_early(),
         lora_names.as_deref().unwrap_or(&[]),
         lora_strength.unwrap_or(1.0),
         entry.lora_base.as_deref(),
     )?;
+    // F4 (29.10.26): SSOT-планировщик ref-edit (image_engine::plan_ref_edit).
+    // Гейт ДО планирования: бандл без контракта — отказ, Krea2 — автолора
+    // krea2_identity_edit_v2_r128 + preset krea2_edit, Qwen — нативный стек.
+    // [IMG] origin: хост-тул агентов идёт через ту же точку.
+    let (loras, ref_image_args) = match engine::plan_ref_edit(&entry, &engine::image_lora_dir_early(), user_loras)? {
+        engine::RefEditPlan::Unsupported { reason } => {
+            log::warn!("[IMG] ref-edit отказ (fail-closed): бандл «{}»", entry.name);
+            return Err(reason);
+        }
+        engine::RefEditPlan::Ready { loras, ref_image_args } => (loras, ref_image_args),
+    };
     let edir = engine_dir(&app);
     let bdir = bundle_dir(&app);
     let variant = preferred_variant(&app);
     let out = out_path.map(PathBuf::from).unwrap_or_else(|| default_out_path(&bdir));
     let log_cb = |msg: String| log::info!("[IMG] {}", msg);
     tokio::task::spawn_blocking(move || {
-        engine::edit_image_files(&edir, &bdir, &entry, variant.as_deref(), &prompt, &ref_paths, w, h, st, cfg, sd, &out, &loras, None, log_cb)
+        engine::edit_image_files(&edir, &bdir, &entry, variant.as_deref(), &prompt, &ref_paths, w, h, st, cfg, sd, &out, &loras, None, log_cb, ref_image_args.as_deref())
     })
     .await
     .map_err(|e| format!("Задача редактирования прервана: {}", e))?

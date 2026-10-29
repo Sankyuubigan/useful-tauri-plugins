@@ -202,6 +202,32 @@ pub fn resolve_lora_names_for_base(
     resolve_lora_specs_for_base(dir, &wanted, base)
 }
 
+/// F4 (29.10.26): гарантированная edit-лора ref-режима.
+///
+/// Krea2-edit: серверный ref-конвейер (`preset=krea2_edit`) патчит latents
+/// референса — БЕЗ обученной под это лоры выход даёт «checkerboard»-артефакт
+/// (ostris/ComfyUI-Krea2-Ostris-Edit issue #1: те же серые квадраты). Поэтому
+/// контракт `ref_edit_mode: edit_lora` обязан дать движку лору ВСЕГДА:
+/// юзер, заявивший ту же лору сам, получает стек без дубликата (матч по
+/// пути файла, регистр игнорируется), иначе edit-лора идёт ПЕРВОЙ позицией
+/// (выше стайл-лор) со своей силой из каталога.
+///
+/// `edit_path` — имя файла из резолвера (`resolve_lora_specs_for_base`),
+/// `strength` — сила контракта (клампится 0..=2 на этой же границе).
+pub fn inject_edit_lora(stack: Vec<LoraSpec>, edit_path: &str, strength: f32) -> Vec<LoraSpec> {
+    let key = edit_path.trim().to_lowercase();
+    if stack.iter().any(|s| s.path.trim().to_lowercase() == key) {
+        return stack;
+    }
+    let mut out = Vec::with_capacity(stack.len() + 1);
+    out.push(LoraSpec {
+        path: edit_path.to_string(),
+        multiplier: clamp_multiplier(strength),
+    });
+    out.extend(stack);
+    out
+}
+
 /// Строка лога sd-server — отчёт применения LoRA-тензоров? Возвращает пару
 /// `(applied, total)` из «X / N … tensors … applied». Контракты формата:
 /// видео-бенч 26.10.26 («600/600 … tensors … applied») и цитата юзера
@@ -358,6 +384,49 @@ mod tests {
         assert_eq!(clamp_multiplier(-3.0), 0.0);
         assert_eq!(clamp_multiplier(f32::NAN), 0.0);
         assert_eq!(clamp_multiplier(f32::INFINITY), 0.0);
+    }
+
+    // ───────────── edit-лора ref-режима (F4 29.10.26) ─────────────
+
+    /// Krea2-edit: юзерские стайл-лоры не отменяют требование контракта —
+    /// edit-лора становится ПЕРВОЙ позицией стека со своей силой.
+    #[test]
+    fn inject_edit_lora_prepend_respectless_of_style_stack() {
+        let stack = vec![
+            LoraSpec { path: "hotShot.safetensors".to_string(), multiplier: 0.6 },
+            LoraSpec { path: "realism.safetensors".to_string(), multiplier: 1.2 },
+        ];
+        let out = inject_edit_lora(stack, "krea2_identity_edit_v2_r128.safetensors", 1.0);
+        assert_eq!(out.len(), 3, "стайл-лоры не вытесняются");
+        assert_eq!(out[0].path, "krea2_identity_edit_v2_r128.safetensors", "edit-лора первая");
+        assert_eq!(out[0].multiplier, 1.0);
+        assert_eq!(out[1].path, "hotShot.safetensors");
+        assert_eq!(out[2].path, "realism.safetensors");
+    }
+
+    /// Юзер уже заявил ту же edit-лору сам — дубликат не тиражируется
+    /// (double-patch-ref-conditioning: слабое место патч-стека).
+    #[test]
+    fn inject_edit_lora_dedupe_when_user_already_declared_it() {
+        let stack = vec![
+            LoraSpec { path: "Krea2_Identity_Edit_v2_r128.safetensors".to_string(), multiplier: 0.9 },
+        ];
+        let out = inject_edit_lora(
+            stack,
+            "krea2_identity_edit_v2_r128.safetensors",
+            1.0,
+        );
+        assert_eq!(out.len(), 1, "повтор edit-лоры запрещён");
+        assert_eq!(out[0].multiplier, 0.9, "сила юзера сохраняется");
+    }
+
+    /// Сила контракта клампится той же вилкой 0..=2 (граница плагина).
+    #[test]
+    fn inject_edit_lora_clamps_strength() {
+        let out = inject_edit_lora(Vec::new(), "edit.safetensors", 9.0);
+        assert_eq!(out[0].multiplier, LORA_MULTIPLIER_MAX);
+        let out = inject_edit_lora(Vec::new(), "edit.safetensors", -4.0);
+        assert_eq!(out[0].multiplier, 0.0);
     }
 
     /// Некогерентный формат: NaN/∞/вне вилки на границе — честный кламп.

@@ -222,6 +222,12 @@ mod tests {
             model_args: None,
             lora_base: None,
             compute_buffers_mb: buffers,
+            // F4: синтетическая запись для замера формулы памяти — ref-edit
+            // контракт не объявлен (estimate травится только весами/буфером).
+            ref_edit_mode: None,
+            ref_edit_lora: None,
+            ref_edit_preset: None,
+            ref_edit_lora_strength: 1.0,
             preset: Default::default(),
             size_gb: None,
             vram_fast_gb: None,

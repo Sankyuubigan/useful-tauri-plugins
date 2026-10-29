@@ -32,6 +32,7 @@
       }
     ],
     "model_args": "qwen_image_2_1_prefix_cache_type=q8_0",
+    "ref_edit_mode": "native",
     "preset": {
       "cfg_scale": 1.0,
       "sampler": "euler",
@@ -78,6 +79,7 @@
       }
     ],
     "model_args": "qwen_image_2_1_prefix_cache_type=q8_0",
+    "ref_edit_mode": "native",
     "preset": {
       "cfg_scale": 1.0,
       "sampler": "euler",
@@ -94,9 +96,13 @@
   {
     "name": "krea2-turbo-q4km",
     "label": "Krea 2 Turbo (Q4_K_M) — 8 шагов, качество; нужна VRAM 12+ ГБ",
-    "note": "Krea-2-Turbo 12.9B (realrebelai, официальный Turbo-чекпоинт: 8 шагов, CFG 1.0, mu=1.15, сигма-сетка из sampling.py krea-ai/krea-2). Полный функционал: генерация И редактирование (Qwen3-VL-4B + mmproj-F16; ref-режим «krea2_edit» — поддержку подтверждает исходник sd.cpp, живой смок-эдит — этап валидации). ВАЖНО: qwen-теги <image1>/<image2> для Krea2 НЕ применяются — референс описывается словами («сделай … у первой картинки на основе второй»). Пик VRAM (замер 20.10.2026, img2img 2048²): ~13.5–14.9 ГБ на 16-гиговой карте. VRAM/RAM — ОЦЕНКИ (weights+буферы): на 8-гб карту НЕ влезает физически (diffusion 7.2 ГБ).",
+    "note": "Krea-2-Turbo 12.9B (realrebelai, официальный Turbo-чекпоинт: 8 шагов, CFG 1.0, mu=1.15, сигма-сетка из sampling.py krea-ai/krea-2). Полный функционал: генерация И редактирование (Qwen3-VL-4B + mmproj-F16; F4 29.10.26: ref-edit = контрактом, edit-лора krea2_identity_edit_v2_r128 подключается автоматически с preset krea2_edit — серверный вшитый krea2_ostris_edit без лоры даёт «checkerboard»-артефакт, ostris issue #1; живой смок-эдит — этап валидации). ВАЖНО: qwen-теги <image1>/<image2> для Krea2 НЕ применяются — референс описывается словами («сделай … у первой картинки на основе второй»). ЛИМИТ identity: head-swap часто уводится в whole-person swap (README конрадлоке) — для точной замены лица используйте Qwen-бандл; Krea2 — restage/композиции/сцены. Пик VRAM (замер 20.10.2026, img2img 2048²): ~13.5–14.9 ГБ на 16-гиговой карте. VRAM/RAM — ОЦЕНКИ (weights+буферы): на 8-гб карту НЕ влезает физически (diffusion 7.2 ГБ).",
     "is_default": false,
     "lora_base": "krea2",
+    "ref_edit_mode": "edit_lora",
+    "ref_edit_lora": "krea2_identity_edit_v2_r128",
+    "ref_edit_preset": "krea2_edit",
+    "ref_edit_lora_strength": 1.0,
     "files": [
       {
         "role": "diffusion",
@@ -140,9 +146,13 @@
   {
     "name": "krea2-turbo-q3km",
     "label": "Krea 2 Turbo (Q3_K_M) — 8 шагов; единственный квант на ~8 ГБ свободной VRAM",
-    "note": "Тот же стек Krea-2-Turbo (12.9B, Turbo: 8 шагов, CFG 1.0, mu=1.15, сигма-сетка официал), diffusion квант Q3_K_M (5.5 ГБ). Полный функционал: генерация И редактирование (Qwen3-VL-4B + mmproj-F16). Статический минимум ~8.5 ГБ (diffusion + буферы 2 ГБ + резерв 1 ГБ) — ВПРИТЫК к 8 ГБ свободных; применимость решит замер (методика §4 docs/BUNDLES.md), после него сюда будет записано фактическое compute_buffers_mb бандла. Порог не подгоняется: если замер скажет «не влезает» — preflight честно откажет (Enforce). VRAM/RAM — ОЦЕНКИ.",
+    "note": "Тот же стек Krea-2-Turbo (12.9B, Turbo: 8 шагов, CFG 1.0, mu=1.15, сигма-сетка официал), diffusion квант Q3_K_M (5.5 ГБ). Полный функционал: генерация И редактирование (Qwen3-VL-4B + mmproj-F16; F4 29.10.26: ref-edit = edit_lora, контракт тот же — krea2_identity_edit_v2_r128 + preset krea2_edit автоматически). Статический минимум ~8.5 ГБ (diffusion + буферы 2 ГБ + резерв 1 ГБ) — ВПРИТЫК к 8 ГБ свободных; применимость решит замер (методика §4 docs/BUNDLES.md), после него сюда будет записано фактическое compute_buffers_mb бандла. Порог не подгоняется: если замер скажет «не влезает» — preflight честно откажет (Enforce). VRAM/RAM — ОЦЕНКИ.",
     "is_default": false,
     "lora_base": "krea2",
+    "ref_edit_mode": "edit_lora",
+    "ref_edit_lora": "krea2_identity_edit_v2_r128",
+    "ref_edit_preset": "krea2_edit",
+    "ref_edit_lora_strength": 1.0,
     "files": [
       {
         "role": "diffusion",

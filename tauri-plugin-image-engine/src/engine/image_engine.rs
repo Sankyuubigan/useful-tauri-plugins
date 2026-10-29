@@ -375,7 +375,11 @@ impl ImageEngine {
     /// обязателен; контракт sd.cpp SamplePlan::resolve: steps = len(sigmas)-1,
     /// массив обязан кончаться терминальным 0.0). `hires` — объект hires-fix
     /// нативного API (`hires.enabled/upscaler/scale/steps/denoising_strength`),
-    /// None = обычная однофазная генерация.
+    /// None = обычная однофазная генерация. `ref_image_args` — строка
+    /// ref-аргументов сервера (api.md: «ref_image_args», пары «key=value»);
+    /// основной случай `preset=krea2_edit` для Krea2-edit-лоры (F4)-
+    /// None — сервер сам выбирает вшитый preset модели (`krea2_ostris_edit`
+    /// для Krea2, `qwen` для Qwen).
     pub fn generate<L>(
         &self,
         prompt: &str,
@@ -393,6 +397,7 @@ impl ImageEngine {
         hires: Option<&serde_json::Value>,
         img2img: Option<&Img2Img>,
         loras: &[LoraSpec],
+        ref_image_args: Option<&str>,
     ) -> Result<ImageGenResult, String>
     where
         L: Fn(String),
@@ -448,6 +453,16 @@ impl ImageEngine {
                 body["hires"] = h.clone();
             }
         }
+        // F4 (29.10.26): ref-аргументы сервера — HTTP-поле `ref_image_args`
+        // (string, api.md). Основной случай `preset=krea2_edit`: переопределяет
+        // вшитый `krea2_ostris_edit` на пресет, соответствующий обученной
+        // edit-лоре. None/пусто — поле не отправляется вообще (родной preset
+        // модели не сбивается, Qwen-стек живёт как раньше).
+        if let Some(rargs) = ref_image_args {
+            if !rargs.trim().is_empty() {
+                body["ref_image_args"] = serde_json::json!(rargs.trim());
+            }
+        }
         if let Some(i2i) = img2img {
             if !ref_images_b64.is_empty() {
                 return Err(
@@ -479,13 +494,14 @@ impl ImageEngine {
             log_cb(format!("🎛 LoRA stack: {}", stack.join(" + ")));
         }
         log_cb(format!(
-            "🎨 Генерация: {}x{}, steps={}, cfg={}, refs={}{}…",
+            "🎨 Генерация: {}x{}, steps={}, cfg={}, refs={}{}{}…",
             w,
             h,
             effective_steps,
             cfg_scale,
             ref_images_b64.len(),
-            img2img.map(|i| format!(", init_image в {}x{}, strength {:.2}", w, h, i.strength)).unwrap_or_default()
+            img2img.map(|i| format!(", init_image в {}x{}, strength {:.2}", w, h, i.strength)).unwrap_or_default(),
+            ref_image_args.map(|r| format!(", ref_image_args «{}»", r.trim())).unwrap_or_default()
         ));
         let t0 = Instant::now();
 
@@ -692,7 +708,75 @@ where
         None,
         None,
         loras,
+        None, // t2i — ref-аргументов нет
     )
+}
+
+/// План ref-edit для исполнителя (F4, 29.10.26): готовый стек LoRA + строка
+/// ref_image_args сервера.
+#[derive(Debug)]
+pub enum RefEditPlan {
+    /// Ref-edit доступен: обновлённый стек (edit-лора первой при
+    /// edit_lora-контракте) и аргументы сервера (Some("preset=...") —
+    /// только edit_lora; None у native).
+    Ready {
+        loras: Vec<LoraSpec>,
+        ref_image_args: Option<String>,
+    },
+    /// Бандл не умеет ref-edit — fail-closed каталога; причина содержат
+    /// имя бандла и путь решения (готовый текст отказа для тула/команды).
+    Unsupported { reason: String },
+}
+
+/// F4 (29.10.26): SSOT-планировщик ref-edit — единственное место, где
+/// «умеет ли бандл редактировать» превращается в исполняемый план.
+///
+/// Контракт каталога (`ref_edit_contract`) объявляет способность; здесь она
+/// встречается с реальностью диска (резолв edit-лоры по базе → несуществующий
+/// файл — честный Err, а не «checkerboard» на выходе, ostris issue #1).
+/// Tauri-команда `edit_image` плагина и host-тул агентов (`media.rs
+/// run_generate`) зовут ОДНУ ТОЧКУ — расхождения бой-путей невозможны.
+pub fn plan_ref_edit(
+    entry: &ImageBundleEntry,
+    lora_dir: &Path,
+    user_specs: Vec<LoraSpec>,
+) -> Result<RefEditPlan, String> {
+    let contract = crate::engine::models_catalog::ref_edit_contract(entry)?;
+    let Some(contract) = contract else {
+        return Ok(RefEditPlan::Unsupported {
+            reason: format!(
+                "Бандл «{}» не поддерживает редактирование по референсам: в каталоге нет ref_edit-контракта. Решения: переключитесь на Qwen-бандл (родной ref-conditioning) или используйте Krea2-бандл из актуального каталога (edit-лора krea2_identity_edit_v2_r128, папка {}).",
+                entry.name,
+                lora_dir.display()
+            ),
+        });
+    };
+    match contract.mode {
+        crate::engine::models_catalog::RefEditMode::Native => Ok(RefEditPlan::Ready {
+            loras: user_specs,
+            ref_image_args: None,
+        }),
+        crate::engine::models_catalog::RefEditMode::EditLora => {
+            let stem = contract.lora.clone().unwrap_or_default();
+            let specs = crate::engine::lora::resolve_lora_specs_for_base(
+                lora_dir,
+                &[(stem.clone(), contract.lora_strength)],
+                entry.lora_base.as_deref(),
+            )?;
+            let edit_spec = specs
+                .first()
+                .cloned()
+                .ok_or_else(|| format!("edit-лора «{}» не зарезолвилась", stem))?;
+            Ok(RefEditPlan::Ready {
+                loras: crate::engine::lora::inject_edit_lora(
+                    user_specs,
+                    &edit_spec.path,
+                    edit_spec.multiplier,
+                ),
+                ref_image_args: contract.ref_image_args.clone(),
+            })
+        }
+    }
 }
 
 /// One-shot edit: референсы читаются с диска В ПОРЯДКЕ массива → ref_images[].
@@ -720,6 +804,7 @@ pub fn edit_image_files<L>(
     loras: &[LoraSpec],
     cancel_flag: Option<Arc<AtomicBool>>,
     log_cb: L,
+    ref_image_args: Option<&str>,
 ) -> Result<ImageGenResult, String>
 where
     L: Fn(String) + Clone,
@@ -760,6 +845,10 @@ where
         None,
         None,
         loras,
+        // F4: строка `ref_image_args` от контракта бандла (preset под
+        // edit-лору). Edit-запрос всегда приходит через команду edit_image,
+        // которая уже разбирала контракт — здесь только проводка.
+        ref_image_args,
     )
 }
 
@@ -816,6 +905,7 @@ where
         None,
         Some(&Img2Img { init_b64, strength }),
         loras,
+        None, // img2img и ref_images взаимоисключающие — ref-аргументов нет
     )
 }
 
@@ -846,5 +936,117 @@ mod tests {
         let url = format!("data:image/png;base64,{}", raw);
         assert_eq!(base64_decode(&url).unwrap(), vec![1, 2, 3]);
         assert_eq!(base64_decode(&raw).unwrap(), vec![1, 2, 3]);
+    }
+
+    // ───────────── SSOT-планировщик ref-edit (F4 29.10.26) ─────────────
+
+    /// Пустой entry-test helper: главное в контракте — mode/лора/preset/база.
+    fn synthetic_entry(mode: Option<crate::engine::models_catalog::RefEditMode>, base: Option<&str>) -> ImageBundleEntry {
+        // mode=None — реалистичный «legacy-бандл»: ни mode, ни полей.
+        let (lora, preset) = match mode {
+            None => (None, None),
+            Some(_) => (Some("synthetic_edit".to_string()), Some("synthetic_preset".to_string())),
+        };
+        ImageBundleEntry {
+            name: "synthetic".to_string(),
+            label: String::new(),
+            note: String::new(),
+            is_default: false,
+            files: vec![crate::engine::models_catalog::BundleFile {
+                role: "diffusion".to_string(),
+                filename: "synthetic.gguf".to_string(),
+                download_url: String::new(),
+                size_bytes: None,
+            }],
+            model_args: None,
+            compute_buffers_mb: None,
+            lora_base: base.map(str::to_string),
+            ref_edit_mode: mode,
+            ref_edit_lora: lora,
+            ref_edit_preset: preset,
+            ref_edit_lora_strength: 1.0,
+            preset: crate::engine::models_catalog::ImagePreset::default(),
+            size_gb: None,
+            vram_fast_gb: None,
+            vram_min_gb: None,
+            ram_min_gb: None,
+        }
+    }
+
+    /// Без mode — Unsupported с понятной причиной (fail-closed каталога).
+    #[test]
+    fn plan_ref_edit_unsupported_without_mode() {
+        let e = synthetic_entry(None, None);
+        let plan = plan_ref_edit(&e, Path::new("whatever"), Vec::new()).expect("план");
+        match plan {
+            RefEditPlan::Unsupported { reason } => {
+                assert!(reason.contains("synthetic"), "причина называет бандл: {}", reason);
+                assert!(reason.contains("ref_edit-контракта"), "причина называет контракт: {}", reason);
+            }
+            RefEditPlan::Ready { .. } => panic!("без mode ref-edit обязан быть недоступен"),
+        }
+    }
+
+    /// Native-стек: стек юзера проходит без изменений, ref_image_args нет
+    /// (сервер сам выберет свой preset).
+    #[test]
+    fn plan_ref_edit_native_passes_user_stack() {
+        let e = synthetic_entry(Some(crate::engine::models_catalog::RefEditMode::Native), None);
+        let user = vec![LoraSpec { path: "style.safetensors".to_string(), multiplier: 0.7 }];
+        match plan_ref_edit(&e, Path::new("whatever"), user).expect("план") {
+            RefEditPlan::Ready { loras, ref_image_args } => {
+                assert_eq!(loras.len(), 1, "native не добавляет лор");
+                assert_eq!(loras[0].path, "style.safetensors");
+                assert!(ref_image_args.is_none(), "native: preset выбирает сервер");
+            }
+            RefEditPlan::Unsupported { reason } => panic!("native обязан быть Ready: {}", reason),
+        }
+    }
+
+    /// edit_lora-контракт: лора резолвится по базе бандла, идёт ПЕРВОЙ в стеке,
+    /// ref_image_args содержит preset каталога юзерские стайл-лоры сохраняются.
+    #[test]
+    fn plan_ref_edit_edit_lora_resolves_and_prepends() {
+        // Сэндбокс: <root>/krea2/synthetic_edit.safetensors (база бандла — krea2).
+        let root = std::env::temp_dir().join("ko_plan_ref_edit_sandbox");
+        let base_dir = root.join("krea2");
+        std::fs::create_dir_all(&base_dir).expect("сэндбокс-папка");
+        std::fs::write(base_dir.join("synthetic_edit.safetensors"), b"x").expect("стаб-файл");
+        let e = synthetic_entry(
+            Some(crate::engine::models_catalog::RefEditMode::EditLora),
+            Some("krea2"),
+        );
+        let user = vec![LoraSpec { path: "style.safetensors".to_string(), multiplier: 0.5 }];
+        match plan_ref_edit(&e, &root, user).expect("план") {
+            RefEditPlan::Ready { loras, ref_image_args } => {
+                assert_eq!(ref_image_args.as_deref(), Some("preset=synthetic_preset"));
+                assert_eq!(loras.len(), 2);
+                assert_eq!(loras[0].path, "synthetic_edit.safetensors", "edit-лора первая");
+                assert_eq!(loras[0].multiplier, 1.0);
+                assert_eq!(loras[1].path, "style.safetensors");
+            }
+            RefEditPlan::Unsupported { reason } => panic!("edit_lora обязан быть Ready: {}", reason),
+        }
+    }
+
+    /// edit_lora-контракт, а файла в каталоге нет — честный Err до спавна
+    /// (это тот самый класс «серых квадратов», который делает невозможным).
+    #[test]
+    fn plan_ref_edit_edit_lora_missing_file_is_honest_error() {
+        // База krea2 существует, но пуста: резолвер честно говорит
+        // «LoRA «synthetic_edit» не найдена» — белее не «checkerboard».
+        let empty_root = std::env::temp_dir().join("ko_plan_ref_edit_empty");
+        let empty_base = empty_root.join("krea2");
+        std::fs::create_dir_all(&empty_base).expect("пустая база");
+        let e = synthetic_entry(
+            Some(crate::engine::models_catalog::RefEditMode::EditLora),
+            Some("krea2"),
+        );
+        let err = plan_ref_edit(&e, &empty_root, Vec::new()).expect_err("нет файла — отказ");
+        assert!(
+            err.contains("synthetic_edit"),
+            "ошибка называет стем edit-лоры: {}",
+            err
+        );
     }
 }

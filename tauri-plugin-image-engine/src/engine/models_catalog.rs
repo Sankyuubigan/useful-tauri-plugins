@@ -7,6 +7,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::engine::lora::{clamp_multiplier, LORA_MULTIPLIER_MAX};
+
 /// Один файл бандла.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct BundleFile {
@@ -108,6 +110,31 @@ pub struct ImageBundleEntry {
     /// None — легаси-плоский каталог корня (совместимость).
     #[serde(default)]
     pub lora_base: Option<String>,
+    /// Контракт ref-edit (F4, 29.10.26): декларирует, умеет ли бандл
+    /// редактирование по референсам и каким стеком.
+    /// - `native` — ref-conditioning обучен в самом стеке (Qwen-Image-2.1:
+    ///   сервер сам применяет свой ref-конвейер, пресет вшит в модель);
+    /// - `edit_lora` — ref-conditioning работает ТОЛЬКО в паре с обученной
+    ///   edit-лорой (Krea2: серверный default `krea2_ostris_edit` без лоры
+    ///   даёт артефакт «checkerboard», ostris/ComfyUI-Krea2-Ostris-Edit #1);
+    /// - отсутствие поля — ref-edit НЕ поддержан: edit_image отказывает
+    ///   честно (fail-closed), а не поставляет мусор из untrained-патча.
+    #[serde(default)]
+    pub ref_edit_mode: Option<RefEditMode>,
+    /// Стем обученной edit-лоры в каталоге лор (обязателен при
+    /// `edit_lora`; проверяет validate_image_entry). Плагин резолвит файл
+    /// по базе бандла и подключает автоматически.
+    #[serde(default)]
+    pub ref_edit_lora: Option<String>,
+    /// Значение `preset=` для `ref_image_args` сервера (обязательно при
+    /// `edit_lora`): пресет патч-conditioning обязан соответствовать лоре
+    /// (identity-lorа conradlocke ↔ `krea2_edit`, docs/edit.md).
+    #[serde(default)]
+    pub ref_edit_preset: Option<String>,
+    /// Сила подключаемой edit-лоры (default 1.0; клампится на границе
+    /// движка 0..=2 — та же вилка, что у юзерских Лор).
+    #[serde(default = "default_ref_edit_strength")]
+    pub ref_edit_lora_strength: f32,
     #[serde(default)]
     pub preset: ImagePreset,
     /// Суммарный размер файлов на диске, ГБ (строка для UI).
@@ -124,11 +151,141 @@ pub struct ImageBundleEntry {
     pub ram_min_gb: Option<f32>,
 }
 
+/// Режим ref-edit бандла (F4, 29.10.26). Значения JSON: "native" | "edit_lora".
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefEditMode {
+    /// Стек сам умеет ref-conditioning (Qwen-Image-2.1: ref-конвейер и пресет
+    /// `qwen` вшиты в определении модели сервера, доп. лора не нужна).
+    #[serde(rename = "native")]
+    Native,
+    /// Ref-conditioning работает ТОЛЬКО в паре с обученной edit-лорой
+    /// (Krea2-стек: без неё патч-latents держат «checkerboard»-артефакт,
+    /// ostris/ComfyUI-Krea2-Ostris-Edit issue #1 — идентичные серые квадраты).
+    #[serde(rename = "edit_lora")]
+    EditLora,
+}
+
+fn default_ref_edit_strength() -> f32 {
+    1.0
+}
+
+/// Контракт ref-edit — то, что edit_image обязан выяснить ДО планирования.
+#[derive(Clone, Debug)]
+pub struct RefEditContract {
+    pub mode: RefEditMode,
+    /// Стем edit-лоры (None у Native).
+    pub lora: Option<String>,
+    /// Готовая строка `ref_image_args` для сервера (Some("preset=...") у
+    /// EditLora, None у Native — сервер сам выберет preset модели).
+    pub ref_image_args: Option<String>,
+    /// Сила подключаемой edit-лоры (актуальна только при EditLora).
+    pub lora_strength: f32,
+}
+
+/// F4 (29.10.26): декларативный контракт ref-edit бандла.
+///
+/// `None` — бандл не умеет ref-edit: вызывающий (edit_image) обязан отказать
+/// с понятным текстом, а не сourses с грузом untrained-патча. `Err` —
+/// внутренняя несостыковка режима (fields missing у EditLora / сила вне
+/// вилки): её ловит `validate_image_entry` при загрузке каталога, но здесь
+/// она повторно проверяется (defense-in-depth для ручных entries).
+pub fn ref_edit_contract(
+    entry: &ImageBundleEntry,
+) -> Result<Option<RefEditContract>, String> {
+    match entry.ref_edit_mode {
+        // Нет поля — ref-edit не поддержан (fail-closed, осознанный дизайн).
+        // Но сиротские поля (лора/пресет без mode) — дефект записи каталога:
+        // молча проглотить их значит оставить «наполовину объявленный»
+        // контракт — а половинный контракт хуже отсутствующего: читатель
+        // записи честно поверит, что редактирование поддерживается.
+        None => {
+            if entry.ref_edit_lora.is_some() || entry.ref_edit_preset.is_some() {
+                return Err(format!(
+                    "Бандл «{}»: ref_edit_lora/ref_edit_preset заданы, но ref_edit_mode отсутствует — без mode контракт не активен",
+                    entry.name
+                ));
+            }
+            Ok(None)
+        }
+        Some(RefEditMode::Native) => Ok(Some(RefEditContract {
+            mode: RefEditMode::Native,
+            lora: None,
+            ref_image_args: None,
+            lora_strength: entry.ref_edit_lora_strength,
+        })),
+        Some(RefEditMode::EditLora) => {
+            let lora = entry
+                .ref_edit_lora
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let preset = entry
+                .ref_edit_preset
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let (Some(lora), Some(preset)) = (lora, preset) else {
+                return Err(format!(
+                    "Бандл «{}»: ref_edit_mode = \"edit_lora\" требует непустых ref_edit_lora и ref_edit_preset",
+                    entry.name
+                ));
+            };
+            if !(entry.ref_edit_lora_strength.is_finite()
+                && entry.ref_edit_lora_strength > 0.0
+                && entry.ref_edit_lora_strength <= LORA_MULTIPLIER_MAX)
+            {
+                return Err(format!(
+                    "Бандл «{}»: ref_edit_lora_strength = {} вне вилки (0, {}]",
+                    entry.name, entry.ref_edit_lora_strength, LORA_MULTIPLIER_MAX
+                ));
+            }
+            Ok(Some(RefEditContract {
+                mode: RefEditMode::EditLora,
+                lora: Some(lora),
+                ref_image_args: Some(format!("preset={}", preset)),
+                lora_strength: clamp_multiplier(entry.ref_edit_lora_strength),
+            }))
+        }
+    }
+}
+
 const EMBEDDED_CATALOG: &str = include_str!("../../image_models_catalog.json");
 
-/// Встроенный каталог бандлов.
+/// Встроенный каталог бандлов. Битая запись НЕ молчит: пропускается с
+/// log::error (тот же принцип, что у load_video_catalog — «сломанный бандл
+/// не должен выглядеть рабочим»).
 pub fn load_image_catalog() -> Vec<ImageBundleEntry> {
-    serde_json::from_str(EMBEDDED_CATALOG).unwrap_or_default()
+    let parsed: Vec<ImageBundleEntry> = serde_json::from_str(EMBEDDED_CATALOG).unwrap_or_default();
+    parsed
+        .into_iter()
+        .filter(|e| {
+            if let Err(msg) = validate_image_entry(e) {
+                log::error!(
+                    "[IMG] Бандл «{}» в каталоге невалиден: {} — пропущен",
+                    e.name,
+                    msg
+                );
+                false
+            } else {
+                true
+            }
+        })
+        .collect()
+}
+
+/// Валидация image-бандла (F4, 29.10.26; образец — validate_video_entry).
+///
+/// Способность генерировать обязана быть проверяемой из каталога: бандл без
+/// diffusion-файла не может выдать НИЧЕГО — для него «правка каталога» — не
+/// молчаливый допуск, а ошибка записи. Контракт ref-edit целиком прогоняется
+/// через `ref_edit_contract` (значений mode и парности полей edit_lora).
+pub fn validate_image_entry(entry: &ImageBundleEntry) -> Result<(), String> {
+    if !entry.files.iter().any(|f| f.role == "diffusion") {
+        return Err("нет роли «diffusion»".to_string());
+    }
+    ref_edit_contract(entry).map(|_| ())
 }
 
 /// Бандл по умолчанию (первый с is_default).
@@ -616,6 +773,132 @@ mod tests {
                 "qwen-бандл обязан сохранить прежний ключ"
             );
         }
+    }
+
+    /// F4 29.10.26: ref-edit контракт каталога — Qwen native (сервер сам умеет
+    /// ref-conditioning), Krea2 = edit_lora (identity-лора + preset
+    /// `krea2_edit`, docs/edit.md), контракт отдаёт готовый `preset=...`.
+    #[test]
+    fn ref_edit_contract_catalog_bundles() {
+        let catalog = load_image_catalog();
+        assert_eq!(catalog.len(), 4, "каталог должен пройти валидацию целым");
+        let by = |name: &str| {
+            catalog
+                .iter()
+                .find(|e| e.name == name)
+                .cloned()
+                .unwrap_or_else(|| panic!("нет бандла {}", name))
+        };
+        let unsloth = by("qwen-image-2.1-turbo-unsloth-q5_ks");
+        assert_eq!(
+            unsloth.ref_edit_mode,
+            Some(RefEditMode::Native),
+            "Qwen-2.1 сам умеет ref-conditioning — edit без лоры работает"
+        );
+        let c = ref_edit_contract(&unsloth).unwrap().unwrap();
+        assert_eq!(c.mode, RefEditMode::Native);
+        assert!(
+            c.lora.is_none() && c.ref_image_args.is_none(),
+            "native: лора и ref_image_args не нужны серверу"
+        );
+        assert_eq!(
+            by("qwen-image-2.1-turbo-viggle-q4km").ref_edit_mode,
+            Some(RefEditMode::Native),
+            "viggle — тот же Qwen-стек, ref-edit нативный"
+        );
+        for name in ["krea2-turbo-q4km", "krea2-turbo-q3km"] {
+            let e = by(name);
+            assert_eq!(
+                e.ref_edit_mode,
+                Some(RefEditMode::EditLora),
+                "Krea2 без обученной edit-лоры даёт «checkerboard» (ostris issue #1)"
+            );
+            assert_eq!(
+                e.ref_edit_lora.as_deref(),
+                Some("krea2_identity_edit_v2_r128"),
+                "edit-лора каталога — identity edit V2 r128 (ранг-редуced, 914 МБ)"
+            );
+            assert_eq!(
+                e.ref_edit_preset.as_deref(),
+                Some("krea2_edit"),
+                "пресет под identity-лору — krea2_edit (docs/edit.md)"
+            );
+            let c = ref_edit_contract(&e).unwrap().unwrap();
+            assert_eq!(c.mode, RefEditMode::EditLora);
+            assert_eq!(
+                c.ref_image_args.as_deref(),
+                Some("preset=krea2_edit"),
+                "contract отдаёт готовую строку ref_image_args серверу"
+            );
+        }
+    }
+
+    /// Fail-closed по дизайну (§00.2): бандл без ref_edit_mode не редактирует
+    /// вовсе (contract None), болтающиеся ref_edit_lora/preset без mode —
+    /// ошибка каталога; edit_lora без лоры/пресета — отказ валидатора с именем
+    /// поля; сила вне вилки — отказ.
+    #[test]
+    fn ref_edit_fail_closed_and_validator() {
+        // Mode снят, поля от исходного Krea2-бандла остались — сироты:
+        // валидатор отказывает и называет ref_edit_mode.
+        let mut e = bundle_by_name("krea2-turbo-q4km").expect("бандл");
+        e.ref_edit_mode = None;
+        let msg = validate_image_entry(&e).unwrap_err();
+        assert!(
+            msg.contains("ref_edit_mode") && msg.contains("ref_edit_lora"),
+            "валидатор называет несостыковку, got: {}",
+            msg
+        );
+        // Чистый legacy: без mode и без полей — контракт None (fail-closed),
+        // валидатор пропускает запись целиком.
+        e.ref_edit_lora = None;
+        e.ref_edit_preset = None;
+        assert!(
+            ref_edit_contract(&e).unwrap().is_none(),
+            "нет mode — ref-edit недоступен (fail-closed, не «native по умолчанию»)"
+        );
+        assert!(
+            validate_image_entry(&e).is_ok(),
+            "без mode и без полей — легитимный legacy-бандл без ref-edit"
+        );
+        e.ref_edit_lora = Some("сиротская-лора".to_string());
+        let msg = validate_image_entry(&e).unwrap_err();
+        assert!(
+            msg.contains("ref_edit_mode") && msg.contains("ref_edit_lora"),
+            "валидатор называет несостыковку, got: {}",
+            msg
+        );
+        e.ref_edit_lora = None;
+        e.ref_edit_preset = Some("krea2_edit".to_string());
+        assert!(validate_image_entry(&e).unwrap_err().contains("ref_edit_mode"));
+        e.ref_edit_preset = None;
+        assert!(validate_image_entry(&e).is_ok(), "без mode и без полей — легитимный legacy-бандл");
+
+        // edit_lora без лоры / без пресета — отказ с именами полей.
+        e.ref_edit_mode = Some(RefEditMode::EditLora);
+        e.ref_edit_lora = None;
+        assert!(validate_image_entry(&e).unwrap_err().contains("ref_edit_lora"));
+        e.ref_edit_lora = Some("krea2_identity_edit_v2_r128".to_string());
+        e.ref_edit_preset = None;
+        assert!(validate_image_entry(&e).unwrap_err().contains("ref_edit_preset"));
+        e.ref_edit_preset = Some("krea2_edit".to_string());
+        assert!(validate_image_entry(&e).is_ok());
+
+        // Сила вне вилки (0, 2] — отказ.
+        let mut bad = e.clone();
+        bad.ref_edit_lora_strength = 2.5;
+        assert!(
+            validate_image_entry(&bad).unwrap_err().contains("ref_edit_lora_strength"),
+            "сила edit-лоры требует вилки"
+        );
+        let mut bad = e;
+        bad.ref_edit_lora_strength = 0.0;
+        assert!(validate_image_entry(&bad).unwrap_err().contains("ref_edit_lora_strength"));
+
+        // Native-бандл с лорой-заделом юзера — валиден (юзер вправе дополнить стек).
+        let mut native = bundle_by_name("qwen-image-2.1-turbo-unsloth-q5_ks").unwrap();
+        native.ref_edit_lora = Some("что-то-личное".to_string());
+        assert!(validate_image_entry(&native).is_ok());
     }
 }
 

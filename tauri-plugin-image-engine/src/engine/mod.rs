@@ -35,13 +35,13 @@ pub use config::{
     load_image_config_early, save_image_config, video_bundle_dir_early, ImageEngineConfig,
 };
 pub use image_engine::{
-    edit_image_files, generate_image_simple, upscale_image_files, upscale_target_dims, ImageEngine,
-    ImageGenResult, Img2Img, UPSCALE_STRENGTH_DEFAULT,
+    edit_image_files, generate_image_simple, plan_ref_edit, upscale_image_files,
+    upscale_target_dims, ImageEngine, ImageGenResult, Img2Img, RefEditPlan, UPSCALE_STRENGTH_DEFAULT,
 };
 pub use lora::{
-    clamp_multiplier, lora_spawn_args, lora_spawn_args_for_base, resolve_lora_names,
-    resolve_lora_names_for_base, resolve_lora_specs, resolve_lora_specs_for_base,
-    scan_lora_applied_line, LoraSpec, LORA_MULTIPLIER_MAX,
+    clamp_multiplier, inject_edit_lora, lora_spawn_args, lora_spawn_args_for_base,
+    resolve_lora_names, resolve_lora_names_for_base, resolve_lora_specs,
+    resolve_lora_specs_for_base, scan_lora_applied_line, LoraSpec, LORA_MULTIPLIER_MAX,
 };
 pub use krea_compare::{
     default_legs, download_sources, ensure_krea2_weights, krea2_entry, krea2_turbo_sigmas, load_sources,
@@ -52,8 +52,9 @@ pub use krea_view::build_krea_html;
 pub use models_catalog::{
     bundle_by_name, bundle_disk_bytes, bundle_files_weights, bundle_weights_files,
     default_bundle_entry, default_video_bundle_entry, find_bundle_entry, load_image_catalog,
-    load_video_catalog, video_bundle_by_name, video_bundle_disk_bytes, validate_video_entry,
-    BundleFile, ImageBundleEntry, ImagePreset, VideoBundleEntry, VideoPreset,
+    load_video_catalog, ref_edit_contract, validate_image_entry, video_bundle_by_name,
+    video_bundle_disk_bytes, validate_video_entry, BundleFile, ImageBundleEntry, ImagePreset,
+    RefEditContract, RefEditMode, VideoBundleEntry, VideoPreset,
 };
 pub use preflight::{
     estimate_image_memory_mb, preflight_check, MemoryEstimate, PreflightVerdict,

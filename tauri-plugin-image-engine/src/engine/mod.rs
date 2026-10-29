@@ -31,9 +31,10 @@ pub use bench_upscale::{
 pub use bench_ext::{phash_diff_vs, phash_mean, run_edit_bench, run_hires_bench, PhashRow};
 pub use bench_prompts::{DEFAULT_PROMPTS, EDIT_PROMPTS};
 pub use config::{
-    bundle_dir_early, data_root, default_image_bundle_dir, default_image_lora_dir,
-    default_video_bundle_dir, engine_dir_early, image_lora_dir_early, load_image_config,
-    load_image_config_early, save_image_config, video_bundle_dir_early, ImageEngineConfig,
+    bundle_dir_early, data_root, default_image_bundle_dir, default_lora_dir,
+    default_video_bundle_dir, engine_dir_early, image_lora_dir_early, lora_dir_early,
+    load_image_config, load_image_config_early, save_image_config, video_bundle_dir_early,
+    video_lora_dir_early, ImageEngineConfig,
 };
 pub use gen_guard::MediaGenGuard;
 pub use image_engine::{

@@ -28,10 +28,20 @@ pub struct ImageEngineConfig {
     /// Активный каталог-Bar video-бандл (выбор юзера в UI).
     #[serde(default)]
     pub selected_video_bundle: Option<String>,
-    /// Папка LoRA-файлов (NSFW-стек и позы). Явная — из конфига, иначе
-    /// дефолт `image_lora_dir_early()` (`<KingOrchData>/image_loras`).
+    /// ЕДИНАЯ папка LoRA всех движков (решение юзера 30.10.26): подпапки по
+    /// базе модели (`loras/minimax_h3`, `loras/qwen`, `loras/krea2`) — зеркало
+    /// структуры HF-репо «King Orch Loras», чтобы скачивание набора = перенос
+    /// файлов. Явная — из конфига, иначе дефолт `lora_dir_early()`
+    /// (`<KingOrchData>/loras`). Старые ключи `image_lora_dir`/`video_lora_dir`
+    /// удалены из схемы: несовместимые значения serde игнорирует, папки
+    /// переносит `ensure_unified_lora_dir`.
     #[serde(default)]
-    pub image_lora_dir: Option<String>,
+    pub lora_dir: Option<String>,
+    /// HF-репозиторий LoRA-каталога для плашки «скачать лоры»
+    /// (видео- и image-лоры в одном репо, подпапки = базы). Явная — из
+    /// конфига, иначе дефолт командного слоя ("nilden/king-orch-loras").
+    #[serde(default)]
+    pub loras_repo: Option<String>,
 }
 
 /// Путь к `app_config.json` хоста (runtime, через AppHandle).
@@ -125,9 +135,10 @@ pub fn default_video_bundle_dir() -> PathBuf {
     data_root().join("video_models")
 }
 
-/// Дефолтная папка LoRA: `<хранилище>/image_loras`.
-pub fn default_image_lora_dir() -> PathBuf {
-    data_root().join("image_loras")
+/// ЕДИНАЯ дефолтная папка LoRA всех движков: `<хранилище>/loras`
+/// (подпапки по базе: minimax_h3 / qwen / krea2 — зеркало HF-репо).
+pub fn default_lora_dir() -> PathBuf {
+    data_root().join("loras")
 }
 
 /// Читает image-ключи ДО создания Tauri-приложения (тулы оркестратора, рантайм
@@ -189,17 +200,97 @@ pub fn video_bundle_dir_early() -> PathBuf {
     default_video_bundle_dir()
 }
 
-/// Папка LoRA без AppHandle: явная из конфига, иначе
-/// `<хранилище KingOrchData>/image_loras`. Тулы оркестратора и
-/// tauri-команды используют early-версию (тот же app_config.json хоста).
-pub fn image_lora_dir_early() -> PathBuf {
+/// Однократный перенос лор в единую папку `loras/` (решение юзера 30.10.26).
+fn ensure_unified_lora_dir(root: &Path) {
+    static DONE: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if DONE.get().is_some() {
+        return;
+    }
+    unify_lora_folders(root);
+    let _ = DONE.set(());
+}
+
+/// Слить содержимое `src` в `dst` rename'ом: нового — переехать, имя занято
+/// у ФАЙЛА — пропустить (приоритет у единой папки), имя занято у ПАПКИ —
+/// слить рекурсивно на уровень глубже (в легаси-базе могли появиться новые
+/// файлы после первого переноса).
+fn merge_dir_into(src: &Path, dst: &Path, moved: &mut bool) {
+    let Ok(entries) = std::fs::read_dir(src) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let target = dst.join(entry.file_name());
+        if target.exists() {
+            if entry.path().is_dir() && target.is_dir() {
+                merge_dir_into(&entry.path(), &target, moved);
+            }
+            continue;
+        }
+        if std::fs::rename(entry.path(), &target).is_ok() {
+            *moved = true;
+        }
+    }
+}
+
+/// Ядро переноса (без guard'а — герметично для тестов): `image_loras/*` и
+/// `video_loras/*` переезжают rename'ом в `loras/<имя>` — тот же том,
+/// мгновенно, жёсткие ссылки turbo-лоры DMAD сохраняются. Коллизия папок
+/// = слияние содержимого, коллизия файлов = приоритет у единой папки.
+/// Опустевшие легаси-папки удаляются. Идемпотентно: нечего переносить — no-op.
+fn unify_lora_folders(root: &Path) {
+    let unified = root.join("loras");
+    if std::fs::create_dir_all(&unified).is_err() {
+        return; // честный отказ произойдёт позже в резолве (папки нет)
+    }
+    for legacy_name in ["image_loras", "video_loras"] {
+        let legacy = root.join(legacy_name);
+        if !legacy.is_dir() {
+            continue;
+        }
+        let mut moved_any = false;
+        merge_dir_into(&legacy, &unified, &mut moved_any);
+        // Папка пуста (всё переехало) — убрать легаси-хвост.
+        if std::fs::read_dir(&legacy)
+            .map(|mut d| d.next().is_none())
+            .unwrap_or(false)
+        {
+            let _ = std::fs::remove_dir(&legacy);
+        }
+        if moved_any {
+            log::info!(
+                "[image-engine] LoRA перенесены: {} → {} (единая папка по базам)",
+                legacy.display(),
+                unified.display()
+            );
+        }
+    }
+}
+
+/// ЕДИНАЯ папка LoRA без AppHandle: явная из конфига (`lora_dir`), иначе
+/// `<хранилище KingOrchData>/loras` (с однократным переносом легаси-папок).
+/// Оба потребителя — image- и video-ветки — зовут её через свои алиасы.
+pub fn lora_dir_early() -> PathBuf {
     let cfg = load_image_config_early();
-    if let Some(p) = &cfg.image_lora_dir {
+    if let Some(p) = &cfg.lora_dir {
         if !p.is_empty() {
             return PathBuf::from(p);
         }
     }
-    default_image_lora_dir()
+    let root = data_root();
+    ensure_unified_lora_dir(&root);
+    root.join("loras")
+}
+
+/// Папка image-лор: алиас единой `lora_dir_early()` (подпапка базы
+/// выбирается резолвером `resolve_lora_specs_for_base`).
+pub fn image_lora_dir_early() -> PathBuf {
+    lora_dir_early()
+}
+
+/// Папка видео-лор: алиас единой `lora_dir_early()` (подпапка базы —
+/// `minimax_h3` — выбирается резолвером и спавном `--lora-model-dir`).
+pub fn video_lora_dir_early() -> PathBuf {
+    lora_dir_early()
 }
 
 /// Читает ТОЛЬКО image-ключи (остальное игнорируется serde по умолчанию).
@@ -233,12 +324,56 @@ pub fn save_image_config(app: &AppHandle, config: &ImageEngineConfig) -> Result<
 mod tests {
     use super::*;
 
-    /// Новый ключ image_lora_dir: serde-дефолт — None (пустой JSON читается
-    /// без ошибок, старые конфиги не ломаются).
+    /// Новый ключ lora_dir — тот же контракт serde-дефолта; старые ключи
+    /// image_lora_dir/video_lora_dir из схемы удалены (читатель их игнорирует).
     #[test]
-    fn image_lora_dir_key_defaults_to_none() {
+    fn lora_dir_key_defaults_to_none() {
         let cfg: ImageEngineConfig = serde_json::from_str("{}").expect("пустой JSON");
-        assert!(cfg.image_lora_dir.is_none());
+        assert!(cfg.lora_dir.is_none());
+        let legacy: ImageEngineConfig = serde_json::from_str(
+            r#"{"image_lora_dir": "C:\\old", "video_lora_dir": "D:\\old2"}"#,
+        )
+        .expect("легаси-ключи не ломают чтение");
+        assert!(legacy.lora_dir.is_none());
+    }
+
+    /// Миграция: image_loras/* и video_loras/* переезжают в loras/*,
+    /// легаси-папки удаляются, уже существующее в loras не затирается,
+    /// повторный запуск — no-op.
+    #[test]
+    fn unify_lora_folders_moves_legacy_bases_and_is_idempotent() {
+        let root = std::env::temp_dir().join(format!(
+            "ko_unify_lora_{}_{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let img = root.join("image_loras");
+        let vid = root.join("video_loras");
+        std::fs::create_dir_all(img.join("qwen")).unwrap();
+        std::fs::create_dir_all(vid.join("minimax_h3")).unwrap();
+        std::fs::write(img.join("qwen").join("a.safetensors"), b"x").unwrap();
+        std::fs::write(vid.join("minimax_h3").join("b.safetensors"), b"x").unwrap();
+        // Конфликт: та же база уже есть в единой папке — не затирается.
+        std::fs::create_dir_all(root.join("loras").join("krea2")).unwrap();
+        std::fs::write(root.join("loras").join("krea2").join("c.safetensors"), b"x").unwrap();
+
+        super::unify_lora_folders(&root);
+        assert!(root.join("loras/qwen/a.safetensors").exists());
+        assert!(root.join("loras/minimax_h3/b.safetensors").exists());
+        assert!(root.join("loras/krea2/c.safetensors").exists(), "своё не тронуто");
+        assert!(!img.exists(), "пустой легаси image_loras удалён");
+        assert!(!vid.exists(), "пустой легаси video_loras удалён");
+
+        // Повтор — no-op (папки уже нет; конфликтный кейс не переезжает).
+        std::fs::create_dir_all(vid.join("minimax_h3")).unwrap();
+        std::fs::write(vid.join("minimax_h3").join("d.safetensors"), b"x").unwrap();
+        super::unify_lora_folders(&root);
+        assert!(root.join("loras/minimax_h3/d.safetensors").exists());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Зеркало тестов `data_dir::normalize` хоста: конвенция одна, ломаться

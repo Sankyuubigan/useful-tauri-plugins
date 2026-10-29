@@ -908,6 +908,174 @@ ${missing.join("\n")}`;
     customElements.define("image-bundle-tab", BundleTabElement);
   }
 
+  // guest-js/components/lora-tab.ts
+  var LoraTabElement = class extends HTMLElement {
+    constructor() {
+      super(...arguments);
+      this.busy = false;
+      this.files = [];
+      this.repo = "";
+      this.localDir = "";
+    }
+    connectedCallback() {
+      if (this.root) return;
+      this.root = this.attachShadow({ mode: "open" });
+      this.root.innerHTML = `
+      <style>${STYLE}</style>
+      <div>
+        <div class="row">
+          <label>\u041A\u0430\u0442\u0430\u043B\u043E\u0433:</label>
+          <span id="repo" class="hint" style="flex:1; word-break:break-all;">\u2026</span>
+          <button id="refresh" class="secondary">\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C</button>
+        </div>
+        <div class="row"><label>\u041F\u0430\u043F\u043A\u0430:</label><span id="dir" class="hint" style="word-break:break-all; flex:1;"></span></div>
+        <div class="hint" id="note">\u041B\u043E\u0440\u0430 \u043A\u0430\u0447\u0430\u0435\u0442\u0441\u044F \u0432\u043C\u0435\u0441\u0442\u0435 \u0441\u043E \u0441\u0432\u043E\u0438\u043C \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435\u043C (.md) \u2014 \u0430\u0433\u0435\u043D\u0442 \u0441\u0440\u0430\u0437\u0443 \u0432\u0438\u0434\u0438\u0442, \u0447\u0442\u043E \u043F\u043E\u044F\u0432\u0438\u043B\u043E\u0441\u044C. \u0423\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043D\u043E\u0435 \u043E\u0442\u043C\u0435\u0447\u0435\u043D\u043E \u2713.</div>
+        <div id="groups"></div>
+        <div class="row" style="margin-top:10px;">
+          <button id="downloadAll" class="primary" style="display:none;"></button>
+        </div>
+        <div id="progress" class="progress-container">
+          <div class="progress-status" id="progressStatus">0 MB / 0 MB</div>
+          <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
+        </div>
+      </div>`;
+      this.root.getElementById("refresh").addEventListener("click", () => void this.refresh());
+      this.root.getElementById("downloadAll").addEventListener("click", () => void this.downloadAll());
+      void this.refresh();
+      void listen("downloader:progress", (e) => {
+        const p = e.payload;
+        if (p.kind !== "lora") return;
+        const bar = this.root.getElementById("progressBar");
+        bar.style.width = `${p.total > 0 ? p.downloaded / p.total * 100 : 0}%`;
+        this.root.getElementById("progressStatus").textContent = progressText(p.downloaded, p.total);
+        if (p.status === "done" || p.status === "error") {
+          setTimeout(() => {
+            this.root.getElementById("progress").style.display = "none";
+          }, 400);
+        }
+      }).then((u) => {
+        this.unlisten = u;
+      }).catch(() => {
+      });
+    }
+    disconnectedCallback() {
+      this.unlisten?.();
+    }
+    async refresh() {
+      if (this.busy) return;
+      const groupsEl = this.root.getElementById("groups");
+      this.root.getElementById("repo").textContent = "\u0437\u0430\u0433\u0440\u0443\u0437\u043A\u0430 \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u0430\u2026";
+      try {
+        const info = await listRemoteLoras();
+        this.files = info.files;
+        this.repo = info.repo;
+        this.localDir = info.local_dir;
+        this.root.getElementById("repo").textContent = `huggingface.co/${info.repo}`;
+        this.root.getElementById("dir").textContent = info.local_dir;
+        this.renderGroups();
+      } catch (e) {
+        this.root.getElementById("repo").textContent = "\u043A\u0430\u0442\u0430\u043B\u043E\u0433 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D";
+        groupsEl.innerHTML = `<div class="hint">\u041E\u0448\u0438\u0431\u043A\u0430: ${esc(String(e))}</div>`;
+      }
+    }
+    renderGroups() {
+      const groupsEl = this.root.getElementById("groups");
+      groupsEl.innerHTML = "";
+      const bases = [...new Set(this.files.map((f) => f.base))];
+      for (const base of bases) {
+        const box = document.createElement("div");
+        const title = document.createElement("div");
+        title.className = "hint";
+        title.style.margin = "8px 0 4px";
+        title.textContent = `\u0411\u0430\u0437\u0430: ${base}`;
+        box.appendChild(title);
+        const ul = document.createElement("ul");
+        ul.className = "files";
+        for (const f of this.files.filter((x) => x.base === base)) {
+          if (!f.is_lora) continue;
+          const li = document.createElement("li");
+          li.className = f.exists_locally ? "ok" : "missing";
+          const hasSidecar = this.files.some(
+            (s) => !s.is_lora && s.base === f.base && s.filename === `${f.filename.replace(/\.[^.]+$/, "")}.md`
+          );
+          const size = f.size_bytes ? ` \u2014 ${formatBytes(f.size_bytes)}` : "";
+          li.textContent = `${f.exists_locally ? "\u2713" : "\u25CB"} ${esc(f.filename)}${size}${hasSidecar ? " (\u0441 \u043E\u043F\u0438\u0441\u0430\u043D\u0438\u0435\u043C)" : ""}`;
+          if (!f.exists_locally) {
+            const btn = document.createElement("button");
+            btn.className = "secondary";
+            btn.textContent = "\u0421\u043A\u0430\u0447\u0430\u0442\u044C";
+            btn.dataset.path = f.path;
+            btn.addEventListener("click", () => void this.downloadOne(f));
+            li.appendChild(document.createTextNode(" "));
+            li.appendChild(btn);
+          }
+          ul.appendChild(li);
+        }
+        box.appendChild(ul);
+        groupsEl.appendChild(box);
+      }
+      const missing = this.files.filter((f) => f.is_lora && !f.exists_locally);
+      const allBtn = this.root.getElementById("downloadAll");
+      allBtn.style.display = missing.length > 0 ? "inline-block" : "none";
+      allBtn.textContent = `\u0421\u043A\u0430\u0447\u0430\u0442\u044C \u0432\u0441\u0451 \u043D\u0435\u0434\u043E\u043A\u0430\u0447\u0430\u043D\u043D\u043E\u0435 (${missing.length})`;
+    }
+    /** Скачать веса + их sidecar-описание (если есть в каталоге). */
+    async fetchWithSidecar(f) {
+      await downloadRemoteLora(f.path);
+      const stem = f.filename.replace(/\.[^.]+$/, "");
+      const sidecar = this.files.find(
+        (s) => !s.is_lora && s.base === f.base && s.filename === `${stem}.md`
+      );
+      if (sidecar) {
+        await downloadRemoteLora(sidecar.path).catch((e) => {
+          toast(`\u041E\u043F\u0438\u0441\u0430\u043D\u0438\u0435 ${sidecar.filename} \u043D\u0435 \u0441\u043A\u0430\u0447\u0430\u043B\u043E\u0441\u044C: ${e}`, "error");
+        });
+      }
+    }
+    async downloadOne(f) {
+      if (this.busy) return;
+      this.busy = true;
+      this.root.getElementById("progress").style.display = "block";
+      try {
+        await this.fetchWithSidecar(f);
+        toast(`${f.filename} \u0441\u043A\u0430\u0447\u0430\u043D.`);
+      } catch (e) {
+        toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u0441\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u044F ${f.filename}: ${e}`, "error");
+      } finally {
+        this.busy = false;
+        await this.refresh();
+      }
+    }
+    async downloadAll() {
+      if (this.busy) return;
+      const missing = this.files.filter((f) => f.is_lora && !f.exists_locally);
+      if (missing.length === 0) return;
+      this.busy = true;
+      const btn = this.root.getElementById("downloadAll");
+      btn.disabled = true;
+      this.root.getElementById("progress").style.display = "block";
+      let failed = 0;
+      try {
+        for (const f of missing) {
+          try {
+            await this.fetchWithSidecar(f);
+          } catch (e) {
+            failed += 1;
+            toast(`${f.filename}: ${e}`, "error");
+          }
+        }
+        toast(failed === 0 ? "\u0412\u0441\u0435 \u043B\u043E\u0440\u044B \u0441\u043A\u0430\u0447\u0430\u043D\u044B!" : `\u0421\u043A\u0430\u0447\u0430\u043D\u043E \u0441 \u043E\u0448\u0438\u0431\u043A\u0430\u043C\u0438: ${failed} \u0448\u0442.`);
+      } finally {
+        this.busy = false;
+        btn.disabled = false;
+        await this.refresh();
+      }
+    }
+  };
+  if (!customElements.get("image-lora-tab")) {
+    customElements.define("image-lora-tab", LoraTabElement);
+  }
+
   // guest-js/components/media-panel.ts
   var MediaEnginePanel = class extends HTMLElement {
     connectedCallback() {
@@ -922,24 +1090,36 @@ ${missing.join("\n")}`;
         <div class="row tabs-row">
           <button id="tabImages" class="tab-btn primary" aria-pressed="true">\u041A\u0430\u0440\u0442\u0438\u043D\u043A\u0438</button>
           <button id="tabVideo" class="tab-btn" aria-pressed="false">\u0412\u0438\u0434\u0435\u043E</button>
+          <button id="tabLoras" class="tab-btn" aria-pressed="false">LoRA</button>
         </div>
         <div class="tab-panel" id="panelImages"><image-bundle-tab service="image"></image-bundle-tab></div>
         <div class="tab-panel" id="panelVideo" style="display:none;"><image-bundle-tab service="video"></image-bundle-tab></div>
+        <div class="tab-panel" id="panelLoras" style="display:none;"><image-lora-tab></image-lora-tab></div>
       </div>`;
       const btnImages = this.root.getElementById("tabImages");
       const btnVideo = this.root.getElementById("tabVideo");
+      const btnLoras = this.root.getElementById("tabLoras");
       const panelImages = this.root.getElementById("panelImages");
       const panelVideo = this.root.getElementById("panelVideo");
-      const activate = (showVideo) => {
-        btnImages.setAttribute("aria-pressed", showVideo ? "false" : "true");
-        btnVideo.setAttribute("aria-pressed", showVideo ? "true" : "false");
-        btnImages.classList.toggle("primary", !showVideo);
-        btnVideo.classList.toggle("primary", showVideo);
-        panelImages.style.display = showVideo ? "none" : "block";
-        panelVideo.style.display = showVideo ? "block" : "none";
+      const panelLoras = this.root.getElementById("panelLoras");
+      const activate = (tab) => {
+        const show = (el, on) => {
+          el.style.display = on ? "block" : "none";
+        };
+        show(panelImages, tab === "images");
+        show(panelVideo, tab === "video");
+        show(panelLoras, tab === "loras");
+        const set = (btn, on) => {
+          btn.setAttribute("aria-pressed", on ? "true" : "false");
+          btn.classList.toggle("primary", on);
+        };
+        set(btnImages, tab === "images");
+        set(btnVideo, tab === "video");
+        set(btnLoras, tab === "loras");
       };
-      btnImages.addEventListener("click", () => activate(false));
-      btnVideo.addEventListener("click", () => activate(true));
+      btnImages.addEventListener("click", () => activate("images"));
+      btnVideo.addEventListener("click", () => activate("video"));
+      btnLoras.addEventListener("click", () => activate("loras"));
     }
   };
   if (!customElements.get("image-media-panel")) {
@@ -1075,6 +1255,12 @@ ${missing.join("\n")}`;
       bundleName: opts.bundleName ?? null
     });
   }
+  function listRemoteLoras() {
+    return invoke("plugin:image-engine|list_remote_loras");
+  }
+  function downloadRemoteLora(path) {
+    return invoke("plugin:image-engine|download_remote_lora", { path });
+  }
 
   // guest-js/iife-entry.ts
   var g4 = window;
@@ -1086,6 +1272,7 @@ ${missing.join("\n")}`;
         value: {
           checkImageEngineUpdate,
           downloadImageBundle,
+          downloadRemoteLora,
           downloadVideoBundle,
           editImage,
           estimateImageMemory,
@@ -1098,6 +1285,7 @@ ${missing.join("\n")}`;
           getVideoBundles,
           installImageEngine,
           installImageEngineUpdate,
+          listRemoteLoras,
           notifyBundleChanged,
           removeImageBundle,
           removeImageBundleFromList,

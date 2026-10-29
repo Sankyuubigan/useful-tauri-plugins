@@ -388,6 +388,36 @@ export function generateVideo(opts: GenerateVideoOptions): Promise<VideoGenResul
   })
 }
 
+// ───────────── LoRA-каталог HF («King Orch Loras») ─────────────
+
+export interface RemoteLoraFile {
+  /** Путь в репозитории: `<база>/<файл>`. */
+  path: string
+  base: string
+  filename: string
+  size_bytes: number
+  /** Веса лоры (true) или sidecar-описание .md (false). */
+  is_lora: boolean
+  exists_locally: boolean
+  url: string
+}
+
+export interface RemoteLorasInfo {
+  repo: string
+  local_dir: string
+  files: RemoteLoraFile[]
+}
+
+/** Список файлов LoRA-каталога из HF-репозитория (подпапки = базы). */
+export function listRemoteLoras(): Promise<RemoteLorasInfo> {
+  return invoke<RemoteLorasInfo>('plugin:image-engine|list_remote_loras')
+}
+
+/** Скачать один файл каталога в единую папку loras (веса или sidecar). */
+export function downloadRemoteLora(path: string): Promise<void> {
+  return invoke<void>('plugin:image-engine|download_remote_lora', { path })
+}
+
 // Регистрируем Web Components при импорте пакета.
 import './web-components'
 

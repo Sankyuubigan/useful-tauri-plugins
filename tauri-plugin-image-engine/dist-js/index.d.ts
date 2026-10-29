@@ -225,6 +225,26 @@ export interface GenerateVideoOptions {
     bundleName?: string | null;
 }
 export declare function generateVideo(opts: GenerateVideoOptions): Promise<VideoGenResult>;
+export interface RemoteLoraFile {
+    /** Путь в репозитории: `<база>/<файл>`. */
+    path: string;
+    base: string;
+    filename: string;
+    size_bytes: number;
+    /** Веса лоры (true) или sidecar-описание .md (false). */
+    is_lora: boolean;
+    exists_locally: boolean;
+    url: string;
+}
+export interface RemoteLorasInfo {
+    repo: string;
+    local_dir: string;
+    files: RemoteLoraFile[];
+}
+/** Список файлов LoRA-каталога из HF-репозитория (подпапки = базы). */
+export declare function listRemoteLoras(): Promise<RemoteLorasInfo>;
+/** Скачать один файл каталога в единую папку loras (веса или sidecar). */
+export declare function downloadRemoteLora(path: string): Promise<void>;
 import './web-components';
 export { getUpdateState, onUpdateState, setUpdateState, checkUpdate, initUpdateWatcher, } from './updates';
 export type { PluginUpdateState } from './updates';

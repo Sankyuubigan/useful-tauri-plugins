@@ -75,6 +75,8 @@ pub fn init() -> TauriPlugin<Wry> {
             commands::set_video_bundle_dir,
             commands::remove_video_bundle_files,
             commands::generate_video,
+            commands::list_remote_loras,
+            commands::download_remote_lora,
         ])
         .build()
 }

@@ -319,6 +319,18 @@
           "markdownDescription": "Denies the download_image_bundle command without any pre-configured scope."
         },
         {
+          "description": "Enables the download_remote_lora command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-download-remote-lora",
+          "markdownDescription": "Enables the download_remote_lora command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the download_remote_lora command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-download-remote-lora",
+          "markdownDescription": "Denies the download_remote_lora command without any pre-configured scope."
+        },
+        {
           "description": "Enables the download_video_bundle command without any pre-configured scope.",
           "type": "string",
           "const": "allow-download-video-bundle",
@@ -475,6 +487,18 @@
           "markdownDescription": "Denies the install_image_engine_update command without any pre-configured scope."
         },
         {
+          "description": "Enables the list_remote_loras command without any pre-configured scope.",
+          "type": "string",
+          "const": "allow-list-remote-loras",
+          "markdownDescription": "Enables the list_remote_loras command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the list_remote_loras command without any pre-configured scope.",
+          "type": "string",
+          "const": "deny-list-remote-loras",
+          "markdownDescription": "Denies the list_remote_loras command without any pre-configured scope."
+        },
+        {
           "description": "Enables the remove_image_bundle command without any pre-configured scope.",
           "type": "string",
           "const": "allow-remove-image-bundle",
@@ -619,10 +643,10 @@
           "markdownDescription": "Denies the validate_video_bundle_dir command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the image-engine plugin.\n#### This default permission set includes:\n\n- `allow-get-image-engine-status`\n- `allow-install-image-engine`\n- `allow-set-image-engine-variant`\n- `allow-check-image-engine-update`\n- `allow-install-image-engine-update`\n- `allow-remove-image-engine`\n- `allow-set-image-engine-dir`\n- `allow-get-image-models-catalog`\n- `allow-get-image-bundle-info`\n- `allow-set-selected-image-bundle`\n- `allow-download-image-bundle`\n- `allow-validate-image-bundle-dir`\n- `allow-set-image-bundle-dir`\n- `allow-remove-image-bundle`\n- `allow-remove-image-bundle-from-list`\n- `allow-get-image-pool-orphans`\n- `allow-remove-image-pool-orphans`\n- `allow-estimate-image-memory`\n- `allow-generate-image`\n- `allow-edit-image`\n- `allow-get-video-bundles`\n- `allow-get-video-bundle-info`\n- `allow-set-selected-video-bundle`\n- `allow-validate-video-bundle-dir`\n- `allow-set-video-bundle-dir`\n- `allow-download-video-bundle`\n- `allow-remove-video-bundle-files`\n- `allow-generate-video`",
+          "description": "Default permissions for the image-engine plugin.\n#### This default permission set includes:\n\n- `allow-get-image-engine-status`\n- `allow-install-image-engine`\n- `allow-set-image-engine-variant`\n- `allow-check-image-engine-update`\n- `allow-install-image-engine-update`\n- `allow-remove-image-engine`\n- `allow-set-image-engine-dir`\n- `allow-get-image-models-catalog`\n- `allow-get-image-bundle-info`\n- `allow-set-selected-image-bundle`\n- `allow-download-image-bundle`\n- `allow-validate-image-bundle-dir`\n- `allow-set-image-bundle-dir`\n- `allow-remove-image-bundle`\n- `allow-remove-image-bundle-from-list`\n- `allow-get-image-pool-orphans`\n- `allow-remove-image-pool-orphans`\n- `allow-estimate-image-memory`\n- `allow-generate-image`\n- `allow-edit-image`\n- `allow-get-video-bundles`\n- `allow-get-video-bundle-info`\n- `allow-set-selected-video-bundle`\n- `allow-validate-video-bundle-dir`\n- `allow-set-video-bundle-dir`\n- `allow-download-video-bundle`\n- `allow-remove-video-bundle-files`\n- `allow-generate-video`\n- `allow-list-remote-loras`\n- `allow-download-remote-lora`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the image-engine plugin.\n#### This default permission set includes:\n\n- `allow-get-image-engine-status`\n- `allow-install-image-engine`\n- `allow-set-image-engine-variant`\n- `allow-check-image-engine-update`\n- `allow-install-image-engine-update`\n- `allow-remove-image-engine`\n- `allow-set-image-engine-dir`\n- `allow-get-image-models-catalog`\n- `allow-get-image-bundle-info`\n- `allow-set-selected-image-bundle`\n- `allow-download-image-bundle`\n- `allow-validate-image-bundle-dir`\n- `allow-set-image-bundle-dir`\n- `allow-remove-image-bundle`\n- `allow-remove-image-bundle-from-list`\n- `allow-get-image-pool-orphans`\n- `allow-remove-image-pool-orphans`\n- `allow-estimate-image-memory`\n- `allow-generate-image`\n- `allow-edit-image`\n- `allow-get-video-bundles`\n- `allow-get-video-bundle-info`\n- `allow-set-selected-video-bundle`\n- `allow-validate-video-bundle-dir`\n- `allow-set-video-bundle-dir`\n- `allow-download-video-bundle`\n- `allow-remove-video-bundle-files`\n- `allow-generate-video`"
+          "markdownDescription": "Default permissions for the image-engine plugin.\n#### This default permission set includes:\n\n- `allow-get-image-engine-status`\n- `allow-install-image-engine`\n- `allow-set-image-engine-variant`\n- `allow-check-image-engine-update`\n- `allow-install-image-engine-update`\n- `allow-remove-image-engine`\n- `allow-set-image-engine-dir`\n- `allow-get-image-models-catalog`\n- `allow-get-image-bundle-info`\n- `allow-set-selected-image-bundle`\n- `allow-download-image-bundle`\n- `allow-validate-image-bundle-dir`\n- `allow-set-image-bundle-dir`\n- `allow-remove-image-bundle`\n- `allow-remove-image-bundle-from-list`\n- `allow-get-image-pool-orphans`\n- `allow-remove-image-pool-orphans`\n- `allow-estimate-image-memory`\n- `allow-generate-image`\n- `allow-edit-image`\n- `allow-get-video-bundles`\n- `allow-get-video-bundle-info`\n- `allow-set-selected-video-bundle`\n- `allow-validate-video-bundle-dir`\n- `allow-set-video-bundle-dir`\n- `allow-download-video-bundle`\n- `allow-remove-video-bundle-files`\n- `allow-generate-video`\n- `allow-list-remote-loras`\n- `allow-download-remote-lora`"
         },
         {
           "description": "Allow reading the image engine status (installed variants, gpu).",
@@ -785,6 +809,18 @@
           "type": "string",
           "const": "allow-generate-video",
           "markdownDescription": "Allow video generation via sd-server (T2VA/I2VA/FL2VA/Ref2VA)."
+        },
+        {
+          "description": "Allow listing the remote LoRA catalog (HF repo, per-base folders).",
+          "type": "string",
+          "const": "allow-list-remote-loras",
+          "markdownDescription": "Allow listing the remote LoRA catalog (HF repo, per-base folders)."
+        },
+        {
+          "description": "Allow downloading one catalog file (weights or sidecar) into the unified loras folder.",
+          "type": "string",
+          "const": "allow-download-remote-lora",
+          "markdownDescription": "Allow downloading one catalog file (weights or sidecar) into the unified loras folder."
         }
       ]
     }

@@ -143,6 +143,18 @@ identifier = "allow-generate-video"
 description = "Allow video generation via sd-server (T2VA/I2VA/FL2VA/Ref2VA)."
 commands.allow = ["generate_video"]
 
+# ── LoRA-каталог HF ──
+
+[[permission]]
+identifier = "allow-list-remote-loras"
+description = "Allow listing the remote LoRA catalog (HF repo, per-base folders)."
+commands.allow = ["list_remote_loras"]
+
+[[permission]]
+identifier = "allow-download-remote-lora"
+description = "Allow downloading one catalog file (weights or sidecar) into the unified loras folder."
+commands.allow = ["download_remote_lora"]
+
 [default]
 description = "Default permissions for the image-engine plugin."
 permissions = [
@@ -174,4 +186,6 @@ permissions = [
   "allow-download-video-bundle",
   "allow-remove-video-bundle-files",
   "allow-generate-video",
+  "allow-list-remote-loras",
+  "allow-download-remote-lora",
 ]

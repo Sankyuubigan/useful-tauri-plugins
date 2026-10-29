@@ -544,6 +544,13 @@ pub struct VideoBundleEntry {
     pub vram_min_gb: Option<f32>,
     #[serde(default)]
     pub ram_min_gb: Option<f32>,
+    /// База LoRA-каталога (подпапка `<video_loras>/<lora_base>`): лоры
+    /// привязаны к диффузион-бэкбону, кросс-база отсекается структурно —
+    /// зеркально `lora_base` у `ImageBundleEntry`. Все бандлы семейства
+    /// MiniMax H3 — одна база `"minimax_h3"` (turbo-лора DMAD у них общая).
+    /// None — легаси-плоский каталог сервера (bundle_dir).
+    #[serde(default)]
+    pub lora_base: Option<String>,
 }
 
 const EMBEDDED_VIDEO_CATALOG: &str = include_str!("../../video_models_catalog.json");

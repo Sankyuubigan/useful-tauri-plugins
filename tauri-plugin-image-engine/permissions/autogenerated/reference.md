@@ -32,6 +32,8 @@ Default permissions for the image-engine plugin.
 - `allow-download-video-bundle`
 - `allow-remove-video-bundle-files`
 - `allow-generate-video`
+- `allow-list-remote-loras`
+- `allow-download-remote-lora`
 
 ## Permission Table
 
@@ -90,6 +92,32 @@ Enables the download_image_bundle command without any pre-configured scope.
 <td>
 
 Denies the download_image_bundle command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-download-remote-lora`
+
+</td>
+<td>
+
+Enables the download_remote_lora command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:deny-download-remote-lora`
+
+</td>
+<td>
+
+Denies the download_remote_lora command without any pre-configured scope.
 
 </td>
 </tr>
@@ -428,6 +456,32 @@ Enables the install_image_engine_update command without any pre-configured scope
 <td>
 
 Denies the install_image_engine_update command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-list-remote-loras`
+
+</td>
+<td>
+
+Enables the list_remote_loras command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:deny-list-remote-loras`
+
+</td>
+<td>
+
+Denies the list_remote_loras command without any pre-configured scope.
 
 </td>
 </tr>
@@ -1091,6 +1145,32 @@ Allow deleting the downloaded video bundle files.
 <td>
 
 Allow video generation via sd-server (T2VA/I2VA/FL2VA/Ref2VA).
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-list-remote-loras`
+
+</td>
+<td>
+
+Allow listing the remote LoRA catalog (HF repo, per-base folders).
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-download-remote-lora`
+
+</td>
+<td>
+
+Allow downloading one catalog file (weights or sidecar) into the unified loras folder.
 
 </td>
 </tr>

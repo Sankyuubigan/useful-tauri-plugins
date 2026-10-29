@@ -30,6 +30,9 @@ const COMMANDS: &[&str] = &[
     "generate_image",
     "edit_image",
     "generate_video",
+    // ── LoRA-каталог HF ──
+    "list_remote_loras",
+    "download_remote_lora",
 ];
 
 fn main() {

@@ -139,6 +139,14 @@ export function generateVideo(opts) {
         bundleName: opts.bundleName ?? null,
     });
 }
+/** Список файлов LoRA-каталога из HF-репозитория (подпапки = базы). */
+export function listRemoteLoras() {
+    return invoke('plugin:image-engine|list_remote_loras');
+}
+/** Скачать один файл каталога в единую папку loras (веса или sidecar). */
+export function downloadRemoteLora(path) {
+    return invoke('plugin:image-engine|download_remote_lora', { path });
+}
 // Регистрируем Web Components при импорте пакета.
 import './web-components';
 export { getUpdateState, onUpdateState, setUpdateState, checkUpdate, initUpdateWatcher, } from './updates';

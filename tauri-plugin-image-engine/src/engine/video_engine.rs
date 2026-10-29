@@ -33,6 +33,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::engine::lora::LoraSpec;
 use crate::engine::models_catalog::{
     bundle_files_weights, resolve_placement, video_bundle_disk_bytes, BundleFile, VideoBundleEntry,
 };
@@ -203,6 +204,61 @@ fn ext_for_mime(mime: &str) -> &'static str {
 /// Файл роли `lora_draft` записи каталога (None — роли нет).
 fn lora_draft_file(entry: &VideoBundleEntry) -> Option<&BundleFile> {
     entry.files.iter().find(|f| f.role == "lora_draft")
+}
+
+/// Каталог LoRA сервера для спавна (`--lora-model-dir`).
+///
+/// SSOT каталога: у бандла с полем `lora_base` ВСЕ LoRA — и turbo-лора роли
+/// `lora_draft`, и юзерские — физически лежат в одной плоской папке
+/// `<lora_root>/<lora_base>`: сервер принимает пути только относительно
+/// ОДНОГО `--lora-model-dir` (api.md:126-131), двух каталогов быть не может.
+/// Turbo-лора, скачанная в bundle_dir, доставляется туда жёсткой ссылкой
+/// (тот же том → ноль лишнего места), фоллбэк — копия. Бандл без `lora_base` —
+/// легаси: bundle_dir при наличии lora_draft (прежнее поведение).
+/// `lora_root` передаётся явно (боевая точка — `config::video_lora_dir_early()`)
+/// — ядро остаётся чистой функцией файловой системы, герметичной для тестов.
+fn video_lora_spawn_dir(
+    entry: &VideoBundleEntry,
+    bundle_dir: &Path,
+    lora_root: &Path,
+) -> Result<Option<PathBuf>, String> {
+    match entry.lora_base.as_deref() {
+        Some(base) if !base.trim().is_empty() => {
+            let dir = lora_root.join(base.trim());
+            std::fs::create_dir_all(&dir).map_err(|e| {
+                format!(
+                    "Не удалось создать папку видео-LoRA {}: {}",
+                    dir.display(),
+                    e
+                )
+            })?;
+            if let Some(f) = lora_draft_file(entry) {
+                let src = bundle_dir.join(&f.filename);
+                let dst = dir.join(&f.filename);
+                if !dst.exists() && src.exists() {
+                    std::fs::hard_link(&src, &dst)
+                        .or_else(|_| std::fs::copy(&src, &dst).map(|_| ()))
+                        .map_err(|e| {
+                            let _ = std::fs::remove_file(&dst);
+                            format!(
+                                "Не удалось доставить turbo-LoRA {} в {} ({}): освободите место \
+                                 или задайте video_lora_dir на том же диске, что и video_models.",
+                                f.filename,
+                                dir.display(),
+                                e
+                            )
+                        })?;
+                    log::info!(
+                        "[video] turbo-LoRA {} доставлена в {}",
+                        f.filename,
+                        dir.display()
+                    );
+                }
+            }
+            Ok(Some(dir))
+        }
+        _ => Ok(lora_draft_file(entry).map(|_| bundle_dir.to_path_buf())),
+    }
 }
 
 /// Сэмплинг-план по качеству (SSOT шагов/сэмплера/шедулера/shift/LoRA — каталог):
@@ -805,11 +861,16 @@ impl VideoEngine {
         let port = pick_free_port()
             .ok_or_else(|| "Не найден свободный порт для sd-server (19400..20900).".to_string())?;
         let mut args = build_spawn_args(entry, &weights, port, free_ram)?;
-        // LoRA-каталог сервера: файл роли lora_draft лежит плоско в bundle_dir
-        // (SSOT каталога), lora[].path в payload — имя файла относительно него.
-        if lora_draft_file(entry).is_some() {
+        // LoRA-каталог сервера: при lora_base — плоская папка
+        // <video_loras>/<base> (turbo-лора DMAD линкуется туда же), иначе
+        // легаси — bundle_dir; lora[].path в payload — имя файла относительно него.
+        if let Some(lora_dir) = video_lora_spawn_dir(
+            entry,
+            bundle_dir,
+            &crate::engine::config::video_lora_dir_early(),
+        )? {
             args.push("--lora-model-dir".to_string());
-            args.push(bundle_dir.to_string_lossy().to_string());
+            args.push(lora_dir.to_string_lossy().to_string());
         }
         log_cb(format!("🎬 spawn args: {}", args.join(" ")));
 
@@ -1077,6 +1138,11 @@ impl Drop for VideoEngine {
 /// читается общим `file_to_b64` (честная ошибка, если файла нет); None → t2va.
 /// end/refs — не на этом уровне: все четыре режима доступны через
 /// `VideoEngine::generate` напрямую.
+///
+/// `user_loras` — резолвнутые юзерские лоры (LoraSpec из lora.rs: путь — имя
+/// файла относительно `--lora-model-dir` спавна, множитель 0..=2). Дописываются
+/// ПОСЛЕ лор сэмплинг-плана: draft добавляет turbo-лору DMAD ×1.0, final идёт
+/// только с юзерскими (`is_high_noise` всегда false — H3 одностадиен).
 pub fn generate_video_simple<L>(
     engine_dir: &Path,
     bundle_dir: &Path,
@@ -1087,6 +1153,7 @@ pub fn generate_video_simple<L>(
     init_path: Option<&str>,
     out_path: &Path,
     cancel_flag: Option<Arc<AtomicBool>>,
+    user_loras: &[LoraSpec],
     log_cb: L,
 ) -> Result<VideoGenResult, String>
 where
@@ -1109,6 +1176,21 @@ where
         secs = preset.max_seconds;
     }
     let plan = sampling_plan_for_quality(entry, bundle_dir, final_quality);
+    let mut lora: Vec<VideoLoraRef> = plan.lora;
+    lora.extend(user_loras.iter().map(|s| VideoLoraRef {
+        path: s.path.clone(),
+        multiplier: s.multiplier,
+    }));
+    if !user_loras.is_empty() {
+        log_cb(format!(
+            "🎛 LoRA запроса: {}",
+            user_loras
+                .iter()
+                .map(|s| format!("{}×{:.2}", s.path, s.multiplier))
+                .collect::<Vec<_>>()
+                .join(" + ")
+        ));
+    }
     // Режим выводится из входа ДО чтения файла — лог называет его честно,
     // включая случай «файл не читается» (ошибка уйдёт с mode=i2va в контексте).
     let init_b64 = match init_path.map(str::trim).filter(|s| !s.is_empty()) {
@@ -1144,7 +1226,7 @@ where
         sample_method: plan.sample_method,
         scheduler: plan.scheduler,
         flow_shift: plan.flow_shift,
-        lora: plan.lora,
+        lora,
     };
     let engine = VideoEngine::new(engine_dir, bundle_dir, entry, None, log_cb.clone())?;
     engine.generate(&req, out_path, cancel_flag, log_cb)
@@ -1192,7 +1274,122 @@ mod tests {
             vram_fast_gb: None,
             vram_min_gb: vram_min,
             ram_min_gb: ram_min,
+            lora_base: None,
         }
+    }
+
+    /// Уникальная temp-подпапка теста (как в lora.rs tests).
+    fn sandbox(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!(
+            "ko_video_lora_tests_{}_{:?}",
+            tag,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("temp-подпапка создана");
+        d
+    }
+
+    // ───────────── каталог LoRA спавна (видео-лоры, зеркало image F3) ─────────────
+
+    /// Бандл с lora_base: turbo-лора из bundle_dir доставляется в
+    /// <root>/<base> (hard link/копия), каталог сервера — именно она.
+    #[test]
+    fn spawn_lora_dir_targets_base_folder_and_links_draft_lora() {
+        let root = sandbox("spawn_base");
+        let bundle_dir = sandbox("spawn_base_bundle");
+        std::fs::write(bundle_dir.join("dmad.safetensors"), b"w").expect("стаб-лора");
+        let mut entry = synthetic_entry(
+            vec![("lora_draft", "dmad.safetensors", Some(1))],
+            None,
+            None,
+            None,
+        );
+        entry.lora_base = Some("minimax_h3".to_string());
+        let dir = video_lora_spawn_dir(&entry, &bundle_dir, &root).expect("каталог");
+        let expected = root.join("minimax_h3");
+        assert_eq!(dir.as_deref(), Some(expected.as_path()));
+        assert!(
+            expected.join("dmad.safetensors").exists(),
+            "turbo-лора доставлена в папку базы"
+        );
+    }
+
+    /// Повторный спавн — идемпотентен (файл уже доставлен, ошибки нет).
+    #[test]
+    fn spawn_lora_dir_is_idempotent() {
+        let root = sandbox("spawn_idem");
+        let bundle_dir = sandbox("spawn_idem_bundle");
+        std::fs::write(bundle_dir.join("dmad.safetensors"), b"w").expect("стаб-лора");
+        let mut entry = synthetic_entry(
+            vec![("lora_draft", "dmad.safetensors", Some(1))],
+            None,
+            None,
+            None,
+        );
+        entry.lora_base = Some("minimax_h3".to_string());
+        let first = video_lora_spawn_dir(&entry, &bundle_dir, &root).expect("первый спавн");
+        let second = video_lora_spawn_dir(&entry, &bundle_dir, &root).expect("второй спавн");
+        assert_eq!(first, second);
+    }
+
+    /// Бандл с lora_base, но turbo-лора ещё не скачана: папка базы создаётся,
+    /// файл не появляется, каталог всё равно возвращается (draft уйдёт в
+    /// nolora-план по своей проверке bundle_dir).
+    #[test]
+    fn spawn_lora_dir_without_downloaded_draft_lora_still_targets_base() {
+        let root = sandbox("spawn_nolora");
+        let bundle_dir = sandbox("spawn_nolora_bundle");
+        let mut entry = synthetic_entry(
+            vec![("lora_draft", "dmad.safetensors", Some(1))],
+            None,
+            None,
+            None,
+        );
+        entry.lora_base = Some("minimax_h3".to_string());
+        let dir = video_lora_spawn_dir(&entry, &bundle_dir, &root).expect("каталог");
+        assert!(root.join("minimax_h3").is_dir(), "папка базы создана");
+        assert!(
+            !root.join("minimax_h3").join("dmad.safetensors").exists(),
+            "файл не выдумывается"
+        );
+        assert_eq!(
+            dir.as_deref(),
+            Some(root.join("minimax_h3").as_path())
+        );
+    }
+
+    /// Легаси (lora_base = None): каталог сервера — bundle_dir при наличии
+    /// lora_draft, None без неё (прежнее поведение без перемен).
+    #[test]
+    fn spawn_lora_dir_legacy_uses_bundle_dir() {
+        let root = sandbox("spawn_legacy");
+        let bundle_dir = sandbox("spawn_legacy_bundle");
+        std::fs::write(bundle_dir.join("dmad.safetensors"), b"w").expect("стаб-лора");
+        let entry = synthetic_entry(
+            vec![("lora_draft", "dmad.safetensors", Some(1))],
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            video_lora_spawn_dir(&entry, &bundle_dir, &root)
+                .expect("легаси-каталог")
+                .as_deref(),
+            Some(bundle_dir.as_path())
+        );
+        let bare = synthetic_entry(
+            vec![("diffusion", "d.gguf", Some(1))],
+            None,
+            None,
+            None,
+        );
+        assert!(video_lora_spawn_dir(&bare, &bundle_dir, &root)
+            .expect("без lora_draft")
+            .is_none());
     }
 
     /// Каталожный бандл с реально созданными файлами в temp-папке
@@ -1735,6 +1932,7 @@ mod tests {
             Some(ghost.to_str().unwrap()),
             &out,
             None,
+            &[],
             |_| {},
         )
         .unwrap_err();

@@ -1119,6 +1119,10 @@ pub async fn generate_video(
     vae_tiling: Option<bool>,
     out_path: Option<String>,
     bundle_name: Option<String>,
+    // LoRA-стек юзера: стемы файлов из video_loras (без расширения), сила
+    // 0..=2 — общая на все имена (как в generate_image).
+    lora_names: Option<Vec<String>>,
+    lora_strength: Option<f32>,
 ) -> Result<engine::VideoGenResult, String> {
     let entry = video_entry(&app, bundle_name.as_deref())?;
     let bdir = video_bundle_dir(&app);
@@ -1139,6 +1143,20 @@ pub async fn generate_video(
         plan.steps = s;
     }
     let st = plan.steps;
+    // LoRA-резолв по SSOT-модулю lora.rs (как в generate_image): scoped на
+    // базу видео-бандла — лоры чужой базы не найдутся; несуществующее имя —
+    // честный отказ команды (текст включает папку и доступные стемы).
+    let user_loras = engine::resolve_lora_names_for_base(
+        &engine::video_lora_dir_early(),
+        lora_names.as_deref().unwrap_or(&[]),
+        lora_strength.unwrap_or(1.0),
+        entry.lora_base.as_deref(),
+    )?;
+    let mut lora = plan.lora;
+    lora.extend(user_loras.iter().map(|s| engine::VideoLoraRef {
+        path: s.path.clone(),
+        multiplier: s.multiplier,
+    }));
     // Лимит каталога — честный clamp с warn (сетку кадров всё равно держит сервер).
     let mut secs = seconds.unwrap_or(5);
     if secs == 0 {
@@ -1190,7 +1208,7 @@ pub async fn generate_video(
         sample_method: plan.sample_method,
         scheduler: plan.scheduler,
         flow_shift: plan.flow_shift,
-        lora: plan.lora,
+        lora,
     };
 
     let out = out_path.map(PathBuf::from).unwrap_or_else(|| default_video_out_path(&bdir));
@@ -1214,4 +1232,159 @@ pub async fn generate_video(
     })
     .await
     .map_err(|e| format!("Задача видео-генерации прервана: {}", e))?
+}
+
+// ───────────── LoRA-каталог HF («King Orch Loras») ─────────────
+//
+// Юзер сам решает, нужен ли ему adult-набор: плашка показывает файлы
+// удалённого HF-репозитория (подпапки = базы моделей, зеркально локальной
+// единой папки `loras/`) и качает выбранные в неё же. Sidecar-описания
+// `<стем>.md` едут вместе с весами — агент (`{{ video_loras }}`) сразу
+// видит, что появилось.
+
+/// Одна запись удалённого LoRA-каталога.
+#[derive(Serialize, Clone, Debug)]
+pub struct RemoteLoraFile {
+    /// Путь в репозитории: `<база>/<файл>`.
+    pub path: String,
+    /// База модели (первая папка пути) — совпадает с подпапкой локальной loras.
+    pub base: String,
+    pub filename: String,
+    pub size_bytes: u64,
+    /// Веса лоры (true) или sidecar-описание `.md` (false).
+    pub is_lora: bool,
+    pub exists_locally: bool,
+}
+
+/// Ответ list_remote_loras.
+#[derive(Serialize, Clone, Debug)]
+pub struct RemoteLorasInfo {
+    pub repo: String,
+    pub local_dir: String,
+    pub files: Vec<RemoteLoraFile>,
+}
+
+/// Репозиторий LoRA-каталога: явный из конфига (`loras_repo`), иначе дефолт.
+fn loras_repo() -> String {
+    let cfg = engine::load_image_config_early();
+    cfg.loras_repo
+        .filter(|r| !r.trim().is_empty())
+        .unwrap_or_else(|| "nilden/king-orch-loras".to_string())
+}
+
+/// Список файлов LoRA-каталога из HF API (публичный репозиторий, токен не
+/// нужен): дерево `tree/main?recursive=true`, только файлы внутри базовых
+/// подпапок. `exists_locally` — сверка с единой папкой `loras/`.
+#[tauri::command]
+pub async fn list_remote_loras() -> Result<RemoteLorasInfo, String> {
+    let repo = loras_repo();
+    let url = format!(
+        "https://huggingface.co/api/models/{}/tree/main?recursive=true",
+        repo
+    );
+    let dir = engine::lora_dir_early();
+    let body = tauri::async_runtime::spawn_blocking(move || -> Result<String, String> {
+        let resp = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| e.to_string())?
+            .get(&url)
+            .send()
+            .map_err(|e| format!("Не удалось получить каталог LoRA: {}", e))?
+            .error_for_status()
+            .map_err(|e| {
+                format!(
+                    "Каталог LoRA недоступен (HTTP {}). Проверьте интернет или имя репозитория.",
+                    e.status().map(|s| s.as_u16()).unwrap_or(0)
+                )
+            })?;
+        resp.text().map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("Задача каталога LoRA прервана: {}", e))??;
+
+    let tree: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("Некорректный ответ каталога LoRA: {}", e))?;
+    let arr = tree
+        .as_array()
+        .ok_or_else(|| "Каталог LoRA: ожидался массив файлов".to_string())?;
+    let mut files = Vec::new();
+    for item in arr {
+        if item.get("type").and_then(|v| v.as_str()) != Some("file") {
+            continue;
+        }
+        let Some(path) = item.get("path").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if path.starts_with('.') {
+            continue; // .gitattributes и служебное
+        }
+        let mut parts = path.splitn(2, '/');
+        let (base, filename) = match (parts.next(), parts.next()) {
+            (Some(b), Some(f)) if !b.is_empty() && !f.is_empty() => (b.to_string(), f.to_string()),
+            _ => continue, // файлы вне базовых подпапок каталогом не являются
+        };
+        files.push(RemoteLoraFile {
+            path: path.to_string(),
+            base,
+            filename,
+            size_bytes: item.get("size").and_then(|v| v.as_u64()).unwrap_or(0),
+            is_lora: !path.to_ascii_lowercase().ends_with(".md"),
+            exists_locally: dir.join(path).exists(),
+        });
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(RemoteLorasInfo {
+        repo,
+        local_dir: dir.to_string_lossy().into_owned(),
+        files,
+    })
+}
+
+/// Скачать ОДИН файл каталога (веса или sidecar) в единую папку `loras/`
+/// под тем же относительным путём. Прогресс — события `downloader:progress`
+/// с kind="lora" (единый загрузчик с бандлами).
+#[tauri::command]
+pub async fn download_remote_lora(path: String) -> Result<(), String> {
+    let repo = loras_repo();
+    // Санитизация: только относительный путь внутри loras — без "..",
+    // без пустых компонентов и ведущих слэшей (сервер качает только в свой
+    // каталог, пути-побеги невозможны по construction).
+    let trimmed = path.trim().trim_start_matches(['/', '\\']);
+    if trimmed.is_empty()
+        || trimmed
+            .split(['/', '\\'])
+            .any(|part| part.is_empty() || part == "..")
+    {
+        return Err(format!("Недопустимый путь LoRA: {:?}", path));
+    }
+    let dest = engine::lora_dir_early().join(trimmed);
+    let url = format!(
+        "https://huggingface.co/{}/resolve/main/{}",
+        repo,
+        trimmed.replace('\\', "/")
+    );
+    let parent = dest
+        .parent()
+        .ok_or_else(|| format!("Некорректный путь LoRA: {}", dest.display()))?
+        .to_path_buf();
+    std::fs::create_dir_all(&parent)
+        .map_err(|e| format!("Не удалось создать папку {}: {}", parent.display(), e))?;
+    let on_log = |msg: String| log::info!("[LORA-DL] {}", msg);
+    on_log(format!("Качаю {} → {}", url, dest.display()));
+    tauri_plugin_downloader::download(
+        &url,
+        &dest,
+        tauri_plugin_downloader::DownloadOptions {
+            label: trimmed.to_string(),
+            kind: "lora".into(),
+            expected_size: None,
+            ..Default::default()
+        },
+        Some(&on_log),
+    )
+    .await
+    .map_err(|e| format!("Не удалось скачать {}: {}", trimmed, e))?;
+    on_log(format!("Готово: {}", dest.display()));
+    Ok(())
 }

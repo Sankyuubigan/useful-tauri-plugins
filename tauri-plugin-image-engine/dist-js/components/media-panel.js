@@ -7,6 +7,7 @@
  */
 import { STYLE } from './ui-shared';
 import './bundle-tab';
+import './lora-tab';
 export class MediaEnginePanel extends HTMLElement {
     connectedCallback() {
         if (this.root)
@@ -21,24 +22,34 @@ export class MediaEnginePanel extends HTMLElement {
         <div class="row tabs-row">
           <button id="tabImages" class="tab-btn primary" aria-pressed="true">Картинки</button>
           <button id="tabVideo" class="tab-btn" aria-pressed="false">Видео</button>
+          <button id="tabLoras" class="tab-btn" aria-pressed="false">LoRA</button>
         </div>
         <div class="tab-panel" id="panelImages"><image-bundle-tab service="image"></image-bundle-tab></div>
         <div class="tab-panel" id="panelVideo" style="display:none;"><image-bundle-tab service="video"></image-bundle-tab></div>
+        <div class="tab-panel" id="panelLoras" style="display:none;"><image-lora-tab></image-lora-tab></div>
       </div>`;
         const btnImages = this.root.getElementById('tabImages');
         const btnVideo = this.root.getElementById('tabVideo');
+        const btnLoras = this.root.getElementById('tabLoras');
         const panelImages = this.root.getElementById('panelImages');
         const panelVideo = this.root.getElementById('panelVideo');
-        const activate = (showVideo) => {
-            btnImages.setAttribute('aria-pressed', showVideo ? 'false' : 'true');
-            btnVideo.setAttribute('aria-pressed', showVideo ? 'true' : 'false');
-            btnImages.classList.toggle('primary', !showVideo);
-            btnVideo.classList.toggle('primary', showVideo);
-            panelImages.style.display = showVideo ? 'none' : 'block';
-            panelVideo.style.display = showVideo ? 'block' : 'none';
+        const panelLoras = this.root.getElementById('panelLoras');
+        const activate = (tab) => {
+            const show = (el, on) => { el.style.display = on ? 'block' : 'none'; };
+            show(panelImages, tab === 'images');
+            show(panelVideo, tab === 'video');
+            show(panelLoras, tab === 'loras');
+            const set = (btn, on) => {
+                btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+                btn.classList.toggle('primary', on);
+            };
+            set(btnImages, tab === 'images');
+            set(btnVideo, tab === 'video');
+            set(btnLoras, tab === 'loras');
         };
-        btnImages.addEventListener('click', () => activate(false));
-        btnVideo.addEventListener('click', () => activate(true));
+        btnImages.addEventListener('click', () => activate('images'));
+        btnVideo.addEventListener('click', () => activate('video'));
+        btnLoras.addEventListener('click', () => activate('loras'));
     }
 }
 if (!customElements.get('image-media-panel')) {

@@ -579,6 +579,65 @@ fn find_cudart_asset<'a>(
     })
 }
 
+/// Главная DLL CUDA-рантайма: без неё бекенд CUDA тихо уходит в CPU.
+pub const CUDART_REQUIRED_DLL: &str = "cublas64_12.dll";
+
+/// Общая папка CUDA-рантайма: `<sdcpp>/backends/_cudart/cuda12/`.
+///
+/// ЕДИНСТВЕННОЕ место, где лежат CUDA-DLL — их НЕ копируют в папку каждого
+/// варианта. Причина: cudart-архив leejet одинаков между релизами (тот же
+/// redistributable NVIDIA, sha256 совпадает релиз-в-релиз), и перекачка ~537 МБ
+/// на каждое обновление движка бессмысленна. Дубли в `backends/<source>/<variant>/`
+/// означали бы ×N копий архива на каждый установленный вариант.
+///
+/// Доступ к DLL — через PATH дочернего процесса (см. `child_path_with_cudart`):
+/// Windows ищет библиотеки рядом с exe, затем в System32, затем по PATH.
+pub fn cudart_dir(dir: &Path) -> PathBuf {
+    backends_dir(dir).join("_cudart").join("cuda12")
+}
+
+/// CUDA-рантайм уже в общей папке (тогда повторное скачивание не нужно).
+pub fn cudart_installed(dir: &Path) -> bool {
+    cudart_dir(dir).join(CUDART_REQUIRED_DLL).exists()
+}
+
+/// Готова ли пара «движок + CUDA-рантайм» к запуску (guard установки).
+///
+/// Общая папка — основной вариант. Папка варианта и System32 проверяются ради
+/// обратной совместимости: установки, сделанные до появления `_cudart/`, держат
+/// DLL рядом с exe и продолжают работать как раньше.
+pub fn cudart_ready(dir: &Path, variant_target: &Path) -> Result<(), String> {
+    let in_shared = cudart_installed(dir);
+    let in_variant = variant_target.join(CUDART_REQUIRED_DLL).exists();
+    let in_system = Path::new(r"C:\Windows\System32")
+        .join(CUDART_REQUIRED_DLL)
+        .exists();
+    if in_shared || in_variant || in_system {
+        return Ok(());
+    }
+    Err(format!(
+        "После установки CUDA-рантайма не найден {CUDART_REQUIRED_DLL} (искали в {}, {} и System32).\n\
+         Без него GPU-режим не работает.\n\
+         Возможно, формат релизов источника изменился — сообщите разработчику.",
+        cudart_dir(dir).display(),
+        variant_target.display()
+    ))
+}
+
+/// PATH для дочернего процесса движка: папка общего CUDA-рантайма впереди
+/// системного PATH. Нужна, потому что DLL лежат в `_cudart/`, а не рядом с exe.
+///
+/// `None`, если общей папки нет (не-CUDA вариант, CPU, старые установки) —
+/// тогда PATH процесса не трогаем.
+pub fn child_path_with_cudart(dir: &Path) -> Option<String> {
+    let shared = cudart_dir(dir);
+    if !shared.is_dir() {
+        return None;
+    }
+    let existing = std::env::var("PATH").unwrap_or_default();
+    Some(format!("{};{}", shared.display(), existing))
+}
+
 /// Установка (или обновление) варианта бекенда из указанного источника.
 /// Ставится в `backends/<source>/<variant>/`, остальные не трогаются.
 /// Прогресс — через единый tauri-plugin-downloader (`downloader:progress`).
@@ -654,12 +713,26 @@ pub async fn install<L: Fn(String) + Send + Sync>(
     ensure_vc_redist(&target, &on_log);
 
     // ── CUDA-рантайм (дополнение) ──
+    // В релизах leejet CUDA-библиотеки вынесены в отдельный архив (cudart-sd-bin).
+    // Без cublas64_12.dll бекенд тихо уходит в CPU.
     let main_asset_is_cudart = asset.0.name.contains("cudart");
     let family = EngineFamily::from_variant(&actual_variant);
     if !main_asset_is_cudart && matches!(family, EngineFamily::Cuda12) {
-        if let Some(cudart) = find_cudart_asset(&release, &spec, &actual_variant) {
+        // CUDA-рантайм — ОБЩИЙ на все варианты и обновления: `backends/_cudart/cuda12/`.
+        // Архив идентичен между релизами (sha256 совпадает релиз-в-релиз), поэтому
+        // качается только если его ещё нет; `clear_dir(&target)` его не задевает.
+        let shared = cudart_dir(dir);
+        if cudart_installed(dir) {
+            on_log(format!(
+                "♻️ CUDA-рантайм уже установлен ({}): повторно не скачиваем.",
+                shared.display()
+            ));
+        } else if let Some(cudart) = find_cudart_asset(&release, &spec, &actual_variant) {
             on_log(format!("⬇️ Дополнение CUDA-рантайма: {}", cudart.0.name));
-            let cudart_zip = target.join("cudart.zip");
+            fs::create_dir_all(&shared).map_err(|e| {
+                format!("Не удалось создать {}: {}", shared.display(), e)
+            })?;
+            let cudart_zip = shared.join("cudart.zip");
             tauri_plugin_downloader::download(
                 &cudart.0.browser_download_url,
                 &cudart_zip,
@@ -683,9 +756,13 @@ pub async fn install<L: Fn(String) + Send + Sync>(
                     ));
                 }
             }
-            let cudart_count = extract_all(&cudart_zip, &target, &on_log)?;
+            let cudart_count = extract_all(&cudart_zip, &shared, &on_log)?;
             let _ = fs::remove_file(&cudart_zip);
-            on_log(format!("✅ CUDA-рантайм распакован: {} файлов", cudart_count));
+            on_log(format!(
+                "✅ CUDA-рантайм распакован в общую папку ({}): {} файлов",
+                shared.display(),
+                cudart_count
+            ));
         } else {
             on_log(format!(
                 "⚠️ В релизе {} не найден архив CUDA-рантайма — GPU-режим может не работать.",
@@ -693,16 +770,13 @@ pub async fn install<L: Fn(String) + Send + Sync>(
             ));
         }
         // ── Guard: cublas DLL ОБЯЗАН быть после установки CUDA-варианта ──
-        let required_dll = "cublas64_12.dll";
-        if !target.join(required_dll).exists() {
+        // (общая папка / папка варианта у legacy-установок / System32).
+        // Без него GPU-режим не работает. Ошибка установки, а не warning:
+        // юзер не должен получить «неготовый» бекенд.
+        if let Err(msg) = cudart_ready(dir, &target) {
             let _ = clear_dir(&target);
             let _ = fs::remove_dir_all(&target);
-            return Err(format!(
-                "После установки CUDA-рантайма не найден {} в {}.\n\
-                 Без него GPU-режим не работает.\n\
-                 Возможно, формат релизов источника «{}» изменился — сообщите разработчику.",
-                required_dll, target.display(), source
-            ));
+            return Err(msg);
         }
     }
 
@@ -847,5 +921,77 @@ mod tests {
         assert_eq!(actual, "cuda12");
         let (cudart, _) = find_cudart_asset(&rel, &spec, "cuda12").expect("cudart");
         assert!(cudart.name.contains("cudart-sd-bin"));
+    }
+
+    #[test]
+    fn cudart_dir_is_outside_variant_dir() {
+        // Ключевой инвариант: clear_dir(&target) на обновлении НЕ задевает общий
+        // рантайм — поэтому он ставится один раз и не перекачивается.
+        let dir = Path::new("D:/dummy_sdcpp_root");
+        let shared = cudart_dir(dir);
+        assert_eq!(shared, dir.join("backends/_cudart/cuda12"));
+        assert!(!shared.starts_with(variant_dir(dir, "leejet", "cuda12")));
+    }
+
+    #[test]
+    fn cudart_dir_is_not_mistaken_for_installed_source() {
+        // Общая папка CUDA лежит в backends/_cudart/ — перечисление установленных
+        // бекендов не должно принять её за источник (has_any_installed гейтит
+        // генерацию в хосте: infra/tools/media.rs, video.rs).
+        let tmp = std::env::temp_dir().join(format!("sdcpp_cudart_enum_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let shared = cudart_dir(&tmp);
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join(CUDART_REQUIRED_DLL), "dll").unwrap();
+        assert!(cudart_installed(&tmp));
+        assert!(!has_any_installed(&tmp));
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn cudart_ready_accepts_shared_dir_legacy_variant_dir_and_rejects_missing() {
+        let tmp = std::env::temp_dir().join(format!("sdcpp_cudart_ready_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let target = tmp.join("backends/leejet/cuda12");
+        fs::create_dir_all(&target).unwrap();
+
+        // Нигде нет рантайма — ошибка
+        let err = cudart_ready(&tmp, &target).unwrap_err();
+        assert!(err.contains(CUDART_REQUIRED_DLL), "{}", err);
+
+        // Общая папка — основной путь (SSOT)
+        let shared = cudart_dir(&tmp);
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join(CUDART_REQUIRED_DLL), "dll").unwrap();
+        assert!(cudart_installed(&tmp));
+        assert!(cudart_ready(&tmp, &target).is_ok());
+
+        // Legacy-установка: DLL в папке варианта (до появления _cudart) — тоже ок
+        let tmp2 = std::env::temp_dir().join(format!("sdcpp_cudart_legacy_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp2);
+        let t2 = tmp2.join("backends/leejet/cuda12");
+        fs::create_dir_all(&t2).unwrap();
+        assert!(!cudart_installed(&tmp2));
+        fs::write(t2.join(CUDART_REQUIRED_DLL), "dll").unwrap();
+        assert!(cudart_ready(&tmp2, &t2).is_ok());
+
+        let _ = fs::remove_dir_all(&tmp);
+        let _ = fs::remove_dir_all(&tmp2);
+    }
+
+    #[test]
+    fn child_path_puts_shared_cudart_before_system_path() {
+        let tmp = std::env::temp_dir().join(format!("sdcpp_cudart_path_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        // Общей папки нет — PATH процесса не трогаем
+        assert!(child_path_with_cudart(&tmp).is_none());
+
+        let shared = cudart_dir(&tmp);
+        fs::create_dir_all(&shared).unwrap();
+        let p = child_path_with_cudart(&tmp).unwrap();
+        assert!(p.starts_with(&shared.to_string_lossy().to_string()), "{p}");
+        // Остальной PATH сохранён (иначе движок не найдёт системные библиотеки)
+        assert!(p.contains(';'), "{p}");
+        let _ = fs::remove_dir_all(&tmp);
     }
 }

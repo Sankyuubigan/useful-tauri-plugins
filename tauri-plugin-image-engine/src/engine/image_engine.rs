@@ -313,6 +313,11 @@ impl ImageEngine {
             None => log_cb("⚙ model-args: (бандл не задаёт)".to_string()),
         }
         cmd.current_dir(engine_dir);
+        // CUDA-DLL лежат в общей папке backends/_cudart/cuda12 (sdcpp_installer::cudart_dir),
+        // а не рядом с sd-server.exe — путь подставляется в PATH дочернего процесса.
+        if let Some(p) = sdcpp_installer::child_path_with_cudart(engine_dir) {
+            cmd.env("PATH", p);
+        }
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

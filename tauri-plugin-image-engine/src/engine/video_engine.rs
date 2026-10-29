@@ -33,7 +33,9 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use crate::engine::models_catalog::{bundle_files_weights, video_bundle_disk_bytes, BundleFile, VideoBundleEntry};
+use crate::engine::models_catalog::{
+    bundle_files_weights, resolve_placement, video_bundle_disk_bytes, BundleFile, VideoBundleEntry,
+};
 use crate::engine::preflight;
 use crate::engine::process_util::{
     assign_child_to_kill_job, kill_process_tree, register_engine_pid, unregister_engine_pid,
@@ -272,12 +274,26 @@ pub fn file_to_b64(path_or_data_url: &str) -> Result<String, String> {
     Ok(base64::engine::general_purpose::STANDARD.encode(&bytes))
 }
 
+/// Свободная ОЗУ (ГиБ) для выбора placement-варианта (sysinfo, available —
+/// та же метрика, что у preflight). Единственная точка замера в видео-спавне.
+pub fn free_ram_gb() -> Option<f64> {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    Some(sys.available_memory() as f64 / (1024.0 * 1024.0 * 1024.0))
+}
+
 /// Сборка spawn-аргументов из бандла. Отказ называет ровно ту роль/ограничение,
 /// которая не выполнена — без молчаливых подстановок.
+///
+/// Политика размещения: если у бандла есть placement-лестница — вариант
+/// выбирается адаптивно по `ram_free_gb` (`resolve_placement`: самый
+/// требовательный из влезающих = самый быстрый); иначе легаси-строка
+/// `spawn_flags` каталога.
 pub fn build_spawn_args(
     entry: &VideoBundleEntry,
     weights: &std::collections::HashMap<String, String>,
     port: u16,
+    ram_free_gb: Option<f64>,
 ) -> Result<Vec<String>, String> {
     let need = [
         ("--diffusion-model", "diffusion"),
@@ -303,19 +319,36 @@ pub fn build_spawn_args(
     args.push("127.0.0.1".to_string());
     args.push("--listen-port".to_string());
     args.push(port.to_string());
-    // SSOT флагов — каталог. Пустые spawn_flags = дефект каталога.
-    let flags = entry
-        .spawn_flags
-        .as_deref()
-        .map(str::trim)
-        .unwrap_or_default();
-    if flags.is_empty() {
-        return Err(format!(
-            "spawn_flags бандла «{}» пуст — флаги видео-спавна обязаны идти из каталога (SSOT), не из кода.",
-            entry.name
-        ));
-    }
-    for f in flags.split_whitespace() {
+
+    // Флаги политики — SSOT каталога: placement-лестница либо легаси-строка.
+    let chosen_flags: String = if entry.placement.is_empty() {
+        let legacy = entry
+            .spawn_flags
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or_default();
+        if legacy.is_empty() {
+            return Err(format!(
+                "spawn_flags бандла «{}» пуст — флаги видео-спавна обязаны идти из каталога (SSOT), не из кода.",
+                entry.name
+            ));
+        }
+        legacy.to_string()
+    } else {
+        match resolve_placement(entry, ram_free_gb) {
+            Ok(v) => {
+                log::info!(
+                    "[video-engine] placement «{}» ({}): {}",
+                    v.policy,
+                    v.label,
+                    v.spawn_flags
+                );
+                v.spawn_flags.clone()
+            }
+            Err(e) => return Err(format!("{}: {}", preflight::resource_markers::RAM, e)),
+        }
+    };
+    for f in chosen_flags.split_whitespace() {
         args.push(f.to_string());
     }
     if let Some(ma) = entry
@@ -328,30 +361,38 @@ pub fn build_spawn_args(
         args.push(ma.to_string());
     }
     // Инвариант каталога: веса H3 (~29 ГБ) обязаны иметь ЯВНУЮ политику
-    // размещения — ОДНУ из двух (бенч 27.10.26, test/bench/video_h3_autofit/):
+    // размещения — РОВНО ОДНУ из трёх (бенчи 27.10.26 и 29.10.26,
+    // test/bench/video_h3_autofit/ и test/bench/video_h3_disk/):
     //   offload:  --offload-to-cpu            — все params в RAM (порог 30.0);
-    //   auto-fit: --auto-fit on --max-vram -1 — params diffusion/te в RAM,
-    //             VAE на disk (mmap), VRAM-пик 15.26 ГБ, RSS-пик 24.65 ГБ
-    //             (порог 28.5), время 1.17× offload.
-    // Смесь политик запрещена: --offload-to-cpu подставляет --params-backend,
+    //   autofit:  --auto-fit on --max-vram -1 — params diffusion/te в RAM,
+    //             VAE на disk (mmap), RSS-пик 24.65 ГБ (порог 28.5), время 1.17×;
+    //   params:   явный --params-backend te=disk,… — disk-стриминг: веса читаются
+    //             с NVMe лениво и освобождаются после использования (auto-fit
+    //             отключается сам, upstream docs/backend.md).
+    // Смесь классов запрещена: --offload-to-cpu подставляет --params-backend,
     // а явный --params-backend отключает auto-fit (docs/backend.md) — вместе
     // они дают неопределимое состояние размещения.
     let joined = args.join(" ");
     let offload = joined.contains("--offload-to-cpu");
     let autofit = joined.contains("--auto-fit");
-    if offload && autofit {
+    let explicit_params = joined.contains("--params-backend");
+    let classes = [offload, autofit, explicit_params]
+        .into_iter()
+        .filter(|b| *b)
+        .count();
+    if classes == 0 {
         return Err(
-            "spawn_flags бандла видео смешивает политики размещения (--offload-to-cpu + --auto-fit) — \
-             --params-backend от offload отключает auto-fit (docs/backend.md). \
-             Оставьте в каталоге ОДНУ политику (SSOT)."
+            "spawn_flags бандла видео не содержит ни --offload-to-cpu, ни --auto-fit, ни \
+             --params-backend — веса H3 (~29 ГБ) не влезают в карту без явной политики размещения. \
+             Исправьте каталог (SSOT)."
                 .to_string(),
         );
     }
-    if !offload && !autofit {
+    if classes > 1 {
         return Err(
-            "spawn_flags бандла видео не содержит ни --offload-to-cpu, ни --auto-fit — \
-             веса H3 (~29 ГБ) не влезают в карту без явной политики размещения. \
-             Исправьте каталог (SSOT)."
+            "spawn_flags бандла видео смешивает политики размещения (--offload-to-cpu / --auto-fit / \
+             --params-backend) — --params-backend от offload отключает auto-fit (docs/backend.md). \
+             Оставьте РОВНО ОДНУ политику (SSOT)."
                 .to_string(),
         );
     }
@@ -493,19 +534,48 @@ fn missing_bundle_bytes(entry: &VideoBundleEntry, bundle_dir: &Path) -> u64 {
         .sum()
 }
 
+/// Том бандла — механический HDD? (warn: disk-стриминг весов с HDD мучителен).
+/// None — том не определён (системная папка корнем и т.п.) — без warn.
+fn bundle_volume_is_hdd(bundle_dir: &Path) -> Option<bool> {
+    use sysinfo::DiskKind;
+    let disks = sysinfo::Disks::new_with_refreshed_list();
+    let mut best: Option<(usize, DiskKind)> = None;
+    for d in disks.list() {
+        let mp = d.mount_point();
+        if bundle_dir.starts_with(mp) {
+            let len = mp.as_os_str().len();
+            if best.as_ref().map(|(l, _)| len > *l).unwrap_or(true) {
+                best = Some((len, d.kind()));
+            }
+        }
+    }
+    best.map(|(_, kind)| matches!(kind, DiskKind::HDD))
+}
+
 /// Preflight видео-бандла: пороги ИЗ каталога против фактов машины.
-/// Ok = spawn допустим (возврат — человекочитаемое резюме);
+/// RAM-порог: placement-лестница (адаптивно по `ram_free_gb`) либо легаси-поле
+/// `ram_min_gb`. Ok = spawn допустим (возврат — человекочитаемое резюме);
 /// Err — отказ с именем ровно того ресурса, которого мало.
-pub fn preflight_video(entry: &VideoBundleEntry, bundle_dir: &Path) -> Result<String, String> {
+pub fn preflight_video(
+    entry: &VideoBundleEntry,
+    bundle_dir: &Path,
+    ram_free_gb: Option<f64>,
+) -> Result<String, String> {
     const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
     let need_vram_gb = entry.vram_min_gb.unwrap_or(0.0) as f64;
-    let need_ram_gb = entry.ram_min_gb.unwrap_or(0.0) as f64;
+    let free_ram = ram_free_gb.unwrap_or(0.0);
     let missing_bytes = missing_bundle_bytes(entry, bundle_dir) as f64;
     let full_bytes = video_bundle_disk_bytes(entry) as f64;
 
-    let mut sys = sysinfo::System::new();
-    sys.refresh_memory();
-    let ram_free_gb = sys.available_memory() as f64 / GIB;
+    // RAM-порог: лестница placement-вариантов (адаптивно) или легаси-поле.
+    let (need_ram_gb, placement_txt) = if entry.placement.is_empty() {
+        (entry.ram_min_gb.unwrap_or(0.0) as f64, String::new())
+    } else {
+        match resolve_placement(entry, ram_free_gb) {
+            Ok(v) => (v.ram_min_gb as f64, format!(", политика «{}»", v.policy)),
+            Err(e) => return Err(format!("{}: {}", preflight::resource_markers::RAM, e)),
+        }
+    };
 
     // Фактов VRAM может не быть (не-NVIDIA/драйвер) — тогда VRAM-порог
     // пропускается с честной пометкой в лог, а RAM/диск проверяются всегда.
@@ -528,12 +598,12 @@ pub fn preflight_video(entry: &VideoBundleEntry, bundle_dir: &Path) -> Result<St
             need_vram_gb, vram_total_gb
         ));
     }
-    if ram_free_gb < need_ram_gb {
+    if free_ram < need_ram_gb {
         return Err(format!(
             "{}: нужно ≥ {:.1} ГБ свободной, фактически {:.1} ГБ. \
              Закройте другие приложения или возьмите бандл легче.",
             preflight::resource_markers::RAM,
-            need_ram_gb, ram_free_gb
+            need_ram_gb, free_ram
         ));
     }
     if missing_bytes > 0.0 {
@@ -562,6 +632,12 @@ pub fn preflight_video(entry: &VideoBundleEntry, bundle_dir: &Path) -> Result<St
             }
         }
     }
+    let hdd_warn = match bundle_volume_is_hdd(bundle_dir) {
+        Some(true) => " ⚠️ Том бандла — HDD: стриминг весов с механического диска \
+                       будет очень медленным, желателен NVMe/SSD."
+            .to_string(),
+        _ => String::new(),
+    };
     let vram_txt = if vram_ok {
         format!("{:.1} ГБ", vram_total_gb)
     } else {
@@ -573,15 +649,17 @@ pub fn preflight_video(entry: &VideoBundleEntry, bundle_dir: &Path) -> Result<St
         "всё уже скачано".to_string()
     };
     Ok(format!(
-        "Preflight видео-бандла «{}»: карта — {}, порог VRAM {:.1} ГБ; RAM свободна {:.1} ГБ (порог {:.1}); \
-         диск: {}; полный бандл {:.1} ГБ — годится.",
+        "Preflight видео-бандла «{}»: карта — {}, порог VRAM {:.1} ГБ; RAM свободна {:.1} ГБ (порог {:.1}{}); \
+         диск: {}; полный бандл {:.1} ГБ — годится.{}",
         entry.name,
         vram_txt,
         need_vram_gb,
-        ram_free_gb,
+        free_ram,
         need_ram_gb,
+        placement_txt,
         disk_txt,
-        full_bytes / GIB
+        full_bytes / GIB,
+        hdd_warn
     ))
 }
 
@@ -716,13 +794,17 @@ impl VideoEngine {
             variant
         ));
 
-        let msg = preflight_video(entry, bundle_dir)?;
+        // Один замер свободной ОЗУ на весь спавн: preflight и выбор placement
+        // решают по ОДНОЙ цифре (иначе лестница могла бы выбрать вариант,
+        // который preflight тут же отвергнет).
+        let free_ram = free_ram_gb();
+        let msg = preflight_video(entry, bundle_dir, free_ram)?;
         log_cb(format!("✅ {}", msg));
 
         let weights = bundle_files_weights(bundle_dir, &entry.files);
         let port = pick_free_port()
             .ok_or_else(|| "Не найден свободный порт для sd-server (19400..20900).".to_string())?;
-        let mut args = build_spawn_args(entry, &weights, port)?;
+        let mut args = build_spawn_args(entry, &weights, port, free_ram)?;
         // LoRA-каталог сервера: файл роли lora_draft лежит плоско в bundle_dir
         // (SSOT каталога), lora[].path в payload — имя файла относительно него.
         if lora_draft_file(entry).is_some() {
@@ -736,7 +818,9 @@ impl VideoEngine {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            // CREATE_NO_WINDOW (без чёрных окон) | BELOW_NORMAL_PRIORITY_CLASS —
+            // CPU-фазы движка (стриминг весов, декод webm) не душат мышь/UI хоста.
+            cmd.creation_flags(0x0800_0000 | 0x0000_4000);
         }
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -1003,6 +1087,9 @@ pub fn generate_video_simple<L>(
 where
     L: Fn(String) + Clone,
 {
+    // Единовременность media-генерации: второй параллельный spawn удвоил бы
+    // пики RAM/VRAM (gen_guard.rs).
+    let _guard = crate::engine::gen_guard::MediaGenGuard::acquire()?;
     let preset = &entry.preset;
     let mut secs = seconds;
     if secs == 0 {
@@ -1064,7 +1151,8 @@ where
 mod tests {
     use super::*;
     use crate::engine::models_catalog::{
-        BundleFile, VideoPreset,
+        resolve_placement,
+        BundleFile, VideoPlacement, VideoPreset,
         {bundle_files_weights, default_video_bundle_entry},
     };
     use std::collections::HashMap;
@@ -1092,6 +1180,7 @@ mod tests {
                 .collect(),
             spawn_flags: spawn_flags.map(String::from),
             model_args: None,
+            placement: Vec::new(),
             modes: vec!["t2va".to_string(), "i2va".to_string(), "fl2va".to_string()],
             preset: VideoPreset::default(),
             size_gb: None,
@@ -1140,7 +1229,10 @@ mod tests {
     fn spawn_args_carry_bind_and_catalog_flags_but_no_image_flags() {
         let (entry, dir) = catalog_bundle_with_files();
         let weights = bundle_files_weights(&dir, &entry.files);
-        let args = build_spawn_args(&entry, &weights, 20900).expect("spawn args собран");
+        // Дефолтный бандл каталога несёт placement-лестницу (29.10.26):
+        // при свободной ОЗУ 100 ГиБ выбирается самый требовательный вариант
+        // (te_disk), флаги — из каталога (SSOT).
+        let args = build_spawn_args(&entry, &weights, 20900, Some(100.0)).expect("spawn args собран");
         let j = args.join(" ");
         for flag in [
             "--diffusion-model",
@@ -1151,19 +1243,21 @@ mod tests {
             "127.0.0.1",
             "--listen-port",
             "20900",
-            "--auto-fit",  // из каталожного spawn_flags (бенч 27.10.26, q4km)
-            "--max-vram",  // auto-fit обязан идти с явным бюджетом VRAM
-            "--rng",       // --rng cpu — тоже из каталога
+            "--params-backend", // disk-политика из лестницы каталога
+            "--max-vram",       // резерв VRAM (-2) в флагах лестницы
+            "--rng",            // --rng cpu — тоже из каталога
         ] {
             assert!(j.contains(flag), "не хватает флага {}", flag);
         }
-        assert!(!j.contains("--offload-to-cpu"), "смесь политик запрещена (auto-fit активен)");
+        assert!(!j.contains("--auto-fit"), "auto-fit доминирован te_disk и удалён из лестницы");
+        assert!(!j.contains("--offload-to-cpu"), "offload не входит в лестницу q4km");
         assert!(!j.contains("--fa"), "image-флаг запрещён видео");
         assert!(!j.contains("--diffusion-fa"), "image-флаг запрещён видео");
     }
 
-    /// Инвариант политик размещения (бенч 27.10.26): ровно ОДНА из двух —
-    /// offload ИЛИ auto-fit+max-vram; смесь и «ни то ни другое» — дефект каталога.
+    /// Инвариант политик размещения (бенчи 27.10.26 и 29.10.26): ровно ОДИН
+    /// класс из трёх — offload / auto-fit+max-vram / явный --params-backend;
+    /// смесь и «ни то ни другое» — дефект каталога.
     #[test]
     fn spawn_args_enforce_single_placement_policy() {
         let (entry, dir) = catalog_bundle_with_files();
@@ -1171,27 +1265,94 @@ mod tests {
         let edit_flags = |entry: &VideoBundleEntry, flags: &str| {
             let mut e = entry.clone();
             e.spawn_flags = Some(flags.to_string());
+            // Легаси-ветка валидируется только при пустой лестнице (SSOT:
+            // placement имеет приоритет) — очищаем, чтобы тестировать канон.
+            e.placement = Vec::new();
             e
         };
         // 1) offload-политика валидна (прежний канон).
         let offload = edit_flags(&entry, "--offload-to-cpu --rng cpu");
-        build_spawn_args(&offload, &weights, 19900).expect("offload-политика валидна");
-        // 2) auto-fit без max-vram — отказ (бюджет VRAM обязан быть явным).
+        build_spawn_args(&offload, &weights, 19900, Some(100.0)).expect("offload-политика валидна");
+        // 2) явная params-политика валидна (disk-стриминг, бенч 29.10.26).
+        let params = edit_flags(&entry, "--params-backend te=disk,diffusion=cpu,vae=disk --rng cpu");
+        build_spawn_args(&params, &weights, 19900, Some(100.0))
+            .expect("params-политика (disk) валидна");
+        // 3) auto-fit без max-vram — отказ (бюджет VRAM обязан быть явным).
         let no_budget = edit_flags(&entry, "--auto-fit on --rng cpu");
-        let err = build_spawn_args(&no_budget, &weights, 19900).unwrap_err();
+        let err = build_spawn_args(&no_budget, &weights, 19900, Some(100.0)).unwrap_err();
         assert!(err.contains("--max-vram"), "отказ называет --max-vram: {}", err);
-        // 3) смесь offload + auto-fit — отказ (params-backend отключает auto-fit).
+        // 4) смесь offload + auto-fit — отказ (params-backend отключает auto-fit).
         let mixed = edit_flags(&entry, "--offload-to-cpu --auto-fit on --max-vram -1 --rng cpu");
-        let err = build_spawn_args(&mixed, &weights, 19900).unwrap_err();
+        let err = build_spawn_args(&mixed, &weights, 19900, Some(100.0)).unwrap_err();
         assert!(err.contains("смешивает"), "отказ про смесь политик: {}", err);
-        // 4) ни одной политики — отказ (веса H3 не размещаются сами).
+        // 5) смесь params + auto-fit — отказ по той же причине.
+        let mixed2 = edit_flags(&entry, "--params-backend te=disk --auto-fit on --max-vram -1 --rng cpu");
+        let err = build_spawn_args(&mixed2, &weights, 19900, Some(100.0)).unwrap_err();
+        assert!(err.contains("смешивает"), "отказ про смесь params+autofit: {}", err);
+        // 6) ни одной политики — отказ (веса H3 не размещаются сами), отказ
+        // называет ВСЕ три канона.
         let none = edit_flags(&entry, "--rng cpu");
-        let err = build_spawn_args(&none, &weights, 19900).unwrap_err();
+        let err = build_spawn_args(&none, &weights, 19900, Some(100.0)).unwrap_err();
         assert!(
-            err.contains("--offload-to-cpu") && err.contains("--auto-fit"),
-            "отказ называет обе политики: {}",
+            err.contains("--offload-to-cpu") && err.contains("--auto-fit") && err.contains("--params-backend"),
+            "отказ называет три политики: {}",
             err
         );
+    }
+
+    /// Адаптивный выбор placement: из влезающих в ОЗУ вариантов берётся самый
+    /// требовательный (быстрый); не влез никто — честный отказ с порогом
+    /// самого лёгкого; фактов ОЗУ нет (None) — консервативно самый лёгкий.
+    #[test]
+    fn resolve_placement_picks_most_demanding_that_fits() {
+        let (entry, dir) = catalog_bundle_with_files();
+        let mut e = entry.clone();
+        e.placement = vec![
+            VideoPlacement {
+                policy: "autofit".into(),
+                label: "быстро, много RAM".into(),
+                spawn_flags: "--auto-fit on --max-vram -1 --rng cpu".into(),
+                ram_min_gb: 28.5,
+            },
+            VideoPlacement {
+                policy: "te_disk".into(),
+                label: "средне".into(),
+                spawn_flags: "--params-backend te=disk,diffusion=cpu,vae=disk --rng cpu".into(),
+                ram_min_gb: 16.0,
+            },
+            VideoPlacement {
+                policy: "all_disk".into(),
+                label: "для 16 ГБ машин".into(),
+                spawn_flags: "--params-backend te=disk,diffusion=disk,vae=disk --rng cpu".into(),
+                ram_min_gb: 9.0,
+            },
+        ];
+        let weights = bundle_files_weights(&dir, &e.files);
+
+        // 32 ГБ машина: влезают все три → самый требовательный (autofit).
+        let args = build_spawn_args(&e, &weights, 19900, Some(29.0)).expect("args собраны");
+        assert!(args.join(" ").contains("--auto-fit"), "выбран autofit");
+        // Средняя машина: autofit не влез → te_disk.
+        let args = build_spawn_args(&e, &weights, 19900, Some(17.0)).expect("args собраны");
+        let j = args.join(" ");
+        assert!(j.contains("--params-backend") && j.contains("diffusion=cpu"), "выбран te_disk: {}", j);
+        assert!(!j.contains("--auto-fit"), "autofit не выбран");
+        // Мало ОЗУ: только all_disk влезает.
+        let args = build_spawn_args(&e, &weights, 19900, Some(9.5)).expect("args собраны");
+        assert!(
+            args.join(" ").contains("diffusion=disk"),
+            "выбран all_disk"
+        );
+        // Не влез никто → отказ с маркером RAM и порогом самого лёгкого.
+        let err = build_spawn_args(&e, &weights, 19900, Some(3.0)).unwrap_err();
+        assert!(err.starts_with(preflight::resource_markers::RAM), "маркер RAM: {}", err);
+        assert!(err.contains("9.0"), "порог самого лёгкого (9.0): {}", err);
+        // Фактов ОЗУ нет (None) → консервативно самый лёгкий (all_disk).
+        let args = build_spawn_args(&e, &weights, 19900, None).expect("args собраны");
+        assert!(args.join(" ").contains("diffusion=disk"), "None → самый лёгкий");
+        // resolve_placement напрямую: None → самый лёгкий, не ошибка.
+        assert_eq!(resolve_placement(&e, None).unwrap().policy, "all_disk");
+        assert_eq!(resolve_placement(&e, Some(29.0)).unwrap().policy, "autofit");
     }
 
     #[test]
@@ -1199,7 +1360,7 @@ mod tests {
         let (entry, dir) = catalog_bundle_with_files();
         // 1) пустая карта ролей → отказ называет роль diffusion.
         let empty: HashMap<String, String> = HashMap::new();
-        let err = build_spawn_args(&entry, &empty, 19900).unwrap_err();
+        let err = build_spawn_args(&entry, &empty, 19900, Some(100.0)).unwrap_err();
         assert!(err.contains("diffusion"), "отказ называет роль: {}", err);
         // 2) пустые spawn_flags → дефект каталога, честный отказ.
         let mut noflag = synthetic_entry(
@@ -1210,7 +1371,7 @@ mod tests {
         );
         noflag.name = "noflag".to_string();
         let w = bundle_files_weights(&dir, &entry.files);
-        let err2 = build_spawn_args(&noflag, &w, 19900).unwrap_err();
+        let err2 = build_spawn_args(&noflag, &w, 19900, Some(100.0)).unwrap_err();
         assert!(err2.contains("пуст"), "отказ про пустые флаги: {}", err2);
     }
 
@@ -1220,7 +1381,7 @@ mod tests {
         let (entry, _) = catalog_bundle_with_files();
         let ghost_dir = std::env::temp_dir().join("ko_video_engine_ghost_missing_dir");
         let weights = bundle_files_weights(&ghost_dir, &entry.files);
-        let err = build_spawn_args(&entry, &weights, 19900).unwrap_err();
+        let err = build_spawn_args(&entry, &weights, 19900, Some(100.0)).unwrap_err();
         assert!(
             err.contains("Файл видео-бандла не найден"),
             "отказ называет путь: {}",
@@ -1464,12 +1625,12 @@ mod tests {
 
     #[test]
     fn preflight_rejects_on_ram_threshold() {
-        // RAM-порог детерминирован на любой машине: ни на одной не бывает
-        // 16000 ГБ свободной RAM, поэтому отказ вернёт «RAM», а не успех.
+        // RAM-порог детерминирован: передаём фактическую ОЗУ явно (4 ГБ) против
+        // порога 16000 ГБ — отказ вернёт «RAM», а не успех.
         let dir = std::env::temp_dir().join("ko_video_engine_pf_ram");
         std::fs::create_dir_all(&dir).unwrap();
         let e = synthetic_entry(vec![("diffusion", "w.gguf", Some(1))], Some("--offload-to-cpu"), None, Some(16000.0));
-        let err = preflight_video(&e, &dir).unwrap_err();
+        let err = preflight_video(&e, &dir, Some(4.0)).unwrap_err();
         // Канон маркера — SSOT preflight::resource_markers (инцидент 27.10.26:
         // «Не хватает RAM» не совпал с детектором хоста → слепые ретраи).
         assert!(
@@ -1492,7 +1653,7 @@ mod tests {
             None,
             None,
         );
-        let err = preflight_video(&e, &dir).unwrap_err();
+        let err = preflight_video(&e, &dir, Some(100.0)).unwrap_err();
         assert!(
             err.starts_with(preflight::resource_markers::DISK),
             "отказ начинается с канона «{}»: {}",

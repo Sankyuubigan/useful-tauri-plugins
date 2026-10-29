@@ -481,6 +481,26 @@ impl Default for VideoPreset {
     }
 }
 
+/// Один вариант размещения весов видео-бандла (политика placement).
+///
+/// Каталог держит ЛЕСТНИЦУ вариантов от самой быстрой (требует больше RAM)
+/// к самой лёгкой; при спавне выбирается самый требовательный вариант,
+/// который влезает в свободную ОЗУ машины — «жрёт сколько есть, остальное
+/// стримится с диска». Пороги — ТОЛЬКО из замера (RSS-пик × 1.15, правило
+/// docs/backend.md), не с потолка.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct VideoPlacement {
+    /// Идентификатор политики (лог выбора/UI): "autofit" | "te_disk" | "all_disk" | "offload".
+    pub policy: String,
+    /// Человекочитаемое описание варианта.
+    #[serde(default)]
+    pub label: String,
+    /// CLI-флаги варианта (строка, сплит по пробелам) — SSOT каталога.
+    pub spawn_flags: String,
+    /// Свободная ОЗУ (ГБ), ниже которой вариант не выбирается. Из замера.
+    pub ram_min_gb: f32,
+}
+
 /// Один бандл видео-каталога. Роли файлов: "diffusion" | "llm" | "vae" |
 /// "audio_vae" | "lora_draft" (Turbo-LoRA DMAD 4-step, бенч 26.10.26).
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -497,8 +517,14 @@ pub struct VideoBundleEntry {
     /// CLI-флаги spawn (строкa, сплит по пробелам): `--offload-to-cpu --rng cpu`
     /// — из docs/minimax_h3.md. SSOT каталога, не кода; image-специфичное
     /// (`--auto-fit`/`--max-vram`/`--fa`) видео НЕ копирует.
+    /// Легаси-режим: используется ТОЛЬКО когда `placement` пуст.
     #[serde(default)]
     pub spawn_flags: Option<String>,
+    /// Лестница placement-вариантов по свободной ОЗУ (адаптивный выбор при
+    /// спавне, `resolve_placement`). Пусто = легаси-режим: единственная
+    /// политика из `spawn_flags`/`ram_min_gb`.
+    #[serde(default)]
+    pub placement: Vec<VideoPlacement>,
     /// Задел под `--model-args` (у H3 пока не нужен — ключей model-args нет).
     #[serde(default)]
     pub model_args: Option<String>,
@@ -609,7 +635,84 @@ pub fn validate_video_entry(entry: &VideoBundleEntry) -> Result<(), String> {
                 .to_string(),
         );
     }
+    // placement-лестница: каждый вариант обязан быть исполним (флаги непусты,
+    // порог RAM осмыслен, имена политик уникальны — иначе выбор неоднозначен).
+    let mut seen_policies: Vec<&str> = Vec::new();
+    for v in &entry.placement {
+        if v.policy.trim().is_empty() {
+            return Err("в placement есть вариант с пустым policy".to_string());
+        }
+        if v.spawn_flags.trim().is_empty() {
+            return Err(format!(
+                "в placement варианта «{}» пустые spawn_flags — флаги обязаны идти из каталога (SSOT)",
+                v.policy
+            ));
+        }
+        if !(v.ram_min_gb.is_finite() && v.ram_min_gb > 0.0) {
+            return Err(format!(
+                "в placement варианта «{}» ram_min_gb = {} — порог обязан быть положительным числом из замера",
+                v.policy, v.ram_min_gb
+            ));
+        }
+        if seen_policies.contains(&v.policy.as_str()) {
+            return Err(format!("в placement дублируется политика «{}»", v.policy));
+        }
+        seen_policies.push(&v.policy);
+    }
     Ok(())
+}
+
+/// Адаптивный выбор placement-варианта по свободной ОЗУ: среди вариантов,
+/// влезающих в `ram_free_gb`, берётся САМЫЙ ТРЕБОВАТЕЛЬНЫЙ (самый быстрый);
+/// не влез никто — честный отказ с порогом самого лёгкого варианта.
+/// `ram_free_gb = None` (фактов нет) → консервативно выбирается самый лёгкий.
+///
+/// Текст отказа БЕЗ канонического маркера — вызывающий (video_engine) префиксует
+/// `preflight::resource_markers::RAM` (SSOT формулировок, инцидент 27.10.26).
+pub fn resolve_placement<'a>(
+    entry: &'a VideoBundleEntry,
+    ram_free_gb: Option<f64>,
+) -> Result<&'a VideoPlacement, String> {
+    if entry.placement.is_empty() {
+        return Err(
+            "у бандла нет placement-вариантов (легаси-режим: единственная политика из spawn_flags)"
+                .to_string(),
+        );
+    }
+    // Фактов ОЗУ нет → консервативно самый лёгкий вариант (документированный
+    // контракт); трактовать None как «0 ГБ» значило бы отвергать всё.
+    let Some(free) = ram_free_gb else {
+        let lightest = entry
+            .placement
+            .iter()
+            .min_by(|a, b| a.ram_min_gb.total_cmp(&b.ram_min_gb))
+            .expect("placement непуст (проверено выше)");
+        return Ok(lightest);
+    };
+    let free = free as f32;
+    let mut best: Option<&VideoPlacement> = None;
+    for v in &entry.placement {
+        if free >= v.ram_min_gb {
+            best = match best {
+                Some(b) if b.ram_min_gb >= v.ram_min_gb => Some(b),
+                _ => Some(v),
+            };
+        }
+    }
+    if let Some(v) = best {
+        return Ok(v);
+    }
+    // Ни один не влез: порог называет самый лёгкий вариант (минимальный ram_min_gb).
+    let lightest = entry
+        .placement
+        .iter()
+        .min_by(|a, b| a.ram_min_gb.total_cmp(&b.ram_min_gb))
+        .expect("placement непуст (проверено выше)");
+    Err(format!(
+        "нужно ≥ {:.1} ГБ свободной ОЗУ даже для самой лёгкой политики «{}» ({:.1} ГБ), фактически {:.1} ГБ. \
+         Закройте другие приложения или возьмите бандл легче.",
+        lightest.ram_min_gb, lightest.policy, lightest.ram_min_gb, free
+    ))
 }
 
 /// Встроенный каталог видео-бандлов. Битая запись НЕ молчит: пропускается
@@ -1154,6 +1257,95 @@ mod video_tests {
         assert!(validate_video_entry(&bad).unwrap_err().contains("t2va"));
         bad.modes = vec!["t2va".to_string(), "hypervideo".to_string()];
         assert!(validate_video_entry(&bad).unwrap_err().contains("hypervideo"));
+    }
+
+    // ─────────── placement-лестница (адаптивное размещение, 29.10.26) ───────────
+
+    #[test]
+    fn placement_ladder_validation_rejects_broken_variants() {
+        let base = video_bundle_by_name("minimax_h3_fl2va_pruned-q3k").expect("бандл");
+        let mk = |policy: &str, flags: &str, ram: f32| VideoPlacement {
+            policy: policy.to_string(),
+            label: String::new(),
+            spawn_flags: flags.to_string(),
+            ram_min_gb: ram,
+        };
+        // Валидная лестница проходит.
+        let mut ok = base.clone();
+        ok.placement = vec![mk("all_disk", "--params-backend te=disk --rng cpu", 3.2)];
+        assert!(validate_video_entry(&ok).is_ok());
+        // Пустые флаги варианта — отказ.
+        let mut bad = base.clone();
+        bad.placement = vec![mk("all_disk", "   ", 3.2)];
+        assert!(validate_video_entry(&bad).unwrap_err().contains("spawn_flags"));
+        // Нулевой/отрицательный порог — отказ (порог только из замера).
+        let mut bad2 = base.clone();
+        bad2.placement = vec![mk("all_disk", "--params-backend te=disk", 0.0)];
+        assert!(validate_video_entry(&bad2).unwrap_err().contains("ram_min_gb"));
+        let mut bad3 = base.clone();
+        bad3.placement = vec![mk("all_disk", "--params-backend te=disk", -1.0)];
+        assert!(validate_video_entry(&bad3).unwrap_err().contains("ram_min_gb"));
+        // Дубликат политики — отказ (выбор неоднозначен).
+        let mut bad4 = base.clone();
+        bad4.placement = vec![
+            mk("all_disk", "--params-backend te=disk", 3.2),
+            mk("all_disk", "--params-backend te=disk", 5.0),
+        ];
+        assert!(validate_video_entry(&bad4).unwrap_err().contains("дублируется"));
+        // Пустой policy — отказ.
+        let mut bad5 = base;
+        bad5.placement = vec![mk("  ", "--params-backend te=disk", 3.2)];
+        assert!(validate_video_entry(&bad5).unwrap_err().contains("policy"));
+    }
+
+    /// Гвардейский тест боевого каталога: q4km несёт measured-лестницу
+    /// (бенч 29.10.26, test/bench/video_h3_disk/), Q3_K-бандлы остаются
+    /// в легаси-режиме (offload) до собственного замера.
+    #[test]
+    fn embedded_catalog_q4km_has_measured_placement_ladder() {
+        let catalog = load_video_catalog();
+        let q4km = catalog
+            .iter()
+            .find(|e| e.name == "minimax_h3_fl2va_pruned-q4km")
+            .expect("q4km в каталоге");
+        // Лестница ровно из двух замеренных вариантов, пороги по правилу
+        // «пик × 1.15, округление вверх»: te_disk 13.66→16.0, all_disk 2.72→3.2.
+        assert_eq!(q4km.placement.len(), 2, "лестница q4km: te_disk + all_disk");
+        let te = q4km
+            .placement
+            .iter()
+            .find(|v| v.policy == "te_disk")
+            .expect("te_disk в лестнице");
+        let all = q4km
+            .placement
+            .iter()
+            .find(|v| v.policy == "all_disk")
+            .expect("all_disk в лестнице");
+        assert!((te.ram_min_gb - 16.0).abs() < f32::EPSILON, "te_disk 16.0, got {}", te.ram_min_gb);
+        assert!((all.ram_min_gb - 3.2).abs() < f32::EPSILON, "all_disk 3.2, got {}", all.ram_min_gb);
+        for v in [te, all] {
+            assert!(v.spawn_flags.contains("--params-backend"), "{}: disk-флаги", v.policy);
+            assert!(v.spawn_flags.contains("--max-vram -2"), "{}: резерв VRAM -2", v.policy);
+            assert!(v.spawn_flags.contains("--rng cpu"), "{}: rng cpu", v.policy);
+        }
+        assert!(te.spawn_flags.contains("diffusion=cpu"), "te_disk держит diffusion не на disk");
+        assert!(all.spawn_flags.contains("diffusion=disk"), "all_disk стримит diffusion");
+        // Легаси-поля q4km выведены из боя: политика теперь только в лестнице
+        // (SSOT — один источник политики на бандл).
+        assert!(
+            q4km.spawn_flags.is_none(),
+            "у q4km не должно быть легаси spawn_flags рядом с лестницей"
+        );
+        // Q3_K-бандлы: легаси-режим без лестницы (своего замера нет).
+        for name in ["minimax_h3_fl2va_pruned-q3k", "minimax_h3_ref2va_pruned-q3k"] {
+            let e = catalog.iter().find(|e| e.name == name).expect(name);
+            assert!(e.placement.is_empty(), "{}: без своего замера лестницы нет", name);
+            assert!(
+                e.spawn_flags.as_deref().unwrap_or_default().contains("--offload-to-cpu"),
+                "{}: легаси offload сохранён",
+                name
+            );
+        }
     }
 
     // ─────────── Инвариант пула: одно имя файла = один контент ───────────

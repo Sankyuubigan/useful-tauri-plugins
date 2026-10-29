@@ -316,7 +316,9 @@ impl ImageEngine {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW — без мелькания консоли
+            // CREATE_NO_WINDOW — без мелькания консоли | BELOW_NORMAL_PRIORITY_CLASS —
+            // CPU-фазы движка не душат мышь/UI хоста (генерация — фон для юзера).
+            cmd.creation_flags(0x0800_0000 | 0x0000_4000);
         }
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
@@ -691,6 +693,10 @@ pub fn generate_image_simple<L>(
 where
     L: Fn(String) + Clone,
 {
+    // Единовременность media-генерации: второй параллельный spawn удвоил бы
+    // пики RAM/VRAM (gen_guard.rs). Хостовые тула и GUI-команды проходят
+    // через эту точку — оба канала защищены одним guard'ом.
+    let _guard = crate::engine::gen_guard::MediaGenGuard::acquire()?;
     let engine = ImageEngine::new(engine_dir, bundle_dir, entry, variant_pref, log_cb.clone())?;
     engine.generate(
         prompt,
@@ -809,6 +815,8 @@ pub fn edit_image_files<L>(
 where
     L: Fn(String) + Clone,
 {
+    // Единовременность media-генерации (gen_guard.rs) — как в generate_image_simple.
+    let _guard = crate::engine::gen_guard::MediaGenGuard::acquire()?;
     let mut refs_b64 = Vec::with_capacity(ref_paths.len());
     for p in ref_paths {
         let mut f = std::fs::File::open(p).map_err(|e| format!("Не найден референс {}: {}", p, e))?;
@@ -873,6 +881,8 @@ pub fn upscale_image_files<L>(
 where
     L: Fn(String) + Clone,
 {
+    // Единовременность media-генерации (gen_guard.rs) — как в generate_image_simple.
+    let _guard = crate::engine::gen_guard::MediaGenGuard::acquire()?;
     let mut f = std::fs::File::open(source_path)
         .map_err(|e| format!("Не найден исходник апскейла {}: {}", source_path, e))?;
     let mut buf = Vec::new();

@@ -1206,6 +1206,9 @@ pub async fn generate_video(
         final_quality.unwrap_or(false)
     );
     tokio::task::spawn_blocking(move || {
+        // Единовременность media-генерации (gen_guard.rs): панель плагина не
+        // проходит через host-тула, поэтому guard ставится здесь тоже.
+        let _guard = engine::MediaGenGuard::acquire()?;
         let eng = engine::VideoEngine::new(&edir, &bdir, &entry, variant.as_deref(), log_cb)?;
         eng.generate(&req, &out, None, log_cb)
     })

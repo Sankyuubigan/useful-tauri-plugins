@@ -9,6 +9,7 @@ pub mod bench_ext;
 pub mod bench_prompts;
 pub mod bench_upscale;
 pub mod config;
+pub mod gen_guard;
 pub mod image_engine;
 pub mod krea_compare;
 pub mod krea_view;
@@ -34,6 +35,7 @@ pub use config::{
     default_video_bundle_dir, engine_dir_early, image_lora_dir_early, load_image_config,
     load_image_config_early, save_image_config, video_bundle_dir_early, ImageEngineConfig,
 };
+pub use gen_guard::MediaGenGuard;
 pub use image_engine::{
     edit_image_files, generate_image_simple, plan_ref_edit, upscale_image_files,
     upscale_target_dims, ImageEngine, ImageGenResult, Img2Img, RefEditPlan, UPSCALE_STRENGTH_DEFAULT,
@@ -52,16 +54,17 @@ pub use krea_view::build_krea_html;
 pub use models_catalog::{
     bundle_by_name, bundle_disk_bytes, bundle_files_weights, bundle_weights_files,
     default_bundle_entry, default_video_bundle_entry, find_bundle_entry, load_image_catalog,
-    load_video_catalog, ref_edit_contract, validate_image_entry, video_bundle_by_name,
-    video_bundle_disk_bytes, validate_video_entry, BundleFile, ImageBundleEntry, ImagePreset,
-    RefEditContract, RefEditMode, VideoBundleEntry, VideoPreset,
+    load_video_catalog, ref_edit_contract, resolve_placement, validate_image_entry,
+    video_bundle_by_name, video_bundle_disk_bytes, validate_video_entry, BundleFile,
+    ImageBundleEntry, ImagePreset, RefEditContract, RefEditMode, VideoBundleEntry, VideoPlacement,
+    VideoPreset,
 };
 pub use preflight::{
     estimate_image_memory_mb, preflight_check, MemoryEstimate, PreflightVerdict,
 };
 pub use process_util::kill_active_engines;
 pub use video_engine::{
-    build_payload, build_spawn_args, file_to_b64, generate_video_simple, preflight_video,
-    resolve_mode, sampling_plan_for_quality, seconds_to_frames, VideoEngine, VideoGenResult,
-    VideoLoraRef, VideoMode, VideoRequest, VideoSamplingPlan,
+    build_payload, build_spawn_args, file_to_b64, free_ram_gb, generate_video_simple,
+    preflight_video, resolve_mode, sampling_plan_for_quality, seconds_to_frames, VideoEngine,
+    VideoGenResult, VideoLoraRef, VideoMode, VideoRequest, VideoSamplingPlan,
 };

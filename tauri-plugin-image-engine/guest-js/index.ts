@@ -200,6 +200,10 @@ export interface GenerateOptions {
   seed?: number | null
   outPath?: string | null
   bundleName?: string | null
+  /** Имена файлов LoRA (стем без расширения) из папки LoRA настроек. */
+  loraNames?: string[] | null
+  /** Общая сила LoRA (0–2, по умолчанию 1.0): действует на все имена из loraNames. */
+  loraStrength?: number | null
 }
 
 export function generateImage(opts: GenerateOptions): Promise<ImageGenResult> {
@@ -212,6 +216,8 @@ export function generateImage(opts: GenerateOptions): Promise<ImageGenResult> {
     seed: opts.seed ?? null,
     outPath: opts.outPath ?? null,
     bundleName: opts.bundleName ?? null,
+    loraNames: opts.loraNames ?? null,
+    loraStrength: opts.loraStrength ?? null,
   })
 }
 
@@ -230,6 +236,8 @@ export function editImage(opts: EditOptions): Promise<ImageGenResult> {
     seed: opts.seed ?? null,
     outPath: opts.outPath ?? null,
     bundleName: opts.bundleName ?? null,
+    loraNames: opts.loraNames ?? null,
+    loraStrength: opts.loraStrength ?? null,
   })
 }
 

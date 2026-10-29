@@ -591,16 +591,27 @@ pub async fn generate_image(
     seed: Option<i64>,
     out_path: Option<String>,
     bundle_name: Option<String>,
+    lora_names: Option<Vec<String>>,
+    lora_strength: Option<f32>,
 ) -> Result<engine::ImageGenResult, String> {
     let entry = bundle_entry(&app, bundle_name.as_deref())?;
     let (w, h, st, cfg, sd) = resolve_gen_params(&entry, width, height, steps, cfg_scale, seed);
+    // LoRA-резолв по SSOT-плагиновому модулю (PRP 29.10.26): несуществующее
+    // имя — честный отказ команды (текст включает папку и доступные стемы).
+    // F3 29.10.26: ресолв scoped на базу бандла — лоры чужой базы не найдутся.
+    let loras = engine::resolve_lora_names_for_base(
+        &engine::image_lora_dir_early(),
+        lora_names.as_deref().unwrap_or(&[]),
+        lora_strength.unwrap_or(1.0),
+        entry.lora_base.as_deref(),
+    )?;
     let edir = engine_dir(&app);
     let bdir = bundle_dir(&app);
     let variant = preferred_variant(&app);
     let out = out_path.map(PathBuf::from).unwrap_or_else(|| default_out_path(&bdir));
     let log_cb = |msg: String| log::info!("[IMG] {}", msg);
     tokio::task::spawn_blocking(move || {
-        engine::generate_image_simple(&edir, &bdir, &entry, variant.as_deref(), &prompt, w, h, st, cfg, sd, &out, None, log_cb)
+        engine::generate_image_simple(&edir, &bdir, &entry, variant.as_deref(), &prompt, w, h, st, cfg, sd, &out, &loras, None, log_cb)
     })
     .await
     .map_err(|e| format!("Задача генерации прервана: {}", e))?
@@ -618,6 +629,8 @@ pub async fn edit_image(
     seed: Option<i64>,
     out_path: Option<String>,
     bundle_name: Option<String>,
+    lora_names: Option<Vec<String>>,
+    lora_strength: Option<f32>,
 ) -> Result<engine::ImageGenResult, String> {
     if ref_paths.is_empty() {
         return Err("Для редактирования нужен хотя бы один референс (ref_paths пуст).".to_string());
@@ -630,13 +643,22 @@ pub async fn edit_image(
         ));
     }
     let (w, h, st, cfg, sd) = resolve_gen_params(&entry, width, height, steps, cfg_scale, seed);
+    // LoRA-резолв по SSOT-плагиновому модулю (PRP 29.10.26): несуществующее
+    // имя — честный отказ команды (текст включает папку и доступные стемы).
+    // F3 29.10.26: ресолв scoped на базу бандла — лоры чужой базы не найдутся.
+    let loras = engine::resolve_lora_names_for_base(
+        &engine::image_lora_dir_early(),
+        lora_names.as_deref().unwrap_or(&[]),
+        lora_strength.unwrap_or(1.0),
+        entry.lora_base.as_deref(),
+    )?;
     let edir = engine_dir(&app);
     let bdir = bundle_dir(&app);
     let variant = preferred_variant(&app);
     let out = out_path.map(PathBuf::from).unwrap_or_else(|| default_out_path(&bdir));
     let log_cb = |msg: String| log::info!("[IMG] {}", msg);
     tokio::task::spawn_blocking(move || {
-        engine::edit_image_files(&edir, &bdir, &entry, variant.as_deref(), &prompt, &ref_paths, w, h, st, cfg, sd, &out, None, log_cb)
+        engine::edit_image_files(&edir, &bdir, &entry, variant.as_deref(), &prompt, &ref_paths, w, h, st, cfg, sd, &out, &loras, None, log_cb)
     })
     .await
     .map_err(|e| format!("Задача редактирования прервана: {}", e))?

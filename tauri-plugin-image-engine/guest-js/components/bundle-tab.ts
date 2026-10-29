@@ -16,9 +16,13 @@ export class BundleTabElement extends HTMLElement {
   private busy = false
   private unlisten?: () => void
   private appliedBundle = ''
+  /** Имя бандла, выбранного в селекте — источник правды всех операций вкладки
+   * (скачать/докачать/удалить/активировать смотрят на НЕГО, а не на активный;
+   * PRP 29.10.26 D1). Инициализируется активным при первом открытии. */
+  private selected = ''
   private service?: BundleService
   /** Статусы бандлов из последнего refresh (fully_downloaded и файлы) —
-   * источник гейта кнопки «Активировать». */
+   * рендер панели и гейт кнопок читают ТОЛЬКО отсюда (SSOT). */
   private statuses = new Map<string, TabInfo>()
 
   connectedCallback() {
@@ -39,6 +43,7 @@ export class BundleTabElement extends HTMLElement {
           <select id="bundle" style="flex:1; min-width:220px;"><option value="">…</option></select>
           <button id="activate" class="primary" style="display:none;">Активировать</button>
         </div>
+        <div class="row"><label>Состояние:</label><span id="state" class="hint" style="flex:1;"></span></div>
         <div class="row"><label>Набор:</label><span id="label" class="hint">…</span></div>
         <div id="note" class="hint"></div>
         <ul class="files" id="files"></ul>
@@ -107,6 +112,9 @@ export class BundleTabElement extends HTMLElement {
     this.root.getElementById('progress')!.style.display = on ? 'block' : 'none'
   }
 
+  /** Загрузка данных вкладки: применённый (активный) бандл, статусы всех
+   * бандлов каталога в `statuses` (SSOT), затем рендер панели под ВЫБРАННЫЙ
+   * в селекте бандл. Рендер — отдельный метод, чтобы смена селекта не пережимала весь fetch. */
   private async refresh() {
     const svc = this.service
     if (!svc) return
@@ -121,6 +129,8 @@ export class BundleTabElement extends HTMLElement {
 
     // Селектор бандлов: активный — текущий; остальные — с меткой скачанности.
     this.appliedBundle = info.bundle_name
+    // Выбранный по умолчанию — активный (первое открытие вкладки).
+    if (!this.selected) this.selected = info.bundle_name
     const sel = this.root.getElementById('bundle') as HTMLSelectElement
     let entries: Awaited<ReturnType<BundleService['entries']>> = []
     try { entries = await svc.entries() } catch { /* каталог встроен — просто без списка */ }
@@ -151,16 +161,90 @@ export class BundleTabElement extends HTMLElement {
         sel.appendChild(o)
       }
     }
-    sel.value = info.bundle_name
-    this.root.getElementById('activate')!.style.display = 'none'
+    sel.value = this.selected
+
+    await this.renderPanel()
+  }
+
+  /** Статус бандла по имени: из кеша `statuses` (SSOT), при отсутствии — один
+   * fetch и запись в кеш. Ошибка → undefined (звонящий обязан сказать об этом
+   * юзеру, молчаливых отказов нет). */
+  private async statusFor(name: string): Promise<TabInfo | undefined> {
+    const svc = this.service
+    if (!svc) return undefined
+    const cached = this.statuses.get(name)
+    if (cached) return cached
+    try {
+      const info = await svc.info(name || null)
+      this.statuses.set(name, info)
+      return info
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Перечень недостающих файлов статуса (строка состояния + подсказка кнопки). */
+  private static missingList(st: TabInfo): string[] {
+    return st.files.filter((f) => !f.exists).map((f) => f.filename)
+  }
+
+  /** Рендер ВСЕЙ панели под выбранный бандл (`this.selected`): строка
+   * состояния, файлы, диск/память, кнопки операций. Контракт PRP 29.10.26 D1:
+   * операции вкладки (скачать/докачать/удалить/активировать) работают с
+   * ВЫБРАННЫМ бандлом; молчаливого скрытия кнопки «Активировать» нет —
+   * недокачанный всегда назван причиной на экране. */
+  private async renderPanel() {
+    const svc = this.service
+    if (!svc) return
+    const st = await this.statusFor(this.selected)
+    const sel = this.root.getElementById('bundle') as HTMLSelectElement
+    const stateEl = this.root.getElementById('state')!
+    if (!st) {
+      // Честное состояние: инфо недоступно — называем это словами.
+      stateEl.textContent = 'статус недоступен (бэкенд вернул ошибку)'
+      this.root.getElementById('label')!.textContent = `Ошибка: набор «${this.selected}» недоступен`
+      const activateBtn = this.root.getElementById('activate') as HTMLButtonElement
+      activateBtn.style.display = this.selected === this.appliedBundle ? 'none' : 'inline-block'
+      activateBtn.disabled = true
+      activateBtn.title = 'Статус бандла неизвестен — активация заблокирована вкладкой.'
+      return
+    }
+    sel.value = this.selected
+
+    // Строка состояния выбранного (вместо молчаливого гейта активации).
+    const missing = BundleTabElement.missingList(st)
+    if (this.selected === this.appliedBundle) {
+      stateEl.textContent = 'активный'
+    } else if (st.fully_downloaded) {
+      stateEl.textContent = 'скачан полностью — можно активировать'
+    } else if (missing.length === st.files.length) {
+      stateEl.textContent = 'не скачан'
+    } else {
+      stateEl.textContent =
+        `частично: файлов ${st.files.length - missing.length} из ${st.files.length}, нет: ${missing.join(', ')}`
+    }
+
+    // Кнопка «Активировать»: скрыта для уже активного; для недокачанного —
+    // disabled с причиной в подсказке (бэкенд-гейт остаётся финальной
+    // проверкой, вкладка лишь заранее показывает причину).
+    const activateBtn = this.root.getElementById('activate') as HTMLButtonElement
+    if (this.selected === this.appliedBundle) {
+      activateBtn.style.display = 'none'
+    } else {
+      activateBtn.style.display = 'inline-block'
+      activateBtn.disabled = !st.fully_downloaded
+      activateBtn.title = st.fully_downloaded
+        ? ''
+        : `Недокачанные файлы (${missing.length}):\n${missing.join('\n')}`
+    }
 
     this.root.getElementById('label')!.textContent =
-      `${info.label}${info.fully_downloaded ? '' : ' (не все файлы скачаны)'}`
-    this.root.getElementById('note')!.textContent = info.note || ''
+      `${st.label}${st.fully_downloaded ? '' : ' (не все файлы скачаны)'}`
+    this.root.getElementById('note')!.textContent = st.note || ''
     const ul = this.root.getElementById('files')!
     ul.innerHTML = ''
     let anyExists = false
-    for (const f of info.files) {
+    for (const f of st.files) {
       if (f.exists) anyExists = true
       const li = document.createElement('li')
       li.className = f.exists ? 'ok' : 'missing'
@@ -168,43 +252,38 @@ export class BundleTabElement extends HTMLElement {
       li.textContent = `${f.exists ? '✓' : '○'} ${esc(f.filename)} (${f.role})${size}`
       ul.appendChild(li)
     }
-    const totalGb = (info.total_bytes / 1024 / 1024 / 1024).toFixed(1)
+    const totalGb = (st.total_bytes / 1024 / 1024 / 1024).toFixed(1)
     this.root.getElementById('disk')!.textContent =
-      `~${totalGb} ГБ на диске · свободно ${info.free_space_gb} ГБ`
-    const memLine =
-      `GPU: ${info.vram_fast_gb ?? '?'} ГБ (быстро) / ${info.vram_min_gb ?? '?'} ГБ (мин.) · RAM ≥${info.ram_min_gb ?? '?'} ГБ`
-    this.root.getElementById('mem')!.textContent = memLine
-    this.root.getElementById('dir')!.textContent = info.save_dir
+      `~${totalGb} ГБ на диске · свободно ${st.free_space_gb} ГБ`
+    this.root.getElementById('mem')!.textContent =
+      `GPU: ${st.vram_fast_gb ?? '?'} ГБ (быстро) / ${st.vram_min_gb ?? '?'} ГБ (мин.) · RAM ≥${st.ram_min_gb ?? '?'} ГБ`
+    this.root.getElementById('dir')!.textContent = st.save_dir
 
     const dlBtn = this.root.getElementById('download') as HTMLButtonElement
-    dlBtn.style.display = info.fully_downloaded ? 'none' : 'inline-block'
+    dlBtn.style.display = st.fully_downloaded ? 'none' : 'inline-block'
     dlBtn.textContent = anyExists ? 'Докачать файлы' : 'Скачать набор'
     const resumeBtn = this.root.getElementById('resume') as HTMLButtonElement
-    resumeBtn.style.display = info.fully_downloaded ? 'none' : 'inline-block'
+    resumeBtn.style.display = st.fully_downloaded ? 'none' : 'inline-block'
     resumeBtn.disabled = !anyExists // «Докачать» без ни одного файла = то же, что «Скачать»
     // «Сбросить путь» виден только когда путь кастомный (вернёт к дефолту
     // хранилища KingOrchData); дефолт сбрасывать нечего.
-    this.root.getElementById('resetDir')!.style.display = info.save_dir ? 'inline-block' : 'none'
-    this.root.getElementById('deleteFiles')!.style.display = info.fully_downloaded ? 'inline-block' : 'none'
+    this.root.getElementById('resetDir')!.style.display = st.save_dir ? 'inline-block' : 'none'
+    this.root.getElementById('deleteFiles')!.style.display = st.fully_downloaded ? 'inline-block' : 'none'
 
     if (svc.memoryProbe) {
       try {
-        this.root.getElementById('mem')!.textContent = await svc.memoryProbe(info.bundle_name)
+        this.root.getElementById('mem')!.textContent = await svc.memoryProbe(st.bundle_name)
       } catch { /* NVML может отсутствовать — остаётся строка пресета */ }
     }
   }
 
-  private onBundleChange() {
+  /** Смена выбора в селекте: панель целиком перерисовывается под выбранный
+   * бандл (строка состояния, файлы, кнопки) — больше не только «показать/
+   * скрыть кнопку Activate». */
+  private async onBundleChange() {
     const sel = this.root.getElementById('bundle') as HTMLSelectElement
-    if (sel.value === this.appliedBundle) {
-      this.root.getElementById('activate')!.style.display = 'none'
-      return
-    }
-    // Гейт активации (решение юзера 25.10.2026): недокачанный бандл нельзя
-    // активировать — бэкенд это запрещает, кнопка честно не появляется.
-    const st = this.statuses.get(sel.value)
-    const activatable = !st || st.fully_downloaded
-    this.root.getElementById('activate')!.style.display = activatable ? 'inline-block' : 'none'
+    this.selected = sel.value
+    await this.renderPanel()
   }
 
   private async onActivate() {
@@ -225,24 +304,29 @@ export class BundleTabElement extends HTMLElement {
     }
   }
 
-  /** «Скачать набор»/«Докачать файлы»: качает ВСЕГДА в настроенную папку
-   * (`save_dir` — кастом или дефолт KingOrchData, пустым не бывает — бэкенд
-   * `commands.rs` гарантирует дефолт). Выбор пути — ровно одно место на
-   * вкладке: кнопка «Изменить путь…» (SSOT решений; раньше диалог дублировал
-   * её на «Скачать» и вместо скачивания открывал проводник). Выбранная папка
-   * = ПУЛ для всех наборов (25.10.2026): подпапка `${base}/${bundle_name}`
-   * не создаётся — она порождала перекачку общих файлов. */
+  /** «Скачать набор»/«Докачать файлы»: качает ВЫБРАННЫЙ в селекте бандл
+   * (PRP 29.10.26 D1 — раньше смотрел на активный и кнопка «докачать выбранный»
+   * превращалась в тупик), всегда в настроенную папку (`save_dir` — кастом или
+   * дефолт KingOrchData, пустым не бывает — бэкенд `commands.rs` гарантирует
+   * дефолт). Выбор пути — ровно одно место на вкладке: кнопка «Изменить путь…»
+   * (SSOT решений). Выбранная папка = ПУЛ для всех наборов (25.10.2026):
+   * подпапка `${base}/${bundle_name}` не создаётся — она порождала перекачку
+   * общих файлов. */
   private async onDownload() {
     const svc = this.service
     if (!svc || this.busy) return
+    const st = await this.statusFor(this.selected)
+    if (!st) {
+      toast('Статус выбранного набора недоступен — скачивание отменено.', 'error')
+      return
+    }
     this.busy = true
     const btn = this.root.getElementById('download') as HTMLButtonElement
     btn.disabled = true
     this.showProgress(true)
     this.setProgress(0, 0)
     try {
-      const cur = await svc.info(null)
-      await svc.download(cur.save_dir, cur.bundle_name)
+      await svc.download(st.save_dir, st.bundle_name)
       notifyBundleChanged()
       toast(`Набор ${svc.kind === 'video' ? 'видео' : 'изображений'} скачан!`)
     } catch (e) {
@@ -255,8 +339,9 @@ export class BundleTabElement extends HTMLElement {
     }
   }
 
-  /** «Изменить путь…»: диалог → проверка наличия файлов → set → честный тост
-   * о нехватке. Выбранная папка становится пулом этого набора. */
+  /** «Изменить путь…»: диалог → проверка наличия файлов ВЫБРАННОГО бандла →
+   * set → честный тост о нехватке. Папка задаётся ОДНА для всех бандлов
+   * (общий пул, 25.10.2026); валидация — по выбранному имени (D1). */
   private async onChangeDir() {
     const svc = this.service
     if (!svc || this.busy) return
@@ -270,7 +355,7 @@ export class BundleTabElement extends HTMLElement {
       if (!path) return
       let valid: Awaited<ReturnType<BundleService['validateDir']>>
       try {
-        valid = await svc.validateDir(path, null)
+        valid = await svc.validateDir(path, this.selected || null)
       } catch (e) {
         toast(`Ошибка проверки набора: ${e}`, 'error')
         return
@@ -308,18 +393,24 @@ export class BundleTabElement extends HTMLElement {
     }
   }
 
-  /** Custom-папка (resume): докачать недостающие в текущую папку. */
+  /** Custom-папка (resume): докачать недостающие ВЫБРАННОГО бандла (PRP
+   * 29.10.26 D1 — раньше качал активный, из-за чего выбранный недокачанный
+   * бандл было невозможно догнать). */
   private async onResume() {
     const svc = this.service
     if (!svc || this.busy) return
+    const st = await this.statusFor(this.selected)
+    if (!st) {
+      toast('Статус выбранного набора недоступен — докачка отменена.', 'error')
+      return
+    }
     this.busy = true
     const btn = this.root.getElementById('resume') as HTMLButtonElement
     btn.disabled = true
     this.showProgress(true)
     this.setProgress(0, 0)
     try {
-      const cur = await svc.info(null)
-      await svc.download(cur.save_dir, cur.bundle_name)
+      await svc.download(st.save_dir, st.bundle_name)
       notifyBundleChanged()
       toast('Недостающие файлы набора скачаны!')
     } catch (e) {
@@ -346,7 +437,8 @@ export class BundleTabElement extends HTMLElement {
     this.busy = true
     this.closeModal()
     try {
-      await svc.removeFiles()
+      // Удаляем файлы ВЫБРАННОГО бандла (D1): null удалял бы активный.
+      await svc.removeFiles(this.selected || null)
       notifyBundleChanged()
       toast('Файлы набора удалены.')
     } catch (e) {

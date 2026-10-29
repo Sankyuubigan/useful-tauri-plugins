@@ -24,6 +24,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
+use crate::engine::lora::{lora_spawn_args_for_base, LoraSpec, LORA_MULTIPLIER_MAX};
 use crate::engine::models_catalog::ImageBundleEntry;
 use crate::engine::preflight::{preflight_check, PreflightVerdict};
 use crate::engine::process_util::{
@@ -277,6 +278,28 @@ impl ImageEngine {
             // vae in tiles to reduce memory usage»).
             "--vae-tiling",
         ]);
+        // Каталог LoRA сервера (PRP 29.10.26; F3 29.10.26 — папки по базам).
+        // Передаётся ТОЛЬКО если папка существует — генерация без лоры
+        // обязана работать как раньше, а заявка на несуществующую лору честно
+        // падает в resolve_lora_names (тот же паттерн, что у видео-спавна с
+        // ролью lora_draft). Каталог scoped на БАЗУ бандла
+        // (`<image_loras>/<lora_base>`): лоры чужой базы физически не видны
+        // серверу — кросс-базное применение невозможно по design.
+        let lora_dir = crate::engine::config::image_lora_dir_early();
+        let lora_args = lora_spawn_args_for_base(&lora_dir, entry.lora_base.as_deref());
+        if !lora_args.is_empty() {
+            match entry.lora_base.as_deref() {
+                Some(base) => log_cb(format!(
+                    "⚙ lora-dir: {} (база «{}»)",
+                    lora_dir.join(base).display(),
+                    base
+                )),
+                None => log_cb(format!("⚙ lora-dir: {}", lora_dir.display())),
+            }
+            cmd.args(&lora_args);
+        } else {
+            log_cb("⚙ lora-dir: (папки LoRA нет — LoRA-стек отключён)".to_string());
+        }
         // Prefix KV-кэш (текст + vision-токены референсов) в 8 бит: вдвое меньше
         // VRAM, чем f16, при сохранении ускорения «посчитать кондиционирование
         // один раз». Ключ задаёт КАТАЛОГ бандла (per-bundle `model_args`): для
@@ -306,8 +329,8 @@ impl ImageEngine {
         // (auto-fit plan, compute buffer / число сегментов, префикс-кэш, время
         // сэмплирования); stderr содержит только ggml/CUDA. Если слушать лишь
         // stderr, в логе остаются 4 строки и диагностировать пайплайн нечем.
-        pipe_log(child.stdout.take(), "sd-server");
-        pipe_log(child.stderr.take(), "sd-server");
+        pipe_log(child.stdout.take(), "sd-server", true);
+        pipe_log(child.stderr.take(), "sd-server", false);
 
         let client = reqwest::blocking::Client::builder()
             .connect_timeout(Duration::from_secs(5))
@@ -369,6 +392,7 @@ impl ImageEngine {
         scheduler: Option<&str>,
         hires: Option<&serde_json::Value>,
         img2img: Option<&Img2Img>,
+        loras: &[LoraSpec],
     ) -> Result<ImageGenResult, String>
     where
         L: Fn(String),
@@ -432,6 +456,27 @@ impl ImageEngine {
             }
             body["init_image"] = serde_json::json!(i2i.init_b64);
             body["strength"] = serde_json::json!(i2i.strength.clamp(0.0, 1.0));
+        }
+        // LoRA-стек (PRP 29.10.26): тело получает поле lora[] ТОЛЬКО при
+        // непустом списке. path — имя файла относительно --lora-model-dir
+        // (спавн); multiplier клампится на границе плагина (0..=2);
+        // is_high_noise: false — та же сериализация, что у видео-ветки
+        // (build_payload); высокошумная (Wan MoE) лора — вне этого плана.
+        if !loras.is_empty() {
+            body["lora"] = serde_json::json!(
+                loras.iter()
+                    .map(|l| serde_json::json!({
+                        "path": l.path,
+                        "multiplier": l.multiplier.clamp(0.0, LORA_MULTIPLIER_MAX),
+                        "is_high_noise": false,
+                    }))
+                    .collect::<Vec<_>>()
+            );
+            let stack: Vec<String> = loras
+                .iter()
+                .map(|l| format!("{}×{:.2}", l.path, l.multiplier))
+                .collect();
+            log_cb(format!("🎛 LoRA stack: {}", stack.join(" + ")));
         }
         log_cb(format!(
             "🎨 Генерация: {}x{}, steps={}, cfg={}, refs={}{}…",
@@ -558,7 +603,11 @@ fn round32(v: u32) -> u32 {
 }
 
 /// Перелить построчный лог процесса движка в лог хоста (`[sd-server] …`).
-fn pipe_log<R>(stream: Option<R>, tag: &str)
+/// `scan_lora`: stdout-канал дополнительно сканируется на отчёт применения
+/// LoRA («X / N … tensors … applied»); X < N → предупреждение (симптом
+/// несовместимости варианта модели, leejet issue #2083). Lora-скан включён
+/// только для image-движка; video_engine имел свою копию pipe_log.
+fn pipe_log<R>(stream: Option<R>, tag: &str, scan_lora: bool)
 where
     R: std::io::Read + Send + 'static,
 {
@@ -577,6 +626,16 @@ where
             let text = line.trim_end();
             if text.is_empty() {
                 continue;
+            }
+            if scan_lora {
+                if let Some((applied, total)) = crate::engine::lora::scan_lora_applied_line(text) {
+                    if applied < total {
+                        log::warn!(
+                            "[{}] ⚠️ Применены не все LoRA-тензоры: {}/{} — вероятно, вариант LoRA не совпадает с моделью (leejet issue #2083).",
+                            tag, applied, total
+                        );
+                    }
+                }
             }
             if text.contains("[ERROR]") || text.contains("error:") {
                 log::error!("[{}] {}", tag, text);
@@ -609,6 +668,7 @@ pub fn generate_image_simple<L>(
     cfg_scale: f32,
     seed: i64,
     out_path: &Path,
+    loras: &[LoraSpec],
     cancel_flag: Option<Arc<AtomicBool>>,
     log_cb: L,
 ) -> Result<ImageGenResult, String>
@@ -631,6 +691,7 @@ where
         entry.preset.scheduler.as_deref(),
         None,
         None,
+        loras,
     )
 }
 
@@ -656,6 +717,7 @@ pub fn edit_image_files<L>(
     cfg_scale: f32,
     seed: i64,
     out_path: &Path,
+    loras: &[LoraSpec],
     cancel_flag: Option<Arc<AtomicBool>>,
     log_cb: L,
 ) -> Result<ImageGenResult, String>
@@ -697,6 +759,7 @@ where
         entry.preset.scheduler.as_deref(),
         None,
         None,
+        loras,
     )
 }
 
@@ -714,6 +777,7 @@ pub fn upscale_image_files<L>(
     source_path: &str,
     seed: i64,
     out_path: &Path,
+    loras: &[LoraSpec],
     cancel_flag: Option<Arc<AtomicBool>>,
     log_cb: L,
 ) -> Result<ImageGenResult, String>
@@ -751,6 +815,7 @@ where
         entry.preset.scheduler.as_deref(),
         None,
         Some(&Img2Img { init_b64, strength }),
+        loras,
     )
 }
 

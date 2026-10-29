@@ -126,6 +126,10 @@ export interface GenerateOptions {
     seed?: number | null;
     outPath?: string | null;
     bundleName?: string | null;
+    /** Имена файлов LoRA (стем без расширения) из папки LoRA настроек. */
+    loraNames?: string[] | null;
+    /** Общая сила LoRA (0–2, по умолчанию 1.0): действует на все имена из loraNames. */
+    loraStrength?: number | null;
 }
 export declare function generateImage(opts: GenerateOptions): Promise<ImageGenResult>;
 export interface EditOptions extends GenerateOptions {

@@ -28,6 +28,10 @@ pub struct ImageEngineConfig {
     /// Активный каталог-Bar video-бандл (выбор юзера в UI).
     #[serde(default)]
     pub selected_video_bundle: Option<String>,
+    /// Папка LoRA-файлов (NSFW-стек и позы). Явная — из конфига, иначе
+    /// дефолт `image_lora_dir_early()` (`<KingOrchData>/image_loras`).
+    #[serde(default)]
+    pub image_lora_dir: Option<String>,
 }
 
 /// Путь к `app_config.json` хоста (runtime, через AppHandle).
@@ -121,6 +125,11 @@ pub fn default_video_bundle_dir() -> PathBuf {
     data_root().join("video_models")
 }
 
+/// Дефолтная папка LoRA: `<хранилище>/image_loras`.
+pub fn default_image_lora_dir() -> PathBuf {
+    data_root().join("image_loras")
+}
+
 /// Читает image-ключи ДО создания Tauri-приложения (тулы оркестратора, рантайм
 /// без AppHandle). Путь — тот же корень, что и у хоста.
 pub fn load_image_config_early() -> ImageEngineConfig {
@@ -180,6 +189,19 @@ pub fn video_bundle_dir_early() -> PathBuf {
     default_video_bundle_dir()
 }
 
+/// Папка LoRA без AppHandle: явная из конфига, иначе
+/// `<хранилище KingOrchData>/image_loras`. Тулы оркестратора и
+/// tauri-команды используют early-версию (тот же app_config.json хоста).
+pub fn image_lora_dir_early() -> PathBuf {
+    let cfg = load_image_config_early();
+    if let Some(p) = &cfg.image_lora_dir {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    default_image_lora_dir()
+}
+
 /// Читает ТОЛЬКО image-ключи (остальное игнорируется serde по умолчанию).
 pub fn load_image_config(app: &AppHandle) -> ImageEngineConfig {
     if let Ok(data) = fs::read_to_string(get_config_path(app)) {
@@ -210,6 +232,14 @@ pub fn save_image_config(app: &AppHandle, config: &ImageEngineConfig) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Новый ключ image_lora_dir: serde-дефолт — None (пустой JSON читается
+    /// без ошибок, старые конфиги не ломаются).
+    #[test]
+    fn image_lora_dir_key_defaults_to_none() {
+        let cfg: ImageEngineConfig = serde_json::from_str("{}").expect("пустой JSON");
+        assert!(cfg.image_lora_dir.is_none());
+    }
 
     /// Зеркало тестов `data_dir::normalize` хоста: конвенция одна, ломаться
     /// должна одинаково.

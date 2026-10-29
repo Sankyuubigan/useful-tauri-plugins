@@ -28,6 +28,7 @@ Q6_K удалён вердиктом юзера 20.10.2026 (нестабилен
 ```
 --fa --diffusion-fa --auto-fit on --max-vram -1
 --model-args qwen_image_2_1_prefix_cache_type=q8_0
+[--lora-model-dir <KingOrchData>/image_loras]   // только если папка существует
 ```
 
 - **НЕЛЬЗЯ передавать `--offload-to-cpu`.** Он подставляет `--params-backend '*=cpu'`,
@@ -48,6 +49,40 @@ Q6_K удалён вердиктом юзера 20.10.2026 (нестабилен
 композиция выживает) и сохраняет площадь пресета; стороны кратны 32. Пресет
 1024x1024 у портретного референса тянул бы и сдвиг композиции, и лишние шаги.
 
+## LoRA-стек (PRP 29.10.26; F3 29.10.26 — папки по базам)
+
+- Каталог: ключ `image_lora_dir` в `app_config.json` хоста; дефолт
+  `<KingOrchData>/image_loras` (`engine::image_lora_dir_early()`).
+  Спавн передаёт `--lora-model-dir` ТОЛЬКО если папка существует — генерация
+  без лоры обязана работать как раньше.
+- **F3 29.10.26 — папки по базам**: лора привязана к именам/размерностям
+  слоёв конкретного диффузионного бэкбона (Qwen-Image ≠ Krea-2) —
+  кросс-базное применение sd.cpp распознаёт как частичное совпадение тензоров
+  (тихий шум). Поэтому каталог разложен на ПОДПАПКИ базы:
+  `<image_loras>/qwen/`, `<image_loras>/krea2/…`; бандл каталога несёт
+  поле `lora_base` (`ImageBundleEntry.lora_base`). Резолв ищет файлы ТОЛЬКО
+  в подпапке базы активного бандла, спавн передаёт `--lora-model-dir
+  <dir>/<base>` (подпапка создаётся автоматически, если корень есть).
+  `base = None` — легаси-плоский корень (видео-ветка и старые вызовы).
+- Тело `/sdcpp/v1/img_gen`: структурное поле `lora: [{path, multiplier,
+  is_high_noise: false}]`; `path` — имя файла ОТНОСИТЕЛЬНО `--lora-model-dir`
+  (абсолютные пути и пути вне рута сервер отклоняет; теги `<lora:...>` в
+  промпте сервер принципиально не парсит — api.md sd.cpp, «LoRA Rules»).
+  Та же сериализация, что у видео-ветки (`build_payload`).
+- Резолв имён (SSOT): `engine::resolve_lora_specs_for_base(dir,
+  &[(name, multiplier)], base)` → `Vec<LoraSpec>` — per-item сила на каждый
+  элемент (кламп 0..2 внутри ядра); `resolve_lora_names_for_base(dir, names,
+  mult, base)` — тонкая обёртка (одна сила на весь список — легаси-форма).
+  Плоские `resolve_lora_specs`/`resolve_lora_names` = обёртки над `base=None`.
+  Стем-матчинг без учёта регистра, коллизия стема — по приоритету
+  расширений (`.safetensors` первым). Несуществующее имя — честный отказ
+  с перечнем стемов ИМЕННО этой базы; отсутствующая подпапка базы — честный
+  отказ с инструкцией о структуре; пустой список = «без лоры».
+- Лог-контроль: stdout-сканер `engine::scan_lora_applied_line` ловит строку
+  применения «X / N … tensors … applied»; при X < N — `log::warn!` (симптом
+  несовместимости варианта модели, leejet issue #2083). Гейт результата —
+  сама картинка, лог процесс не валит.
+
 ## Preflight
 
 Три вердикта: `fast` (всё в VRAM), `offload` (auto-fit разнесёт веса по RAM/VRAM,
@@ -56,10 +91,13 @@ Q6_K удалён вердиктом юзера 20.10.2026 (нестабилен
 ## Rust API (для хоста/тулов)
 
 ```ignore
-tauri_plugin_image_engine::engine::generate_image_simple(..)?;
-tauri_plugin_image_engine::engine::edit_image_files(..)?; // ref_paths в порядке conditioning
-tauri_plugin_image_engine::engine::engine_dir_early();    // без AppHandle
-tauri_plugin_image_engine::engine::bundle_dir_early();    // без AppHandle
+tauri_plugin_image_engine::engine::generate_image_simple(.., &loras, ..)?; // &[LoraSpec]
+tauri_plugin_image_engine::engine::edit_image_files(.., &loras, ..)?;    // ref_paths в порядке conditioning
+tauri_plugin_image_engine::engine::resolve_lora_specs_for_base(&dir, &[(name.to_string(), 1.0)], Some("qwen"))?; // SSOT-резолв базы, per-item силы
+tauri_plugin_image_engine::engine::resolve_lora_names_for_base(&dir, &names, mult, bundle.lora_base.as_deref())?; // обёртка: одна сила на список
+tauri_plugin_image_engine::engine::image_lora_dir_early();               // без AppHandle
+tauri_plugin_image_engine::engine::engine_dir_early();                   // без AppHandle
+tauri_plugin_image_engine::engine::bundle_dir_early();                   // без AppHandle
 ```
 
 ## JS API

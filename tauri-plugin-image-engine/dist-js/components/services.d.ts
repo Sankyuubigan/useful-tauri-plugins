@@ -44,7 +44,9 @@ export interface BundleService {
     clearCustomDir(): Promise<TabInfo>;
     /** Качать в папку: для «Скачать набор» — после диалога, для «Докачать» — текущая. */
     download(saveDir: string, name?: string | null): Promise<TabInfo>;
-    removeFiles(): Promise<TabInfo>;
+    /** Удалить файлы бандла (null = активный). Вкладка передаёт ВЫБРАННОЕ имя
+     * (PRP 29.10.26 D1) — удаление выбранного не должно трогать активный. */
+    removeFiles(name?: string | null): Promise<TabInfo>;
     /** Текст прогноза памяти (только image: NVML-замер estimate). */
     memoryProbe?(name?: string | null): Promise<string>;
 }

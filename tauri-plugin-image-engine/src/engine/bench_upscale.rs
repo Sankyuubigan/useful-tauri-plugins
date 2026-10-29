@@ -147,6 +147,7 @@ where
                 entry.preset.scheduler.as_deref(),
                 None,
                 Some(&Img2Img { init_b64, strength: st }),
+                &[], // loras: bench_upscale работы с LoRA-стеком не ведёт
             ) {
                 Ok(res) => runs.push(UpscaleRun {
                     prompt_idx: idx,

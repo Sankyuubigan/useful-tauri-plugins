@@ -74,7 +74,9 @@ export interface BundleService {
   clearCustomDir(): Promise<TabInfo>
   /** Качать в папку: для «Скачать набор» — после диалога, для «Докачать» — текущая. */
   download(saveDir: string, name?: string | null): Promise<TabInfo>
-  removeFiles(): Promise<TabInfo>
+  /** Удалить файлы бандла (null = активный). Вкладка передаёт ВЫБРАННОЕ имя
+   * (PRP 29.10.26 D1) — удаление выбранного не должно трогать активный. */
+  removeFiles(name?: string | null): Promise<TabInfo>
   /** Текст прогноза памяти (только image: NVML-замер estimate). */
   memoryProbe?(name?: string | null): Promise<string>
 }
@@ -93,7 +95,7 @@ export const imageService: BundleService = {
   setCustomDir: (path) => setImageBundleDir(path).then((i) => i as unknown as TabInfo),
   clearCustomDir: () => removeImageBundleFromList().then((i) => i as unknown as TabInfo),
   download: (saveDir, name) => downloadImageBundle(saveDir, name).then((i) => i as unknown as TabInfo),
-  removeFiles: () => removeImageBundle().then((i) => i as unknown as TabInfo),
+  removeFiles: (name) => removeImageBundle(name ?? null).then((i) => i as unknown as TabInfo),
   memoryProbe: async (name) => {
     const cur = await getImageBundleInfo(name)
     const info = (await imageSizeInfo(cur.bundle_name)) as TabInfo
@@ -125,7 +127,7 @@ export const videoService: BundleService = {
   setCustomDir: (path) => setVideoBundleDir(path).then((i) => i as unknown as TabInfo),
   clearCustomDir: () => setVideoBundleDir(null as unknown as string).then((i) => i as unknown as TabInfo),
   download: (saveDir, name) => downloadVideoBundle(saveDir, name).then((i) => i as unknown as TabInfo),
-  removeFiles: () => removeVideoBundleFiles().then((i) => i as unknown as TabInfo),
+  removeFiles: (name) => removeVideoBundleFiles(name ?? null).then((i) => i as unknown as TabInfo),
 }
 
 /** Реестр сервисов для декларативного `<image-bundle-tab service="...">`. */

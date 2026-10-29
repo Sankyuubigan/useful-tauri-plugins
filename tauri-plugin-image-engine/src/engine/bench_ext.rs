@@ -145,6 +145,7 @@ where
         entry.preset.scheduler.as_deref(),
         hires,
         None,
+        &[], // loras: bench_ext не использует LoRA-стек
     )?;
     Ok(BenchRun {
         prompt_idx,

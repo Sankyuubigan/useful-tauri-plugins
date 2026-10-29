@@ -220,6 +220,7 @@ mod tests {
                 size_bytes: Some(1_073_741_824),
             }],
             model_args: None,
+            lora_base: None,
             compute_buffers_mb: buffers,
             preset: Default::default(),
             size_gb: None,

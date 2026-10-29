@@ -17,7 +17,7 @@ export const imageService = {
     setCustomDir: (path) => setImageBundleDir(path).then((i) => i),
     clearCustomDir: () => removeImageBundleFromList().then((i) => i),
     download: (saveDir, name) => downloadImageBundle(saveDir, name).then((i) => i),
-    removeFiles: () => removeImageBundle().then((i) => i),
+    removeFiles: (name) => removeImageBundle(name ?? null).then((i) => i),
     memoryProbe: async (name) => {
         const cur = await getImageBundleInfo(name);
         const info = (await imageSizeInfo(cur.bundle_name));
@@ -42,7 +42,7 @@ export const videoService = {
     setCustomDir: (path) => setVideoBundleDir(path).then((i) => i),
     clearCustomDir: () => setVideoBundleDir(null).then((i) => i),
     download: (saveDir, name) => downloadVideoBundle(saveDir, name).then((i) => i),
-    removeFiles: () => removeVideoBundleFiles().then((i) => i),
+    removeFiles: (name) => removeVideoBundleFiles(name ?? null).then((i) => i),
 };
 /** Реестр сервисов для декларативного `<image-bundle-tab service="...">`. */
 export function serviceFor(kind) {

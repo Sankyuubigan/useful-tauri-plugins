@@ -68,6 +68,8 @@ export function generateImage(opts) {
         seed: opts.seed ?? null,
         outPath: opts.outPath ?? null,
         bundleName: opts.bundleName ?? null,
+        loraNames: opts.loraNames ?? null,
+        loraStrength: opts.loraStrength ?? null,
     });
 }
 export function editImage(opts) {
@@ -81,6 +83,8 @@ export function editImage(opts) {
         seed: opts.seed ?? null,
         outPath: opts.outPath ?? null,
         bundleName: opts.bundleName ?? null,
+        loraNames: opts.loraNames ?? null,
+        loraStrength: opts.loraStrength ?? null,
     });
 }
 export function getVideoBundles() {

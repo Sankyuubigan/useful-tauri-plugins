@@ -4,6 +4,7 @@
     "label": "Qwen Image 2.1 Turbo (unsloth Q5_K_S) — 8 шагов, для карт ~8 ГБ",
     "note": "Официальный Turbo-чекпоинт (fine-tune базы: 8 шагов, CFG 1.0, euler). LPIPS unsloth 0.103/083 (mean/held-out) — лучшая точность на байт. Полный функционал: генерация И редактирование (mmproj в наборе; референсы адресуются <image1>, <image2>). Размеры VRAM/RAM — ОЦЕНКИ; в общей папке TE/VAE/mmproj уже скачаны — новый файл только diffusion (~4.2 ГБ).",
     "is_default": true,
+    "lora_base": "qwen",
     "files": [
       {
         "role": "diffusion",
@@ -49,6 +50,7 @@
     "label": "Qwen Image 2.1 Viggle turbo v0.3 (Q4_K_M, LoRA вшита) — 6 шагов",
     "note": "Few-step дистилляция НА БАЗУ: LoRA уже вмержена в diffusion (6 шагов, CFG 1.0, по сигмам Viggle v0.3). Публичных LPIPS нет; слабое место по README Viggle — мелкий текст и сложные правки. Полный функционал: генерация И редактирование (mmproj в наборе; референсы адресуются <image1>, <image2>). Общие файлы не перекачиваются (~4.0 ГБ новых).",
     "is_default": false,
+    "lora_base": "qwen",
     "files": [
       {
         "role": "diffusion",
@@ -94,6 +96,7 @@
     "label": "Krea 2 Turbo (Q4_K_M) — 8 шагов, качество; нужна VRAM 12+ ГБ",
     "note": "Krea-2-Turbo 12.9B (realrebelai, официальный Turbo-чекпоинт: 8 шагов, CFG 1.0, mu=1.15, сигма-сетка из sampling.py krea-ai/krea-2). Полный функционал: генерация И редактирование (Qwen3-VL-4B + mmproj-F16; ref-режим «krea2_edit» — поддержку подтверждает исходник sd.cpp, живой смок-эдит — этап валидации). ВАЖНО: qwen-теги <image1>/<image2> для Krea2 НЕ применяются — референс описывается словами («сделай … у первой картинки на основе второй»). Пик VRAM (замер 20.10.2026, img2img 2048²): ~13.5–14.9 ГБ на 16-гиговой карте. VRAM/RAM — ОЦЕНКИ (weights+буферы): на 8-гб карту НЕ влезает физически (diffusion 7.2 ГБ).",
     "is_default": false,
+    "lora_base": "krea2",
     "files": [
       {
         "role": "diffusion",
@@ -139,6 +142,7 @@
     "label": "Krea 2 Turbo (Q3_K_M) — 8 шагов; единственный квант на ~8 ГБ свободной VRAM",
     "note": "Тот же стек Krea-2-Turbo (12.9B, Turbo: 8 шагов, CFG 1.0, mu=1.15, сигма-сетка официал), diffusion квант Q3_K_M (5.5 ГБ). Полный функционал: генерация И редактирование (Qwen3-VL-4B + mmproj-F16). Статический минимум ~8.5 ГБ (diffusion + буферы 2 ГБ + резерв 1 ГБ) — ВПРИТЫК к 8 ГБ свободных; применимость решит замер (методика §4 docs/BUNDLES.md), после него сюда будет записано фактическое compute_buffers_mb бандла. Порог не подгоняется: если замер скажет «не влезает» — preflight честно откажет (Enforce). VRAM/RAM — ОЦЕНКИ.",
     "is_default": false,
+    "lora_base": "krea2",
     "files": [
       {
         "role": "diffusion",

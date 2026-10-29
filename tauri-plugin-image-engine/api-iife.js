@@ -401,7 +401,7 @@
     setCustomDir: (path) => setImageBundleDir(path).then((i) => i),
     clearCustomDir: () => removeImageBundleFromList().then((i) => i),
     download: (saveDir, name) => downloadImageBundle(saveDir, name).then((i) => i),
-    removeFiles: () => removeImageBundle().then((i) => i),
+    removeFiles: (name) => removeImageBundle(name ?? null).then((i) => i),
     memoryProbe: async (name) => {
       const cur = await getImageBundleInfo(name);
       const info = await imageSizeInfo(cur.bundle_name);
@@ -426,7 +426,7 @@
     setCustomDir: (path) => setVideoBundleDir(path).then((i) => i),
     clearCustomDir: () => setVideoBundleDir(null).then((i) => i),
     download: (saveDir, name) => downloadVideoBundle(saveDir, name).then((i) => i),
-    removeFiles: () => removeVideoBundleFiles().then((i) => i)
+    removeFiles: (name) => removeVideoBundleFiles(name ?? null).then((i) => i)
   };
   function serviceFor(kind) {
     if (kind === "video") return videoService;
@@ -435,13 +435,17 @@
   }
 
   // guest-js/components/bundle-tab.ts
-  var BundleTabElement = class extends HTMLElement {
+  var BundleTabElement = class _BundleTabElement extends HTMLElement {
     constructor() {
       super(...arguments);
       this.busy = false;
       this.appliedBundle = "";
+      /** Имя бандла, выбранного в селекте — источник правды всех операций вкладки
+       * (скачать/докачать/удалить/активировать смотрят на НЕГО, а не на активный;
+       * PRP 29.10.26 D1). Инициализируется активным при первом открытии. */
+      this.selected = "";
       /** Статусы бандлов из последнего refresh (fully_downloaded и файлы) —
-       * источник гейта кнопки «Активировать». */
+       * рендер панели и гейт кнопок читают ТОЛЬКО отсюда (SSOT). */
       this.statuses = /* @__PURE__ */ new Map();
     }
     connectedCallback() {
@@ -462,6 +466,7 @@
           <select id="bundle" style="flex:1; min-width:220px;"><option value="">\u2026</option></select>
           <button id="activate" class="primary" style="display:none;">\u0410\u043A\u0442\u0438\u0432\u0438\u0440\u043E\u0432\u0430\u0442\u044C</button>
         </div>
+        <div class="row"><label>\u0421\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435:</label><span id="state" class="hint" style="flex:1;"></span></div>
         <div class="row"><label>\u041D\u0430\u0431\u043E\u0440:</label><span id="label" class="hint">\u2026</span></div>
         <div id="note" class="hint"></div>
         <ul class="files" id="files"></ul>
@@ -530,6 +535,9 @@
     showProgress(on) {
       this.root.getElementById("progress").style.display = on ? "block" : "none";
     }
+    /** Загрузка данных вкладки: применённый (активный) бандл, статусы всех
+     * бандлов каталога в `statuses` (SSOT), затем рендер панели под ВЫБРАННЫЙ
+     * в селекте бандл. Рендер — отдельный метод, чтобы смена селекта не пережимала весь fetch. */
     async refresh() {
       const svc = this.service;
       if (!svc) return;
@@ -542,6 +550,7 @@
         return;
       }
       this.appliedBundle = info.bundle_name;
+      if (!this.selected) this.selected = info.bundle_name;
       const sel = this.root.getElementById("bundle");
       let entries = [];
       try {
@@ -578,14 +587,75 @@
           sel.appendChild(o);
         }
       }
-      sel.value = info.bundle_name;
-      this.root.getElementById("activate").style.display = "none";
-      this.root.getElementById("label").textContent = `${info.label}${info.fully_downloaded ? "" : " (\u043D\u0435 \u0432\u0441\u0435 \u0444\u0430\u0439\u043B\u044B \u0441\u043A\u0430\u0447\u0430\u043D\u044B)"}`;
-      this.root.getElementById("note").textContent = info.note || "";
+      sel.value = this.selected;
+      await this.renderPanel();
+    }
+    /** Статус бандла по имени: из кеша `statuses` (SSOT), при отсутствии — один
+     * fetch и запись в кеш. Ошибка → undefined (звонящий обязан сказать об этом
+     * юзеру, молчаливых отказов нет). */
+    async statusFor(name) {
+      const svc = this.service;
+      if (!svc) return void 0;
+      const cached = this.statuses.get(name);
+      if (cached) return cached;
+      try {
+        const info = await svc.info(name || null);
+        this.statuses.set(name, info);
+        return info;
+      } catch {
+        return void 0;
+      }
+    }
+    /** Перечень недостающих файлов статуса (строка состояния + подсказка кнопки). */
+    static missingList(st) {
+      return st.files.filter((f) => !f.exists).map((f) => f.filename);
+    }
+    /** Рендер ВСЕЙ панели под выбранный бандл (`this.selected`): строка
+     * состояния, файлы, диск/память, кнопки операций. Контракт PRP 29.10.26 D1:
+     * операции вкладки (скачать/докачать/удалить/активировать) работают с
+     * ВЫБРАННЫМ бандлом; молчаливого скрытия кнопки «Активировать» нет —
+     * недокачанный всегда назван причиной на экране. */
+    async renderPanel() {
+      const svc = this.service;
+      if (!svc) return;
+      const st = await this.statusFor(this.selected);
+      const sel = this.root.getElementById("bundle");
+      const stateEl = this.root.getElementById("state");
+      if (!st) {
+        stateEl.textContent = "\u0441\u0442\u0430\u0442\u0443\u0441 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D (\u0431\u044D\u043A\u0435\u043D\u0434 \u0432\u0435\u0440\u043D\u0443\u043B \u043E\u0448\u0438\u0431\u043A\u0443)";
+        this.root.getElementById("label").textContent = `\u041E\u0448\u0438\u0431\u043A\u0430: \u043D\u0430\u0431\u043E\u0440 \xAB${this.selected}\xBB \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D`;
+        const activateBtn2 = this.root.getElementById("activate");
+        activateBtn2.style.display = this.selected === this.appliedBundle ? "none" : "inline-block";
+        activateBtn2.disabled = true;
+        activateBtn2.title = "\u0421\u0442\u0430\u0442\u0443\u0441 \u0431\u0430\u043D\u0434\u043B\u0430 \u043D\u0435\u0438\u0437\u0432\u0435\u0441\u0442\u0435\u043D \u2014 \u0430\u043A\u0442\u0438\u0432\u0430\u0446\u0438\u044F \u0437\u0430\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u0430\u043D\u0430 \u0432\u043A\u043B\u0430\u0434\u043A\u043E\u0439.";
+        return;
+      }
+      sel.value = this.selected;
+      const missing = _BundleTabElement.missingList(st);
+      if (this.selected === this.appliedBundle) {
+        stateEl.textContent = "\u0430\u043A\u0442\u0438\u0432\u043D\u044B\u0439";
+      } else if (st.fully_downloaded) {
+        stateEl.textContent = "\u0441\u043A\u0430\u0447\u0430\u043D \u043F\u043E\u043B\u043D\u043E\u0441\u0442\u044C\u044E \u2014 \u043C\u043E\u0436\u043D\u043E \u0430\u043A\u0442\u0438\u0432\u0438\u0440\u043E\u0432\u0430\u0442\u044C";
+      } else if (missing.length === st.files.length) {
+        stateEl.textContent = "\u043D\u0435 \u0441\u043A\u0430\u0447\u0430\u043D";
+      } else {
+        stateEl.textContent = `\u0447\u0430\u0441\u0442\u0438\u0447\u043D\u043E: \u0444\u0430\u0439\u043B\u043E\u0432 ${st.files.length - missing.length} \u0438\u0437 ${st.files.length}, \u043D\u0435\u0442: ${missing.join(", ")}`;
+      }
+      const activateBtn = this.root.getElementById("activate");
+      if (this.selected === this.appliedBundle) {
+        activateBtn.style.display = "none";
+      } else {
+        activateBtn.style.display = "inline-block";
+        activateBtn.disabled = !st.fully_downloaded;
+        activateBtn.title = st.fully_downloaded ? "" : `\u041D\u0435\u0434\u043E\u043A\u0430\u0447\u0430\u043D\u043D\u044B\u0435 \u0444\u0430\u0439\u043B\u044B (${missing.length}):
+${missing.join("\n")}`;
+      }
+      this.root.getElementById("label").textContent = `${st.label}${st.fully_downloaded ? "" : " (\u043D\u0435 \u0432\u0441\u0435 \u0444\u0430\u0439\u043B\u044B \u0441\u043A\u0430\u0447\u0430\u043D\u044B)"}`;
+      this.root.getElementById("note").textContent = st.note || "";
       const ul = this.root.getElementById("files");
       ul.innerHTML = "";
       let anyExists = false;
-      for (const f of info.files) {
+      for (const f of st.files) {
         if (f.exists) anyExists = true;
         const li = document.createElement("li");
         li.className = f.exists ? "ok" : "missing";
@@ -593,35 +663,32 @@
         li.textContent = `${f.exists ? "\u2713" : "\u25CB"} ${esc(f.filename)} (${f.role})${size}`;
         ul.appendChild(li);
       }
-      const totalGb = (info.total_bytes / 1024 / 1024 / 1024).toFixed(1);
-      this.root.getElementById("disk").textContent = `~${totalGb} \u0413\u0411 \u043D\u0430 \u0434\u0438\u0441\u043A\u0435 \xB7 \u0441\u0432\u043E\u0431\u043E\u0434\u043D\u043E ${info.free_space_gb} \u0413\u0411`;
-      const memLine = `GPU: ${info.vram_fast_gb ?? "?"} \u0413\u0411 (\u0431\u044B\u0441\u0442\u0440\u043E) / ${info.vram_min_gb ?? "?"} \u0413\u0411 (\u043C\u0438\u043D.) \xB7 RAM \u2265${info.ram_min_gb ?? "?"} \u0413\u0411`;
-      this.root.getElementById("mem").textContent = memLine;
-      this.root.getElementById("dir").textContent = info.save_dir;
+      const totalGb = (st.total_bytes / 1024 / 1024 / 1024).toFixed(1);
+      this.root.getElementById("disk").textContent = `~${totalGb} \u0413\u0411 \u043D\u0430 \u0434\u0438\u0441\u043A\u0435 \xB7 \u0441\u0432\u043E\u0431\u043E\u0434\u043D\u043E ${st.free_space_gb} \u0413\u0411`;
+      this.root.getElementById("mem").textContent = `GPU: ${st.vram_fast_gb ?? "?"} \u0413\u0411 (\u0431\u044B\u0441\u0442\u0440\u043E) / ${st.vram_min_gb ?? "?"} \u0413\u0411 (\u043C\u0438\u043D.) \xB7 RAM \u2265${st.ram_min_gb ?? "?"} \u0413\u0411`;
+      this.root.getElementById("dir").textContent = st.save_dir;
       const dlBtn = this.root.getElementById("download");
-      dlBtn.style.display = info.fully_downloaded ? "none" : "inline-block";
+      dlBtn.style.display = st.fully_downloaded ? "none" : "inline-block";
       dlBtn.textContent = anyExists ? "\u0414\u043E\u043A\u0430\u0447\u0430\u0442\u044C \u0444\u0430\u0439\u043B\u044B" : "\u0421\u043A\u0430\u0447\u0430\u0442\u044C \u043D\u0430\u0431\u043E\u0440";
       const resumeBtn = this.root.getElementById("resume");
-      resumeBtn.style.display = info.fully_downloaded ? "none" : "inline-block";
+      resumeBtn.style.display = st.fully_downloaded ? "none" : "inline-block";
       resumeBtn.disabled = !anyExists;
-      this.root.getElementById("resetDir").style.display = info.save_dir ? "inline-block" : "none";
-      this.root.getElementById("deleteFiles").style.display = info.fully_downloaded ? "inline-block" : "none";
+      this.root.getElementById("resetDir").style.display = st.save_dir ? "inline-block" : "none";
+      this.root.getElementById("deleteFiles").style.display = st.fully_downloaded ? "inline-block" : "none";
       if (svc.memoryProbe) {
         try {
-          this.root.getElementById("mem").textContent = await svc.memoryProbe(info.bundle_name);
+          this.root.getElementById("mem").textContent = await svc.memoryProbe(st.bundle_name);
         } catch {
         }
       }
     }
-    onBundleChange() {
+    /** Смена выбора в селекте: панель целиком перерисовывается под выбранный
+     * бандл (строка состояния, файлы, кнопки) — больше не только «показать/
+     * скрыть кнопку Activate». */
+    async onBundleChange() {
       const sel = this.root.getElementById("bundle");
-      if (sel.value === this.appliedBundle) {
-        this.root.getElementById("activate").style.display = "none";
-        return;
-      }
-      const st = this.statuses.get(sel.value);
-      const activatable = !st || st.fully_downloaded;
-      this.root.getElementById("activate").style.display = activatable ? "inline-block" : "none";
+      this.selected = sel.value;
+      await this.renderPanel();
     }
     async onActivate() {
       const svc = this.service;
@@ -640,24 +707,29 @@
         await this.refresh();
       }
     }
-    /** «Скачать набор»/«Докачать файлы»: качает ВСЕГДА в настроенную папку
-     * (`save_dir` — кастом или дефолт KingOrchData, пустым не бывает — бэкенд
-     * `commands.rs` гарантирует дефолт). Выбор пути — ровно одно место на
-     * вкладке: кнопка «Изменить путь…» (SSOT решений; раньше диалог дублировал
-     * её на «Скачать» и вместо скачивания открывал проводник). Выбранная папка
-     * = ПУЛ для всех наборов (25.10.2026): подпапка `${base}/${bundle_name}`
-     * не создаётся — она порождала перекачку общих файлов. */
+    /** «Скачать набор»/«Докачать файлы»: качает ВЫБРАННЫЙ в селекте бандл
+     * (PRP 29.10.26 D1 — раньше смотрел на активный и кнопка «докачать выбранный»
+     * превращалась в тупик), всегда в настроенную папку (`save_dir` — кастом или
+     * дефолт KingOrchData, пустым не бывает — бэкенд `commands.rs` гарантирует
+     * дефолт). Выбор пути — ровно одно место на вкладке: кнопка «Изменить путь…»
+     * (SSOT решений). Выбранная папка = ПУЛ для всех наборов (25.10.2026):
+     * подпапка `${base}/${bundle_name}` не создаётся — она порождала перекачку
+     * общих файлов. */
     async onDownload() {
       const svc = this.service;
       if (!svc || this.busy) return;
+      const st = await this.statusFor(this.selected);
+      if (!st) {
+        toast("\u0421\u0442\u0430\u0442\u0443\u0441 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u043E\u0433\u043E \u043D\u0430\u0431\u043E\u0440\u0430 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u2014 \u0441\u043A\u0430\u0447\u0438\u0432\u0430\u043D\u0438\u0435 \u043E\u0442\u043C\u0435\u043D\u0435\u043D\u043E.", "error");
+        return;
+      }
       this.busy = true;
       const btn = this.root.getElementById("download");
       btn.disabled = true;
       this.showProgress(true);
       this.setProgress(0, 0);
       try {
-        const cur = await svc.info(null);
-        await svc.download(cur.save_dir, cur.bundle_name);
+        await svc.download(st.save_dir, st.bundle_name);
         notifyBundleChanged();
         toast(`\u041D\u0430\u0431\u043E\u0440 ${svc.kind === "video" ? "\u0432\u0438\u0434\u0435\u043E" : "\u0438\u0437\u043E\u0431\u0440\u0430\u0436\u0435\u043D\u0438\u0439"} \u0441\u043A\u0430\u0447\u0430\u043D!`);
       } catch (e) {
@@ -669,8 +741,9 @@
         await this.refresh();
       }
     }
-    /** «Изменить путь…»: диалог → проверка наличия файлов → set → честный тост
-     * о нехватке. Выбранная папка становится пулом этого набора. */
+    /** «Изменить путь…»: диалог → проверка наличия файлов ВЫБРАННОГО бандла →
+     * set → честный тост о нехватке. Папка задаётся ОДНА для всех бандлов
+     * (общий пул, 25.10.2026); валидация — по выбранному имени (D1). */
     async onChangeDir() {
       const svc = this.service;
       if (!svc || this.busy) return;
@@ -684,7 +757,7 @@
         if (!path) return;
         let valid;
         try {
-          valid = await svc.validateDir(path, null);
+          valid = await svc.validateDir(path, this.selected || null);
         } catch (e) {
           toast(`\u041E\u0448\u0438\u0431\u043A\u0430 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0438 \u043D\u0430\u0431\u043E\u0440\u0430: ${e}`, "error");
           return;
@@ -720,18 +793,24 @@
         await this.refresh();
       }
     }
-    /** Custom-папка (resume): докачать недостающие в текущую папку. */
+    /** Custom-папка (resume): докачать недостающие ВЫБРАННОГО бандла (PRP
+     * 29.10.26 D1 — раньше качал активный, из-за чего выбранный недокачанный
+     * бандл было невозможно догнать). */
     async onResume() {
       const svc = this.service;
       if (!svc || this.busy) return;
+      const st = await this.statusFor(this.selected);
+      if (!st) {
+        toast("\u0421\u0442\u0430\u0442\u0443\u0441 \u0432\u044B\u0431\u0440\u0430\u043D\u043D\u043E\u0433\u043E \u043D\u0430\u0431\u043E\u0440\u0430 \u043D\u0435\u0434\u043E\u0441\u0442\u0443\u043F\u0435\u043D \u2014 \u0434\u043E\u043A\u0430\u0447\u043A\u0430 \u043E\u0442\u043C\u0435\u043D\u0435\u043D\u0430.", "error");
+        return;
+      }
       this.busy = true;
       const btn = this.root.getElementById("resume");
       btn.disabled = true;
       this.showProgress(true);
       this.setProgress(0, 0);
       try {
-        const cur = await svc.info(null);
-        await svc.download(cur.save_dir, cur.bundle_name);
+        await svc.download(st.save_dir, st.bundle_name);
         notifyBundleChanged();
         toast("\u041D\u0435\u0434\u043E\u0441\u0442\u0430\u044E\u0449\u0438\u0435 \u0444\u0430\u0439\u043B\u044B \u043D\u0430\u0431\u043E\u0440\u0430 \u0441\u043A\u0430\u0447\u0430\u043D\u044B!");
       } catch (e) {
@@ -755,7 +834,7 @@
       this.busy = true;
       this.closeModal();
       try {
-        await svc.removeFiles();
+        await svc.removeFiles(this.selected || null);
         notifyBundleChanged();
         toast("\u0424\u0430\u0439\u043B\u044B \u043D\u0430\u0431\u043E\u0440\u0430 \u0443\u0434\u0430\u043B\u0435\u043D\u044B.");
       } catch (e) {
@@ -870,7 +949,9 @@
       cfgScale: opts.cfgScale ?? null,
       seed: opts.seed ?? null,
       outPath: opts.outPath ?? null,
-      bundleName: opts.bundleName ?? null
+      bundleName: opts.bundleName ?? null,
+      loraNames: opts.loraNames ?? null,
+      loraStrength: opts.loraStrength ?? null
     });
   }
   function editImage(opts) {
@@ -883,7 +964,9 @@
       cfgScale: opts.cfgScale ?? null,
       seed: opts.seed ?? null,
       outPath: opts.outPath ?? null,
-      bundleName: opts.bundleName ?? null
+      bundleName: opts.bundleName ?? null,
+      loraNames: opts.loraNames ?? null,
+      loraStrength: opts.loraStrength ?? null
     });
   }
   function getVideoBundles() {

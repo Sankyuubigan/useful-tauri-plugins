@@ -12,6 +12,7 @@ pub mod config;
 pub mod image_engine;
 pub mod krea_compare;
 pub mod krea_view;
+pub mod lora;
 pub mod models_catalog;
 pub mod preflight;
 pub mod process_util;
@@ -29,13 +30,18 @@ pub use bench_upscale::{
 pub use bench_ext::{phash_diff_vs, phash_mean, run_edit_bench, run_hires_bench, PhashRow};
 pub use bench_prompts::{DEFAULT_PROMPTS, EDIT_PROMPTS};
 pub use config::{
-    bundle_dir_early, data_root, default_image_bundle_dir, default_video_bundle_dir,
-    engine_dir_early, load_image_config, load_image_config_early, save_image_config,
-    video_bundle_dir_early, ImageEngineConfig,
+    bundle_dir_early, data_root, default_image_bundle_dir, default_image_lora_dir,
+    default_video_bundle_dir, engine_dir_early, image_lora_dir_early, load_image_config,
+    load_image_config_early, save_image_config, video_bundle_dir_early, ImageEngineConfig,
 };
 pub use image_engine::{
     edit_image_files, generate_image_simple, upscale_image_files, upscale_target_dims, ImageEngine,
     ImageGenResult, Img2Img, UPSCALE_STRENGTH_DEFAULT,
+};
+pub use lora::{
+    clamp_multiplier, lora_spawn_args, lora_spawn_args_for_base, resolve_lora_names,
+    resolve_lora_names_for_base, resolve_lora_specs, resolve_lora_specs_for_base,
+    scan_lora_applied_line, LoraSpec, LORA_MULTIPLIER_MAX,
 };
 pub use krea_compare::{
     default_legs, download_sources, ensure_krea2_weights, krea2_entry, krea2_turbo_sigmas, load_sources,

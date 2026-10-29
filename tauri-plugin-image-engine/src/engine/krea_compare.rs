@@ -122,6 +122,9 @@ pub fn krea2_entry() -> ImageBundleEntry {
         },
         model_args: None,
         compute_buffers_mb: None,
+        // Синтетический бенч-бандл вне каталога продукта — легаси-плоский
+        // каталог лор (None), чтобы не менять поведение бенчей.
+        lora_base: None,
         size_gb: None,
         vram_fast_gb: None,
         vram_min_gb: None,
@@ -417,6 +420,7 @@ where
                     init_b64,
                     strength,
                 }),
+                &[], // loras: krea_compare — метрики без LoRA-стека
             ) {
                 Ok(res) => cells.push(KreaCell {
                     source_id: src.id.clone(),

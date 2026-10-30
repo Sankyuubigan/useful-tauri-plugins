@@ -107,6 +107,8 @@ pub fn krea2_entry() -> ImageBundleEntry {
                 filename: f.filename.to_string(),
                 download_url: f.url.to_string(),
                 size_bytes: Some(f.size_bytes),
+                modes: Vec::new(),
+                is_default: false,
             })
             .collect(),
         preset: ImagePreset {

@@ -141,18 +141,43 @@ pub fn default_lora_dir() -> PathBuf {
     data_root().join("loras")
 }
 
+/// Миграция имён видео-бандлов (30.10.26): два q3k-бандла (fl2va/ref2va) слиты
+/// в один uni-бандл с ДВУМЯ diffusion-файлами. Старые имена в
+/// `selected_video_bundle` маппятся read-time в ОБОИХ загрузчиках (SSOT —
+/// единая функция): иначе юзер остался бы с «мертвым» выбором, который дал бы
+/// честный отказ «бандл отсутствует в каталоге» на каждый vid_gen.
+fn normalize_selected_video_bundle(cfg: &mut ImageEngineConfig) {
+    const LEGACY: [&str; 2] = [
+        "minimax_h3_fl2va_pruned-q3k",
+        "minimax_h3_ref2va_pruned-q3k",
+    ];
+    const MERGED: &str = "minimax_h3_uni-q3k";
+    if let Some(sel) = cfg.selected_video_bundle.as_mut() {
+        if LEGACY.contains(&sel.as_str()) {
+            log::info!(
+                "[image-engine] selected_video_bundle «{}» слит в «{}» — мигрирую",
+                sel,
+                MERGED
+            );
+            *sel = MERGED.to_string();
+        }
+    }
+}
+
 /// Читает image-ключи ДО создания Tauri-приложения (тулы оркестратора, рантайм
 /// без AppHandle). Путь — тот же корень, что и у хоста.
 pub fn load_image_config_early() -> ImageEngineConfig {
     let path = ko_json_store::roots::app_dir(HOST_APP_IDENTIFIER, "").join("app_config.json");
-    match ko_json_store::read_text(&path) {
+    let mut cfg = match ko_json_store::read_text(&path) {
         Ok(Some(data)) => serde_json::from_str(&data).unwrap_or_default(),
         Ok(None) => ImageEngineConfig::default(),
         Err(e) => {
             log::warn!("[image-engine] конфиг {} не прочитан ({}): беру значения по умолчанию", path.display(), e);
             ImageEngineConfig::default()
         }
-    }
+    };
+    normalize_selected_video_bundle(&mut cfg);
+    cfg
 }
 
 /// Папка движка без AppHandle: явная из конфига, иначе `<exe>/sdcpp`.
@@ -295,11 +320,13 @@ pub fn video_lora_dir_early() -> PathBuf {
 
 /// Читает ТОЛЬКО image-ключи (остальное игнорируется serde по умолчанию).
 pub fn load_image_config(app: &AppHandle) -> ImageEngineConfig {
-    if let Ok(data) = fs::read_to_string(get_config_path(app)) {
+    let mut cfg = if let Ok(data) = fs::read_to_string(get_config_path(app)) {
         serde_json::from_str(&data).unwrap_or_default()
     } else {
         ImageEngineConfig::default()
-    }
+    };
+    normalize_selected_video_bundle(&mut cfg);
+    cfg
 }
 
 /// Сохраняет image-ключи field-preserving-merge.
@@ -335,6 +362,38 @@ mod tests {
         )
         .expect("легаси-ключи не ломают чтение");
         assert!(legacy.lora_dir.is_none());
+    }
+
+    /// Миграция 30.10.26: старые имена q3k-бандлов (fl2va/ref2va) в
+    /// selected_video_bundle маппятся на merged uni-бандл; прочие имена
+    /// (q4km, отсутствующие) не трогаются.
+    #[test]
+    fn selected_video_bundle_legacy_names_map_to_uni() {
+        for legacy in [
+            "minimax_h3_fl2va_pruned-q3k",
+            "minimax_h3_ref2va_pruned-q3k",
+        ] {
+            let mut cfg = ImageEngineConfig {
+                selected_video_bundle: Some(legacy.to_string()),
+                ..ImageEngineConfig::default()
+            };
+            super::normalize_selected_video_bundle(&mut cfg);
+            assert_eq!(
+                cfg.selected_video_bundle.as_deref(),
+                Some("minimax_h3_uni-q3k"),
+                "{} → uni",
+                legacy
+            );
+        }
+        // Не-легаси имена не трогаются.
+        for keep in [None, Some("minimax_h3_fl2va_pruned-q4km".to_string()), Some("что-то-чужое".to_string())] {
+            let mut cfg = ImageEngineConfig {
+                selected_video_bundle: keep.clone(),
+                ..ImageEngineConfig::default()
+            };
+            super::normalize_selected_video_bundle(&mut cfg);
+            assert_eq!(cfg.selected_video_bundle, keep, "не-легаси имя сохранено");
+        }
     }
 
     /// Миграция: image_loras/* и video_loras/* переезжают в loras/*,

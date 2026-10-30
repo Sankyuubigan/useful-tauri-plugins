@@ -978,6 +978,8 @@ mod tests {
                 filename: "synthetic.gguf".to_string(),
                 download_url: String::new(),
                 size_bytes: None,
+                modes: Vec::new(),
+                is_default: false,
             }],
             model_args: None,
             compute_buffers_mb: None,

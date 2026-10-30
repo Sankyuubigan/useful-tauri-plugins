@@ -1227,7 +1227,10 @@ pub async fn generate_video(
         // Единовременность media-генерации (gen_guard.rs): панель плагина не
         // проходит через host-тула, поэтому guard ставится здесь тоже.
         let _guard = engine::MediaGenGuard::acquire()?;
-        let eng = engine::VideoEngine::new(&edir, &bdir, &entry, variant.as_deref(), log_cb)?;
+        // Режим — из заполненных полей запроса: он выбирает diffusion-файл
+        // uni-бандла при спавне (resolve_diffusion_file).
+        let mode = req.mode()?;
+        let eng = engine::VideoEngine::new(&edir, &bdir, &entry, mode.as_str(), variant.as_deref(), log_cb)?;
         eng.generate(&req, &out, None, log_cb)
     })
     .await

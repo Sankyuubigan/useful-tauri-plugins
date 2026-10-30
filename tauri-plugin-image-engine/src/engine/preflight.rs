@@ -218,6 +218,8 @@ mod tests {
                 download_url: String::new(),
                 // 1 Гиби = 1 073 741 824 байта = ровно 1024 МБ.
                 size_bytes: Some(1_073_741_824),
+                modes: Vec::new(),
+                is_default: false,
             }],
             model_args: None,
             lora_base: None,

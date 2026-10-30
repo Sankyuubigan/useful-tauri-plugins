@@ -12,7 +12,8 @@ use crate::engine::lora::{clamp_multiplier, LORA_MULTIPLIER_MAX};
 /// Один файл бандла.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct BundleFile {
-    /// Роль: "diffusion" | "vae" | "llm" | "mmproj".
+    /// Роль: "diffusion" | "vae" | "llm" | "mmproj" (видео-каталог добавляет
+    /// "audio_vae" | "lora_draft").
     pub role: String,
     /// Имя файла на диске (в папке бандла).
     pub filename: String,
@@ -21,6 +22,20 @@ pub struct BundleFile {
     /// Точный размер в байтах (для прогресса и проверки места).
     #[serde(default)]
     pub size_bytes: Option<u64>,
+    /// Видео-каталог, роль "diffusion": режимы vid_gen, которые поддерживает
+    /// РОВНО этот diffusion-файл ("t2va"|"i2va"|"fl2va"|"ref2va"). Пусто у
+    /// одиночного diffusion-файла — его возможности описывает `entry.modes`.
+    /// Два diffusion-файла в бандле («uni»: fl2va-стек + ref2va-стек) обязаны
+    /// объявить modes КАЖДЫЙ — выбор файла при спавне идёт по режиму запроса
+    /// (`resolve_diffusion_file`).
+    #[serde(default)]
+    pub modes: Vec<String>,
+    /// Видео-каталог, роль "diffusion" при НЕСКОЛЬКИХ diffusion-файлах:
+    /// ровно один обязан быть дефолтным — детерминированный tie-break для
+    /// режимов, покрытых несколькими файлами (у uni-бандла t2va умеют оба;
+    /// дефолт = fl2va-файл, семейный дефолт стека).
+    #[serde(default)]
+    pub is_default: bool,
 }
 
 /// Дефолтный пресет генерации бандла (единственное место правды).
@@ -570,7 +585,13 @@ pub fn validate_video_entry(entry: &VideoBundleEntry) -> Result<(), String> {
             return Err(format!("нет обязательной роли «{}»", role));
         }
     }
+    // Дубль роли запрещён для ВСЕХ ролей кроме "diffusion": у diffusion дубль —
+    // легальная форма uni-бандла (fl2va-файл + ref2va-файл в одном наборе),
+    // режим→файл карта проверяется ниже (validate_diffusion_mode_map).
     for f in &entry.files {
+        if f.role == "diffusion" {
+            continue;
+        }
         let count = entry.files.iter().filter(|g| g.role == f.role).count();
         if count > 1 {
             return Err(format!("роль «{}» задублирована ({} файла)", f.role, count));
@@ -579,7 +600,8 @@ pub fn validate_video_entry(entry: &VideoBundleEntry) -> Result<(), String> {
     // modes — декларативный гейт режимов тула: пустой список ломает i2va-гейт
     // (запросы картинка→видео не смогут отличить поддержанный бандл от
     // неподдержанного), "t2va" обязателен — видео-бандл, не умеющий t2va,
-    // не имеет смысла.
+    // не имеет смысла. Эти базовые проверки идут ДО карты режим→файл:
+    // сначала синтаксис entry.modes, потом покрытие файлами.
     if entry.modes.is_empty() {
         return Err("пустой modes — список поддерживаемых режимов vid_gen обязан быть объявлен".to_string());
     }
@@ -595,6 +617,7 @@ pub fn validate_video_entry(entry: &VideoBundleEntry) -> Result<(), String> {
             ));
         }
     }
+    validate_diffusion_mode_map(entry)?;
     if entry.preset.steps_draft == 0 {
         return Err("steps_draft = 0".to_string());
     }
@@ -667,6 +690,137 @@ pub fn validate_video_entry(entry: &VideoBundleEntry) -> Result<(), String> {
         seen_policies.push(&v.policy);
     }
     Ok(())
+}
+
+/// Карта «режим → diffusion-файл» (uni-бандлы с несколькими diffusion-файлами).
+/// Правила делают неоднозначный выбор файла структурно невозможным:
+/// 1) ровно один diffusion-файл — тривиально: объявленные у файла modes
+///    обязаны совпадать с entry.modes (пустые modes = легаси, возможности
+///    файла описывает entry.modes целиком);
+/// 2) несколько diffusion-файлов — КАЖДЫЙ обязан объявить непустой modes,
+///    ровно один помечен is_default, объединение modes == entry.modes
+///    (иначе гейт тула разъезжается с реальными возможностями файлов).
+pub fn validate_diffusion_mode_map(entry: &VideoBundleEntry) -> Result<(), String> {
+    let diffusion: Vec<&BundleFile> = entry
+        .files
+        .iter()
+        .filter(|f| f.role == "diffusion")
+        .collect();
+    if diffusion.len() <= 1 {
+        if let Some(f) = diffusion.first() {
+            if !f.modes.is_empty() && !modes_equal(&f.modes, &entry.modes) {
+                return Err(format!(
+                    "diffusion-файл «{}» объявляет modes [{}], не совпадающие с modes бандла [{}] — \
+                     единственный diffusion-файл обязан уметь всё, что заявляет бандл",
+                    f.filename,
+                    f.modes.join(", "),
+                    entry.modes.join(", ")
+                ));
+            }
+        }
+        return Ok(());
+    }
+    for f in &diffusion {
+        if f.modes.is_empty() {
+            return Err(format!(
+                "у бандла {} diffusion-файла, но «{}» не объявил modes — \
+                 выбор файла по режиму был бы неоднозначным",
+                diffusion.len(),
+                f.filename
+            ));
+        }
+        for m in &f.modes {
+            if !entry.modes.contains(m) {
+                return Err(format!(
+                    "diffusion-файл «{}» объявляет режим «{}», отсутствующий в modes бандла [{}]",
+                    f.filename,
+                    m,
+                    entry.modes.join(", ")
+                ));
+            }
+        }
+    }
+    let defaults = diffusion.iter().filter(|f| f.is_default).count();
+    if defaults != 1 {
+        return Err(format!(
+            "у бандла {} diffusion-файла, is_default обязан быть ровно у одного (сейчас: {}) — \
+             иначе tie-break пересекающихся режимов (t2va) недетерминирован",
+            diffusion.len(),
+            defaults
+        ));
+    }
+    for m in &entry.modes {
+        if !diffusion.iter().any(|f| f.modes.contains(m)) {
+            return Err(format!(
+                "режим «{}» из modes бандла не покрыт ни одним diffusion-файлом — \
+                 гейт тула обещал больше, чем файлы умеют",
+                m
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn modes_equal(a: &[String], b: &[String]) -> bool {
+    a.len() == b.len() && a.iter().all(|m| b.contains(m))
+}
+
+/// Diffusion-файл для режима vid_gen: среди role="diffusion" берётся файл,
+/// чьи modes содержат режим; несколько претендентов (пересечение вроде t2va
+/// у uni-бандла) → детерминированно файл с is_default (валидация гарантирует
+/// единственность). Отказ честный: перечисляет файлы и их modes, не молчит.
+pub fn resolve_diffusion_file<'a>(
+    entry: &'a VideoBundleEntry,
+    mode: &str,
+) -> Result<&'a BundleFile, String> {
+    let diffusion: Vec<&BundleFile> = entry
+        .files
+        .iter()
+        .filter(|f| f.role == "diffusion")
+        .collect();
+    let matching: Vec<&BundleFile> = diffusion
+        .iter()
+        .copied()
+        .filter(|f| f.modes.iter().any(|m| m == mode))
+        .collect();
+    match matching.len() {
+        1 => Ok(matching[0]),
+        0 => {
+            // Легаси-одиночка без modes умеет всё из entry.modes (гейт тула
+            // уже отфильтровал непокрытые режимы).
+            if diffusion.len() == 1 && diffusion[0].modes.is_empty() {
+                return Ok(diffusion[0]);
+            }
+            let listed: Vec<String> = diffusion
+                .iter()
+                .map(|f| {
+                    if f.modes.is_empty() {
+                        format!("{}: modes не объявлены", f.filename)
+                    } else {
+                        format!("{}: {}", f.filename, f.modes.join(","))
+                    }
+                })
+                .collect();
+            Err(format!(
+                "ни один diffusion-файл бандла «{}» не поддерживает режим «{}» ({}). \
+                 Возьмите бандл с нужным режимом: Настройки → «Модели ImageGEN».",
+                entry.name,
+                mode,
+                listed.join("; ")
+            ))
+        }
+        _ => match matching.iter().copied().find(|f| f.is_default) {
+            Some(def) => Ok(def),
+            // Валидация делает ветку недостижимой; молчать и здесь запрещено (§2.2).
+            None => Err(format!(
+                "режим «{}» поддерживают {} diffusion-файлов бандла «{}» без is_default — \
+                 выбор неоднозначен (дефект каталога)",
+                mode,
+                matching.len(),
+                entry.name
+            )),
+        },
+    }
 }
 
 /// Адаптивный выбор placement-варианта по свободной ОЗУ: среди вариантов,
@@ -1078,8 +1232,8 @@ mod video_tests {
         let catalog = load_video_catalog();
         assert_eq!(
             catalog.len(),
-            3,
-            "PRP 21.10.26: 3 стартовых видео-бандла (Q4_K + Q3_K + Ref2VA Q3_K), got {}",
+            2,
+            "30.10.26: два видео-бандла (Q4_K fl2va + uni Q3_K с двумя diffusion-файлами), got {}",
             catalog.len()
         );
         let def = default_video_bundle_entry().expect("нет видео-бандла по умолчанию");
@@ -1175,15 +1329,16 @@ mod video_tests {
                 .unwrap_or_else(|| panic!("нет бандла {}", name))
         };
         let q4km = by("minimax_h3_fl2va_pruned-q4km");
-        let q3k = by("minimax_h3_fl2va_pruned-q3k");
-        let ref2va = by("minimax_h3_ref2va_pruned-q3k");
-        // Классы памяти: порог Q4 К выше порога Q3_K (авто-выбор по vram_min_gb).
+        let uni = by("minimax_h3_uni-q3k");
+        // Классы памяти: порог Q4 К выше порога uni-Q3_K (авто-выбор по vram_min_gb).
         assert!(
-            q4km.vram_min_gb.unwrap_or(0.0) > q3k.vram_min_gb.unwrap_or(0.0),
+            q4km.vram_min_gb.unwrap_or(0.0) > uni.vram_min_gb.unwrap_or(0.0),
             "Q4_K обязан требовать больше VRAM, чем Q3_K"
         );
-        // Полный бандл — 4 файла + lora_draft (Turbo-LoRA DMAD, бенч 26.10.26).
+        // q4km — 4 файла + lora_draft (Turbo-LoRA DMAD, бенч 26.10.26).
         assert_eq!(q4km.files.len(), 5);
+        // uni — 4 файла + lora_draft + ВТОРОЙ diffusion (fl2va + ref2va).
+        assert_eq!(uni.files.len(), 6);
         let diff = |e: &VideoBundleEntry, role: &str| {
             e.files
                 .iter()
@@ -1192,21 +1347,24 @@ mod video_tests {
                 .unwrap_or_else(|| panic!("нет роли {} у {}", role, e.name))
         };
         assert_eq!(diff(&q4km, "diffusion").size_bytes, Some(11420663904));
-        assert_eq!(diff(&q3k, "diffusion").size_bytes, Some(8759328864));
-        assert_eq!(diff(&ref2va, "diffusion").size_bytes, Some(8716105824));
-        for e in [&q4km, &q3k, &ref2va] {
+        let uni_diffusions: Vec<&BundleFile> = uni.files.iter().filter(|f| f.role == "diffusion").collect();
+        assert_eq!(uni_diffusions.len(), 2, "uni-бандл несёт fl2va + ref2va diffusion");
+        assert!(uni_diffusions.iter().any(|f| f.filename == "minimax_h3_fl2va_pruned-Q3_K.gguf" && f.size_bytes == Some(8759328864)));
+        assert!(uni_diffusions.iter().any(|f| f.filename == "minimax_h3_ref2va_pruned-Q3_K.gguf" && f.size_bytes == Some(8716105824)));
+        for e in [&q4km, &uni] {
             assert_eq!(diff(e, "llm").size_bytes, Some(13102161024));
             assert_eq!(diff(e, "vae").size_bytes, Some(5207808496));
             assert_eq!(diff(e, "audio_vae").size_bytes, Some(605254808));
         }
         // Суммарный размер на диск — по тем же точным байтам.
         assert!(video_bundle_disk_bytes(&q4km) > 30_000_000_000, "q4km ≈ 30.3 ГБ");
+        assert!(video_bundle_disk_bytes(&uni) > 37_000_000_000, "uni ≈ 37.8 ГБ (два diffusion)");
     }
 
     #[test]
     fn video_invalid_entries_are_rejected_by_validator() {
         // Опечатка без diffusion — отказ с именем роли.
-        let mut bad = video_bundle_by_name("minimax_h3_fl2va_pruned-q3k").expect("бандл");
+        let mut bad = video_bundle_by_name("minimax_h3_uni-q3k").expect("бандл");
         bad.files.retain(|f| f.role != "diffusion");
         let msg = validate_video_entry(&bad).unwrap_err().to_string();
         assert!(msg.contains("diffusion"), "валидатор должен называть роль, got: {}", msg);
@@ -1217,6 +1375,8 @@ mod video_tests {
             filename: "minimax_h3_fl2va_pruned-Q3_K.gguf".to_string(),
             download_url: "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/minimax_h3_fl2va_pruned-Q3_K.gguf?download=true".to_string(),
             size_bytes: Some(8759328864),
+            modes: Vec::new(),
+            is_default: false,
         });
         bad2.preset.steps_draft = 10;
         bad2.preset.steps_draft_nolora = 6;
@@ -1226,6 +1386,7 @@ mod video_tests {
 
     /// modes — декларативный гейт режимов тула (Шаг 3, 27.10.26): пустой
     /// список, отсутствие t2va и неизвестный режим — отказ валидатора.
+    /// 30.10.26: ref2va-режим живёт в uni-бандле рядом с i2va/fl2va.
     #[test]
     fn video_modes_are_validated() {
         let catalog = load_video_catalog();
@@ -1238,7 +1399,7 @@ mod video_tests {
                 e.modes
             );
         }
-        // fl2va-диффузион умеет кадры, ref2va — только референсы (BUNDLES.md §9).
+        // fl2va-диффузион q4km умеет кадры; uni покрывает все четыре режима.
         let by = |name: &str| {
             catalog
                 .iter()
@@ -1249,15 +1410,18 @@ mod video_tests {
         let q4km_modes = by("minimax_h3_fl2va_pruned-q4km");
         assert!(q4km_modes.contains(&"i2va".to_string()), "fl2va-бандл умеет i2va");
         assert!(q4km_modes.contains(&"fl2va".to_string()));
-        let ref_modes = by("minimax_h3_ref2va_pruned-q3k");
-        assert!(
-            !ref_modes.contains(&"i2va".to_string()),
-            "ref2va-диффузион не заявляет i2va до замера (§6 недоказанное)"
-        );
-        assert!(ref_modes.contains(&"ref2va".to_string()));
+        let uni_modes = by("minimax_h3_uni-q3k");
+        for m in ["t2va", "i2va", "fl2va", "ref2va"] {
+            assert!(
+                uni_modes.contains(&m.to_string()),
+                "uni-бандл обязан покрывать {}, got {:?}",
+                m,
+                uni_modes
+            );
+        }
 
         // Битые modes — честный отказ валидатора.
-        let mut bad = video_bundle_by_name("minimax_h3_fl2va_pruned-q3k").expect("бандл");
+        let mut bad = video_bundle_by_name("minimax_h3_uni-q3k").expect("бандл");
         bad.modes.clear();
         assert!(validate_video_entry(&bad).unwrap_err().contains("пустой modes"));
         bad.modes = vec!["i2va".to_string()];
@@ -1266,11 +1430,71 @@ mod video_tests {
         assert!(validate_video_entry(&bad).unwrap_err().contains("hypervideo"));
     }
 
+    /// Карта «режим → diffusion-файл» uni-бандла (30.10.26): resolve по всем
+    /// четырём режимам, честные отказы валидатора на битые карты.
+    #[test]
+    fn uni_bundle_resolves_diffusion_file_by_mode() {
+        let uni = video_bundle_by_name("minimax_h3_uni-q3k").expect("uni-бандл в каталоге");
+        // fl2va-файл (is_default): t2va-пересечение обоих файлов → дефолт,
+        // i2va/fl2va — только он.
+        let fl2va = resolve_diffusion_file(&uni, "t2va").expect("t2va");
+        assert_eq!(fl2va.filename, "minimax_h3_fl2va_pruned-Q3_K.gguf", "t2va на пересечении → is_default файл");
+        assert!(fl2va.is_default);
+        for m in ["i2va", "fl2va"] {
+            let f = resolve_diffusion_file(&uni, m).expect(m);
+            assert_eq!(f.filename, "minimax_h3_fl2va_pruned-Q3_K.gguf", "{} → fl2va-файл", m);
+        }
+        // ref2va — второй файл.
+        let ref_f = resolve_diffusion_file(&uni, "ref2va").expect("ref2va");
+        assert_eq!(ref_f.filename, "minimax_h3_ref2va_pruned-Q3_K.gguf");
+        assert!(!ref_f.is_default);
+
+        // Легаси-одиночка без modes: любой режим из entry.modes резолвится в файл.
+        let q4km = video_bundle_by_name("minimax_h3_fl2va_pruned-q4km").expect("бандл");
+        assert!(resolve_diffusion_file(&q4km, "t2va").is_ok());
+        assert!(resolve_diffusion_file(&q4km, "ref2va").is_ok(), "одиночный файл без modes — гейт тула, не resolve");
+
+        // Битые карты — честный отказ валидатора.
+        // 1) третий diffusion без modes — выбор был бы неоднозначным.
+        let mut no_modes = uni.clone();
+        no_modes.files.push(BundleFile {
+            role: "diffusion".to_string(),
+            filename: "third.gguf".to_string(),
+            download_url: "https://example.com/third.gguf".to_string(),
+            size_bytes: Some(1),
+            modes: Vec::new(),
+            is_default: false,
+        });
+        let msg = validate_video_entry(&no_modes).unwrap_err();
+        assert!(msg.contains("не объявил modes"), "got: {}", msg);
+        // 2) ни у одного нет is_default — tie-break недетерминирован.
+        let mut no_default = uni.clone();
+        for f in no_default.files.iter_mut().filter(|f| f.role == "diffusion") {
+            f.is_default = false;
+        }
+        let msg2 = validate_video_entry(&no_default).unwrap_err();
+        assert!(msg2.contains("is_default"), "got: {}", msg2);
+        // 3) ref2va-файл разучился ref2va — union ≠ entry.modes, гейт обещал лишнее.
+        let mut uncovered = uni.clone();
+        for f in uncovered.files.iter_mut().filter(|f| f.role == "diffusion") {
+            f.modes.retain(|m| m != "ref2va");
+        }
+        let msg3 = validate_video_entry(&uncovered).unwrap_err();
+        assert!(msg3.contains("не покрыт"), "got: {}", msg3);
+        // 4) одиночный diffusion с modes ≠ entry.modes — файл обязан уметь всё заявленное.
+        let mut mismatch = video_bundle_by_name("minimax_h3_fl2va_pruned-q4km").expect("бандл");
+        for f in mismatch.files.iter_mut().filter(|f| f.role == "diffusion") {
+            f.modes = vec!["t2va".to_string()];
+        }
+        let msg4 = validate_video_entry(&mismatch).unwrap_err();
+        assert!(msg4.contains("не совпадающие с modes бандла"), "got: {}", msg4);
+    }
+
     // ─────────── placement-лестница (адаптивное размещение, 29.10.26) ───────────
 
     #[test]
     fn placement_ladder_validation_rejects_broken_variants() {
-        let base = video_bundle_by_name("minimax_h3_fl2va_pruned-q3k").expect("бандл");
+        let base = video_bundle_by_name("minimax_h3_uni-q3k").expect("бандл");
         let mk = |policy: &str, flags: &str, ram: f32| VideoPlacement {
             policy: policy.to_string(),
             label: String::new(),
@@ -1343,16 +1567,16 @@ mod video_tests {
             q4km.spawn_flags.is_none(),
             "у q4km не должно быть легаси spawn_flags рядом с лестницей"
         );
-        // Q3_K-бандлы: легаси-режим без лестницы (своего замера нет).
-        for name in ["minimax_h3_fl2va_pruned-q3k", "minimax_h3_ref2va_pruned-q3k"] {
-            let e = catalog.iter().find(|e| e.name == name).expect(name);
-            assert!(e.placement.is_empty(), "{}: без своего замера лестницы нет", name);
-            assert!(
-                e.spawn_flags.as_deref().unwrap_or_default().contains("--offload-to-cpu"),
-                "{}: легаси offload сохранён",
-                name
-            );
-        }
+        // uni-Q3_K: легаси-режим без лестницы (своего замера нет).
+        let uni = catalog
+            .iter()
+            .find(|e| e.name == "minimax_h3_uni-q3k")
+            .expect("uni в каталоге");
+        assert!(uni.placement.is_empty(), "uni: без своего замера лестницы нет");
+        assert!(
+            uni.spawn_flags.as_deref().unwrap_or_default().contains("--offload-to-cpu"),
+            "uni: легаси offload сохранён"
+        );
     }
 
     // ─────────── Инвариант пула: одно имя файла = один контент ───────────

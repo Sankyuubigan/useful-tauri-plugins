@@ -397,12 +397,16 @@ mod tests {
                 filename: "shared-llm.gguf".into(),
                 download_url: "u".into(),
                 size_bytes: Some(1),
+                modes: Vec::new(),
+                is_default: false,
             },
             crate::engine::models_catalog::BundleFile {
                 role: "diffusion".into(),
                 filename: "own-diffusion.gguf".into(),
                 download_url: "u".into(),
                 size_bytes: Some(2),
+                modes: Vec::new(),
+                is_default: false,
             },
         ];
         let others = set_of(&["shared-llm.gguf"]);

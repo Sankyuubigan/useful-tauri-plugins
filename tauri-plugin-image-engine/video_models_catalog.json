@@ -76,18 +76,27 @@
     ]
   },
   {
-    "name": "minimax_h3_fl2va_pruned-q3k",
+    "name": "minimax_h3_uni-q3k",
     "lora_base": "minimax_h3",
-    "label": "MiniMax H3 FL2VA pruned (Q3_K) — видео+речь; для карт ~8 ГБ",
+    "label": "MiniMax H3 Universal (Q3_K) — видео+речь, все режимы (текст/кадр/флип/референсы); карты ~8 ГБ",
     "spawn_flags": "--offload-to-cpu --rng cpu",
-    "note": "Класс 8 ГБ: diffusion Q3_K (8.16 ГиБ) + vae_tiling + offload. Тот же стек, что у Q4_K: TE qwen3vl_32b Q2_K_M (12.2 ГиБ), video VAE fp16 (4.85 ГиБ), audio VAE fp32 (605 МБ). Предупреждение честно: Q3_K квант мягче по качеству, чем Q4_K; точную дельту покажет бенч Draft/final. Шаги: draft 4 (Turbo-LoRA DMAD; без LoRA-файла — 6), final 20; турбо-точка lcm/simple/shift 12 (поля turbo_* пресета), euler/discrete — final и draft-без-LoRA. Turbo-LoRA DMAD 4-step подтверждена бенчем 26.10.26 (замер на q4km, 130.8 с против 505.6 с у final, 3.87×); для q3k-бандла замеров нет — файл LoRA общий, см. tasks/26.10.26 Ускорение видео H3 — turbo-LoRA бенч (Фаза 0-1).md. Preflight VRAM/RAM — ОЦЕНКИ.",
+    "note": "Класс 8 ГБ, ВСЕ режимы vid_gen в одном бандле: diffusion-файл выбирается при спавне по режиму запроса (движок per-request spawn — переключение бесплатное, в памяти всегда ровно один diffusion). fl2va-файл (is_default, 8.16 ГиБ): text→video, картинка→video (init), первый+последний кадр. ref2va-файл (8.12 ГиБ): мультимодальные референсы — до 3 картинок (структурный лимит тула; по субтитрам роликов референсов >6 модель ломает следование), аудио-референс тембра голоса, консистентное лицо по character sheet. t2va идёт на fl2va-файле (семейный дефолт); равнозначность двух файлов для t2va бенчем не подтверждена — доказательств нет. Русская речь — нативно (prompt). Шаги: draft 4 (Turbo-LoRA DMAD; без LoRA-файла — 6, fallback-поле steps_draft_nolora), final 20; турбо-точка lcm/simple/shift 12 (поля turbo_* пресета), euler/discrete — final и draft-без-LoRA. Turbo-LoRA DMAD 4-step подтверждена бенчем 26.10.26 (замер на q4km: 130.8 с против 505.6 с у final, 3.87×); для Q3_K замеров нет — файл LoRA общий, см. tasks/26.10.26 Ускорение видео H3 — turbo-LoRA бенч (Фаза 0-1).md. Реф-советы: character sheet 4-view сильно помогает; видео-референсы авторы роликов не советуют (медленно, плохо). Остальной стек общий с Q4_K: TE qwen3vl_32b Q2_K_M (12.2 ГиБ), video VAE fp16 (4.85 ГиБ), audio VAE fp32 (605 МБ). Q3_K квант мягче по качеству, чем Q4_K. Preflight VRAM/RAM — ОЦЕНКИ.",
     "is_default": false,
     "files": [
       {
         "role": "diffusion",
         "filename": "minimax_h3_fl2va_pruned-Q3_K.gguf",
         "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/minimax_h3_fl2va_pruned-Q3_K.gguf?download=true",
-        "size_bytes": 8759328864
+        "size_bytes": 8759328864,
+        "modes": ["t2va", "i2va", "fl2va"],
+        "is_default": true
+      },
+      {
+        "role": "diffusion",
+        "filename": "minimax_h3_ref2va_pruned-Q3_K.gguf",
+        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/minimax_h3_ref2va_pruned-Q3_K.gguf?download=true",
+        "size_bytes": 8716105824,
+        "modes": ["t2va", "ref2va"]
       },
       {
         "role": "llm",
@@ -129,75 +138,14 @@
       "turbo_scheduler": "simple",
       "turbo_flow_shift": 12.0
     },
-    "size_gb": "29.1",
+    "size_gb": "37.8",
     "vram_fast_gb": 27.0,
     "vram_min_gb": 8.5,
     "ram_min_gb": 28.0,
     "modes": [
       "t2va",
       "i2va",
-      "fl2va"
-    ]
-  },
-  {
-    "name": "minimax_h3_ref2va_pruned-q3k",
-    "label": "MiniMax H3 Ref2VA pruned (Q3_K) — мультимодальные референсы; карты ~8 ГБ",
-    "spawn_flags": "--offload-to-cpu --rng cpu",
-    "note": "Тот же стек, но diffusion ref2va_pruned: референс-режим (до 3–9 картинок, аудио-референс тембра голоса; консистентное лицо по character sheet). По субтитрам роликов: референсов >6 модель ломает следование — правила агента ограничат ≤3. Русская речь всегда доступна. Реф-советы: character sheet 4-view сильно помогает; видео-референсы авторы роликов не советуют (медленно, плохо). Шаги: draft 4 (Turbo-LoRA DMAD; без LoRA-файла — 6), final 20; турбо-точка lcm/simple/shift 12 (поля turbo_* пресета), euler/discrete — final и draft-без-LoRA. Turbo-LoRA DMAD 4-step подтверждена бенчем 26.10.26 (замер на q4km, 130.8 с против 505.6 с у final, 3.87×); для ref2va-бандла замеров нет — файл LoRA общий, см. tasks/26.10.26 Ускорение видео H3 — turbo-LoRA бенч (Фаза 0-1).md. Preflight VRAM/RAM — ОЦЕНКИ.",
-    "is_default": false,
-    "files": [
-      {
-        "role": "diffusion",
-        "filename": "minimax_h3_ref2va_pruned-Q3_K.gguf",
-        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/minimax_h3_ref2va_pruned-Q3_K.gguf?download=true",
-        "size_bytes": 8716105824
-      },
-      {
-        "role": "llm",
-        "filename": "qwen3vl_32b_minimax_h3-Q2_K_M.gguf",
-        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/qwen3vl_32b_minimax_h3-Q2_K_M.gguf?download=true",
-        "size_bytes": 13102161024
-      },
-      {
-        "role": "vae",
-        "filename": "minimax_h3_video_vae_fp16.safetensors",
-        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/vae/minimax_h3_video_vae_fp16.safetensors?download=true",
-        "size_bytes": 5207808496
-      },
-      {
-        "role": "audio_vae",
-        "filename": "minimax_h3_audio_vae_fp32.safetensors",
-        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/vae/minimax_h3_audio_vae_fp32.safetensors?download=true",
-        "size_bytes": 605254808
-      },
-      {
-        "role": "lora_draft",
-        "filename": "dmad_minimax_h3_4step_full_critic.safetensors",
-        "download_url": "https://huggingface.co/ZhengmingYu/DMAD/resolve/main/minimax_h3/dmad_minimax_h3_4step_full_critic.safetensors?download=true",
-        "size_bytes": 1383674320
-      }
-    ],
-    "preset": {
-      "steps_draft": 4,
-      "steps_draft_nolora": 6,
-      "steps_final": 20,
-      "fps": 24,
-      "max_seconds": 15,
-      "cfg_scale": 1.0,
-      "sampler": "euler",
-      "seed": -1,
-      "width": 864,
-      "height": 480,
-      "turbo_sampler": "lcm",
-      "turbo_scheduler": "simple",
-      "turbo_flow_shift": 12.0
-    },
-    "size_gb": "29.0",
-    "vram_fast_gb": 27.0,
-    "vram_min_gb": 8.5,
-    "ram_min_gb": 28.0,
-    "modes": [
-      "t2va",
+      "fl2va",
       "ref2va"
     ]
   }

@@ -35,7 +35,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::lora::LoraSpec;
 use crate::engine::models_catalog::{
-    bundle_files_weights, resolve_placement, video_bundle_disk_bytes, BundleFile, VideoBundleEntry,
+    bundle_files_weights, resolve_diffusion_file, resolve_placement, video_bundle_disk_bytes,
+    BundleFile, VideoBundleEntry,
 };
 use crate::engine::preflight;
 use crate::engine::process_util::{
@@ -341,34 +342,66 @@ pub fn free_ram_gb() -> Option<f64> {
 /// Сборка spawn-аргументов из бандла. Отказ называет ровно ту роль/ограничение,
 /// которая не выполнена — без молчаливых подстановок.
 ///
+/// Diffusion-файл выбирается ПО РЕЖИМУ запроса (`resolve_diffusion_file`):
+/// у uni-бандла (fl2va-файл + ref2va-файл) режим определяет, какой из двух
+/// GGUF пойдёт в `--diffusion-model`. Остальные роли — из weights-карты
+/// (`bundle_files_weights`); дубли роли "diffusion" в ней дали бы молчаливый
+/// last-wins, поэтому diffusion из карты НЕ читается.
+///
 /// Политика размещения: если у бандла есть placement-лестница — вариант
 /// выбирается адаптивно по `ram_free_gb` (`resolve_placement`: самый
 /// требовательный из влезающих = самый быстрый); иначе легаси-строка
 /// `spawn_flags` каталога.
 pub fn build_spawn_args(
     entry: &VideoBundleEntry,
+    bundle_dir: &Path,
     weights: &std::collections::HashMap<String, String>,
     port: u16,
     ram_free_gb: Option<f64>,
+    mode: &str,
 ) -> Result<Vec<String>, String> {
-    let need = [
-        ("--diffusion-model", "diffusion"),
-        ("--vae", "vae"),
-        ("--audio-vae", "audio_vae"),
-        ("--llm", "llm"),
-    ];
     let mut args: Vec<String> = Vec::new();
-    for (flag, role) in need {
-        let p = weights
-            .get(role)
-            .ok_or_else(|| format!("нет файла роли «{}» (spawn видео-бандла «{}»)", role, entry.name))?;
+    let diffusion = resolve_diffusion_file(entry, mode)
+        .map_err(|e| format!("{} (spawn видео-бандла «{}»)", e, entry.name))?;
+    log::info!(
+        "[video-engine] режим {}: diffusion-файл «{}»",
+        mode,
+        diffusion.filename
+    );
+    let diffusion_path = bundle_dir.join(&diffusion.filename);
+    let need = [
+        ("--diffusion-model", diffusion_path.to_string_lossy().into_owned()),
+        (
+            "--vae",
+            weights
+                .get("vae")
+                .ok_or_else(|| format!("нет файла роли «vae» (spawn видео-бандла «{}»)", entry.name))?
+                .clone(),
+        ),
+        (
+            "--audio-vae",
+            weights
+                .get("audio_vae")
+                .ok_or_else(|| format!("нет файла роли «audio_vae» (spawn видео-бандла «{}»)", entry.name))?
+                .clone(),
+        ),
+        (
+            "--llm",
+            weights
+                .get("llm")
+                .ok_or_else(|| format!("нет файла роли «llm» (spawn видео-бандла «{}»)", entry.name))?
+                .clone(),
+        ),
+    ];
+    for (flag, p) in &need {
         if !Path::new(p).exists() {
             return Err(format!(
                 "Файл видео-бандла не найден ({}): {}\nСкачайте бандл: Настройки → «Видео».",
-                role, p
+                flag.trim_start_matches("--"),
+                p
             ));
         }
-        args.push(flag.to_string());
+        args.push((*flag).to_string());
         args.push(p.clone());
     }
     args.push("--listen-ip".to_string());
@@ -822,10 +855,15 @@ pub struct VideoEngine {
 
 impl VideoEngine {
     /// Spawn sd-server с флагами ИЗ БАНДЛА (инвариант PRP: «флаги живут в каталоге, не в коде»).
+    /// `mode` — режим vid_gen запроса ("t2va"|"i2va"|"fl2va"|"ref2va"): у uni-бандла
+    /// (два diffusion-файла) определяет, какой файл пойдёт в `--diffusion-model`
+    /// (`resolve_diffusion_file`). Жизнь движка per-request, поэтому выбор файла
+    /// по режиму при каждом спавне бесплатен.
     pub fn new<L>(
         engine_dir: &Path,
         bundle_dir: &Path,
         entry: &VideoBundleEntry,
+        mode: &str,
         variant_pref: Option<&str>,
         log_cb: L,
     ) -> Result<Self, String>
@@ -863,7 +901,7 @@ impl VideoEngine {
         let weights = bundle_files_weights(bundle_dir, &entry.files);
         let port = pick_free_port()
             .ok_or_else(|| "Не найден свободный порт для sd-server (19400..20900).".to_string())?;
-        let mut args = build_spawn_args(entry, &weights, port, free_ram)?;
+        let mut args = build_spawn_args(entry, bundle_dir, &weights, port, free_ram, mode)?;
         // LoRA-каталог сервера: при lora_base — плоская папка
         // <video_loras>/<base> (turbo-лора DMAD линкуется туда же), иначе
         // легаси — bundle_dir; lora[].path в payload — имя файла относительно него.
@@ -1138,15 +1176,18 @@ impl Drop for VideoEngine {
     }
 }
 
-/// One-shot видео (t2va/i2va): spawn → vid_gen → Drop. Точка входа host-tools:
-/// дефолты ИЗ ПРЕСЕТА каталога (SSOT — tools-слой не дублирует константы),
-/// seconds клампится по образцу GUI-команды `generate_video` (0 → 5, свыше
-/// max_seconds → кламп с warn), сэмплинг решает `sampling_plan_for_quality`
-/// (draft/final по наличию файла lora_draft; турбо-точка lcm/simple/shift —
-/// из каталога). `init_path` = Some(путь/data-URL) → i2va: первый кадр
-/// читается общим `file_to_b64` (честная ошибка, если файла нет); None → t2va.
-/// end/refs — не на этом уровне: все четыре режима доступны через
-/// `VideoEngine::generate` напрямую.
+/// One-shot видео (t2va/i2va/ref2va): spawn → vid_gen → Drop. Точка входа
+/// host-tools: дефолты ИЗ ПРЕСЕТА каталога (SSOT — tools-слой не дублирует
+/// константы), seconds клампится по образцу GUI-команды `generate_video`
+/// (0 → 5, свыше max_seconds → кламп с warn), сэмплинг решает
+/// `sampling_plan_for_quality` (draft/final по наличию файла lora_draft;
+/// турбо-точка lcm/simple/shift — из каталога). `init_path` = Some(путь/data-URL)
+/// → i2va: первый кадр читается общим `file_to_b64` (честная ошибка, если файла
+/// нет); None → t2va. `ref_paths` — непустой список путей/data-URL → ref2va:
+/// каждый референс читается `file_to_b64` и уходит в `ref_images` (до 3 —
+/// структурный лимит хост-тула); init и refs одновременно — взаимоисключающие
+/// (зеркало `resolve_mode`). end-кадры — не на этом уровне: режим fl2va
+/// доступен через `VideoEngine::generate` напрямую (GUI).
 ///
 /// `user_loras` — резолвнутые юзерские лоры (LoraSpec из lora.rs: путь — имя
 /// файла относительно `--lora-model-dir` спавна, множитель 0..=2). Дописываются
@@ -1160,6 +1201,7 @@ pub fn generate_video_simple<L>(
     seconds: u32,
     final_quality: bool,
     init_path: Option<&str>,
+    ref_paths: &[String],
     out_path: &Path,
     cancel_flag: Option<Arc<AtomicBool>>,
     user_loras: &[LoraSpec],
@@ -1200,9 +1242,24 @@ where
                 .join(" + ")
         ));
     }
-    // Режим выводится из входа ДО чтения файла — лог называет его честно,
-    // включая случай «файл не читается» (ошибка уйдёт с mode=i2va в контексте).
-    let init_b64 = match init_path.map(str::trim).filter(|s| !s.is_empty()) {
+    // Режим выводится из входа ДО чтения файлов — лог называет его честно,
+    // включая случай «файл не читается» (ошибка уйдёт с mode=<режим> в контексте).
+    // ref2va и i2va взаимоисключающие (api.md: Ref2VA нельзя комбинировать с
+    // init/end) — отказ до обращения к файлам.
+    let trimmed_init = init_path.map(str::trim).filter(|s| !s.is_empty());
+    let refs: Vec<&str> = ref_paths
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !refs.is_empty() && trimmed_init.is_some() {
+        return Err(
+            "ref2va и init-кадр взаимоисключающие (api.md: Ref2VA нельзя комбинировать \
+             с init_image). Пришлите либо первый кадр, либо референсы."
+                .to_string(),
+        );
+    }
+    let init_b64 = match trimmed_init {
         Some(path) => {
             let size = std::fs::metadata(path).map(|m| m.len()).ok();
             log_cb(format!(
@@ -1217,12 +1274,34 @@ where
         }
         None => None,
     };
+    let mut ref_images_b64: Vec<String> = Vec::new();
+    if !refs.is_empty() {
+        log_cb(format!("🖼 mode=ref2va: читаю {} референс(ов)", refs.len()));
+        for (i, path) in refs.iter().enumerate() {
+            let b64 = file_to_b64(path)
+                .map_err(|e| format!("референс #{} ({}): {}", i + 1, path, e))?;
+            log_cb(format!(
+                "🖼 референс #{} закодирован: {} симв. b64",
+                i + 1,
+                b64.len()
+            ));
+            ref_images_b64.push(b64);
+        }
+    }
+    // Режим для спавна (выбор diffusion-файла): ref2va / i2va / t2va.
+    let mode = if !ref_images_b64.is_empty() {
+        "ref2va"
+    } else if init_b64.is_some() {
+        "i2va"
+    } else {
+        "t2va"
+    };
     let req = VideoRequest {
         prompt: prompt.to_string(),
         negative_prompt: None,
         init_b64,
         end_b64: None,
-        ref_images_b64: Vec::new(),
+        ref_images_b64,
         width: preset.width,
         height: preset.height,
         steps: plan.steps,
@@ -1237,7 +1316,7 @@ where
         flow_shift: plan.flow_shift,
         lora,
     };
-    let engine = VideoEngine::new(engine_dir, bundle_dir, entry, None, log_cb.clone())?;
+    let engine = VideoEngine::new(engine_dir, bundle_dir, entry, mode, None, log_cb.clone())?;
     engine.generate(&req, out_path, cancel_flag, log_cb)
 }
 
@@ -1272,6 +1351,8 @@ mod tests {
                     filename: filename.to_string(),
                     download_url: String::new(),
                     size_bytes: size,
+                    modes: Vec::new(),
+                    is_default: false,
                 })
                 .collect(),
             spawn_flags: spawn_flags.map(String::from),
@@ -1443,7 +1524,8 @@ mod tests {
         // Дефолтный бандл каталога несёт placement-лестницу (29.10.26):
         // при свободной ОЗУ 100 ГиБ выбирается самый требовательный вариант
         // (te_disk), флаги — из каталога (SSOT).
-        let args = build_spawn_args(&entry, &weights, 20900, Some(100.0)).expect("spawn args собран");
+        let args = build_spawn_args(&entry, &dir, &weights, 20900, Some(100.0), "t2va")
+            .expect("spawn args собран");
         let j = args.join(" ");
         for flag in [
             "--diffusion-model",
@@ -1483,27 +1565,28 @@ mod tests {
         };
         // 1) offload-политика валидна (прежний канон).
         let offload = edit_flags(&entry, "--offload-to-cpu --rng cpu");
-        build_spawn_args(&offload, &weights, 19900, Some(100.0)).expect("offload-политика валидна");
+        build_spawn_args(&offload, &dir, &weights, 19900, Some(100.0), "t2va")
+            .expect("offload-политика валидна");
         // 2) явная params-политика валидна (disk-стриминг, бенч 29.10.26).
         let params = edit_flags(&entry, "--params-backend te=disk,diffusion=cpu,vae=disk --rng cpu");
-        build_spawn_args(&params, &weights, 19900, Some(100.0))
+        build_spawn_args(&params, &dir, &weights, 19900, Some(100.0), "t2va")
             .expect("params-политика (disk) валидна");
         // 3) auto-fit без max-vram — отказ (бюджет VRAM обязан быть явным).
         let no_budget = edit_flags(&entry, "--auto-fit on --rng cpu");
-        let err = build_spawn_args(&no_budget, &weights, 19900, Some(100.0)).unwrap_err();
+        let err = build_spawn_args(&no_budget, &dir, &weights, 19900, Some(100.0), "t2va").unwrap_err();
         assert!(err.contains("--max-vram"), "отказ называет --max-vram: {}", err);
         // 4) смесь offload + auto-fit — отказ (params-backend отключает auto-fit).
         let mixed = edit_flags(&entry, "--offload-to-cpu --auto-fit on --max-vram -1 --rng cpu");
-        let err = build_spawn_args(&mixed, &weights, 19900, Some(100.0)).unwrap_err();
+        let err = build_spawn_args(&mixed, &dir, &weights, 19900, Some(100.0), "t2va").unwrap_err();
         assert!(err.contains("смешивает"), "отказ про смесь политик: {}", err);
         // 5) смесь params + auto-fit — отказ по той же причине.
         let mixed2 = edit_flags(&entry, "--params-backend te=disk --auto-fit on --max-vram -1 --rng cpu");
-        let err = build_spawn_args(&mixed2, &weights, 19900, Some(100.0)).unwrap_err();
+        let err = build_spawn_args(&mixed2, &dir, &weights, 19900, Some(100.0), "t2va").unwrap_err();
         assert!(err.contains("смешивает"), "отказ про смесь params+autofit: {}", err);
         // 6) ни одной политики — отказ (веса H3 не размещаются сами), отказ
         // называет ВСЕ три канона.
         let none = edit_flags(&entry, "--rng cpu");
-        let err = build_spawn_args(&none, &weights, 19900, Some(100.0)).unwrap_err();
+        let err = build_spawn_args(&none, &dir, &weights, 19900, Some(100.0), "t2va").unwrap_err();
         assert!(
             err.contains("--offload-to-cpu") && err.contains("--auto-fit") && err.contains("--params-backend"),
             "отказ называет три политики: {}",
@@ -1541,25 +1624,25 @@ mod tests {
         let weights = bundle_files_weights(&dir, &e.files);
 
         // 32 ГБ машина: влезают все три → самый требовательный (autofit).
-        let args = build_spawn_args(&e, &weights, 19900, Some(29.0)).expect("args собраны");
+        let args = build_spawn_args(&e, &dir, &weights, 19900, Some(29.0), "t2va").expect("args собраны");
         assert!(args.join(" ").contains("--auto-fit"), "выбран autofit");
         // Средняя машина: autofit не влез → te_disk.
-        let args = build_spawn_args(&e, &weights, 19900, Some(17.0)).expect("args собраны");
+        let args = build_spawn_args(&e, &dir, &weights, 19900, Some(17.0), "t2va").expect("args собраны");
         let j = args.join(" ");
         assert!(j.contains("--params-backend") && j.contains("diffusion=cpu"), "выбран te_disk: {}", j);
         assert!(!j.contains("--auto-fit"), "autofit не выбран");
         // Мало ОЗУ: только all_disk влезает.
-        let args = build_spawn_args(&e, &weights, 19900, Some(9.5)).expect("args собраны");
+        let args = build_spawn_args(&e, &dir, &weights, 19900, Some(9.5), "t2va").expect("args собраны");
         assert!(
             args.join(" ").contains("diffusion=disk"),
             "выбран all_disk"
         );
         // Не влез никто → отказ с маркером RAM и порогом самого лёгкого.
-        let err = build_spawn_args(&e, &weights, 19900, Some(3.0)).unwrap_err();
+        let err = build_spawn_args(&e, &dir, &weights, 19900, Some(3.0), "t2va").unwrap_err();
         assert!(err.starts_with(preflight::resource_markers::RAM), "маркер RAM: {}", err);
         assert!(err.contains("9.0"), "порог самого лёгкого (9.0): {}", err);
         // Фактов ОЗУ нет (None) → консервативно самый лёгкий (all_disk).
-        let args = build_spawn_args(&e, &weights, 19900, None).expect("args собраны");
+        let args = build_spawn_args(&e, &dir, &weights, 19900, None, "t2va").expect("args собраны");
         assert!(args.join(" ").contains("diffusion=disk"), "None → самый лёгкий");
         // resolve_placement напрямую: None → самый лёгкий, не ошибка.
         assert_eq!(resolve_placement(&e, None).unwrap().policy, "all_disk");
@@ -1569,10 +1652,11 @@ mod tests {
     #[test]
     fn spawn_args_fail_on_empty_weights_and_empty_flags() {
         let (entry, dir) = catalog_bundle_with_files();
-        // 1) пустая карта ролей → отказ называет роль diffusion.
+        // 1) пустая карта ролей → отказ называет роль из карты (diffusion
+        // теперь резолвится из entry+bundle_dir, карту ищем на vae).
         let empty: HashMap<String, String> = HashMap::new();
-        let err = build_spawn_args(&entry, &empty, 19900, Some(100.0)).unwrap_err();
-        assert!(err.contains("diffusion"), "отказ называет роль: {}", err);
+        let err = build_spawn_args(&entry, &dir, &empty, 19900, Some(100.0), "t2va").unwrap_err();
+        assert!(err.contains("vae"), "отказ называет роль: {}", err);
         // 2) пустые spawn_flags → дефект каталога, честный отказ.
         let mut noflag = synthetic_entry(
             vec![("diffusion", "w.gguf", Some(1))],
@@ -1581,8 +1665,9 @@ mod tests {
             None,
         );
         noflag.name = "noflag".to_string();
+        std::fs::write(dir.join("w.gguf"), b"weights").expect("стаб diffusion-файла");
         let w = bundle_files_weights(&dir, &entry.files);
-        let err2 = build_spawn_args(&noflag, &w, 19900, Some(100.0)).unwrap_err();
+        let err2 = build_spawn_args(&noflag, &dir, &w, 19900, Some(100.0), "t2va").unwrap_err();
         assert!(err2.contains("пуст"), "отказ про пустые флаги: {}", err2);
     }
 
@@ -1592,12 +1677,69 @@ mod tests {
         let (entry, _) = catalog_bundle_with_files();
         let ghost_dir = std::env::temp_dir().join("ko_video_engine_ghost_missing_dir");
         let weights = bundle_files_weights(&ghost_dir, &entry.files);
-        let err = build_spawn_args(&entry, &weights, 19900, Some(100.0)).unwrap_err();
+        let err = build_spawn_args(&entry, &ghost_dir, &weights, 19900, Some(100.0), "t2va").unwrap_err();
         assert!(
             err.contains("Файл видео-бандла не найден"),
             "отказ называет путь: {}",
             err
         );
+    }
+
+    /// Uni-бандл (два diffusion-файла): `--diffusion-model` указывает на файл,
+    /// выбранный по режиму запроса; t2va-пересечение → is_default-файл.
+    #[test]
+    fn spawn_args_pick_diffusion_file_by_mode() {
+        let dir = sandbox("spawn_uni_mode");
+        // fl2va-файл (default) + ref2va-файл + общий vae/audio_vae/llm; файлы
+        // созданы на диске (build_spawn_args проверяет существование).
+        let mut entry = synthetic_entry(
+            vec![
+                ("vae", "v.safetensors", Some(1)),
+                ("audio_vae", "av.safetensors", Some(1)),
+                ("llm", "te.gguf", Some(1)),
+            ],
+            Some("--offload-to-cpu --rng cpu"),
+            None,
+            None,
+        );
+        entry.name = "uni-stub".to_string();
+        entry.modes = vec!["t2va".to_string(), "i2va".to_string(), "fl2va".to_string(), "ref2va".to_string()];
+        entry.files.insert(0, BundleFile {
+            role: "diffusion".to_string(),
+            filename: "fl2va.gguf".to_string(),
+            download_url: String::new(),
+            size_bytes: Some(1),
+            modes: vec!["t2va".to_string(), "i2va".to_string(), "fl2va".to_string()],
+            is_default: true,
+        });
+        entry.files.insert(1, BundleFile {
+            role: "diffusion".to_string(),
+            filename: "ref2va.gguf".to_string(),
+            download_url: String::new(),
+            size_bytes: Some(1),
+            modes: vec!["t2va".to_string(), "ref2va".to_string()],
+            is_default: false,
+        });
+        for name in ["fl2va.gguf", "ref2va.gguf", "v.safetensors", "av.safetensors", "te.gguf"] {
+            std::fs::write(dir.join(name), b"weights").expect("стаб-файл создан");
+        }
+        let weights = bundle_files_weights(&dir, &entry.files);
+
+        let args_for = |mode: &str| {
+            build_spawn_args(&entry, &dir, &weights, 19900, Some(100.0), mode)
+                .unwrap_or_else(|e| panic!("{}: {}", mode, e))
+        };
+        let after = |args: &[String]| {
+            let i = args.iter().position(|a| a == "--diffusion-model").expect("флаг есть");
+            args[i + 1].clone()
+        };
+        // t2va умеют оба файла → детерминированно is_default (fl2va-файл).
+        assert!(after(&args_for("t2va")).ends_with("fl2va.gguf"), "t2va → default");
+        // i2va/fl2va — только fl2va-файл.
+        assert!(after(&args_for("i2va")).ends_with("fl2va.gguf"));
+        assert!(after(&args_for("fl2va")).ends_with("fl2va.gguf"));
+        // ref2va — второй файл.
+        assert!(after(&args_for("ref2va")).ends_with("ref2va.gguf"), "ref2va → ref2va-файл");
     }
 
     #[test]
@@ -1926,6 +2068,7 @@ mod tests {
 
     /// i2va-вход через generate_video_simple: отсутствующий init_path → честный
     /// Err ДО spawn движка (чтение файла идёт раньше VideoEngine::new).
+    /// ref2va: отсутствующий ref_path — та же честность, с номером референса.
     #[test]
     fn simple_generation_fails_honestly_on_missing_init_path() {
         let (entry, dir) = catalog_bundle_with_files();
@@ -1939,6 +2082,7 @@ mod tests {
             5,
             false,
             Some(ghost.to_str().unwrap()),
+            &[],
             &out,
             None,
             &[],
@@ -1949,6 +2093,52 @@ mod tests {
             err.contains("Не удалось прочитать кадр"),
             "отказ чтения кадра честный: {}",
             err
+        );
+        // ref2va-ветка: список референсов с битым вторым файлом → ошибка
+        // называет номер и путь; init+refs одновременно — отказ до чтения.
+        let refs = vec![
+            ghost.with_file_name("no_such_frame.png").to_string_lossy().into_owned(),
+            ghost.to_string_lossy().into_owned(),
+        ];
+        let err2 = generate_video_simple(
+            &dir,
+            &dir,
+            &entry,
+            "тестовый промпт",
+            5,
+            false,
+            None,
+            &refs,
+            &out,
+            None,
+            &[],
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(
+            err2.contains("референс") && err2.contains("no_such_frame.png"),
+            "отказ референса называет номер и путь: {}",
+            err2
+        );
+        let err3 = generate_video_simple(
+            &dir,
+            &dir,
+            &entry,
+            "тестовый промпт",
+            5,
+            false,
+            Some(ghost.to_str().unwrap()),
+            &refs,
+            &out,
+            None,
+            &[],
+            |_| {},
+        )
+        .unwrap_err();
+        assert!(
+            err3.contains("взаимоисключающие"),
+            "ref2va+init запрещены до чтения файлов: {}",
+            err3
         );
     }
 

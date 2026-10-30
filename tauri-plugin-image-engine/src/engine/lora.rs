@@ -90,6 +90,17 @@ pub fn resolve_lora_specs(
     resolve_lora_specs_for_base(dir, wanted, None)
 }
 
+/// Ключ пунктуационно-нечувствительного сопоставления: нижний регистр,
+/// только буквы и цифры. «Minimax_H3_Unlocked_V2.1» и
+/// «minimax_h3_unlocked_v2_1» дают один ключ — транскрипционные ошибки
+/// LLM (точка↔подчёркивание↔пробел↔регистр) перестают быть отказом.
+fn normalized_stem(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect::<String>()
+        .to_lowercase()
+}
+
 /// Каталог базы моделей: лоры разложены по ПОДПАПКАМ на базу (решение
 /// юзера 29.10.26, F3). Лора — набор дельта-тензоров, привязанных к именам и
 /// размерностям слоёв конкретного диффузионного бэкбона (Qwen-Image ≠
@@ -99,6 +110,13 @@ pub fn resolve_lora_specs(
 /// бандла — лора чужой базы физически отсутствует в каталоге сервера
 /// (`--lora-model-dir` = `<dir>/<base>`), отказ невозможен по design.
 /// `base = None` — легаси-плоская папка (видео-ветка и старые вызовы).
+///
+/// Сопоставление двухфазное: точный стем (без учёта регистра), затем —
+/// пунктуационно-нормализованный ключ (`normalized_stem`): LLM, переписывая
+/// стем из каталога, путает точку с подчёркиванием — такой запрос обязан
+/// находить файл, а не валить генерацию (инцидент 30.10.26: запрос
+/// «…V2_1» против файла «…V2.1»). Внутри фазы коллизии решаются приоритетом
+/// расширения, при равном приоритете — именем файла (детерминизм).
 pub fn resolve_lora_specs_for_base(
     dir: &Path,
     wanted: &[(String, f32)],
@@ -164,8 +182,16 @@ pub fn resolve_lora_specs_for_base(
         if key.is_empty() {
             return Err("LoRA: передано пустое имя".to_string());
         }
+        // Фаза 1: точный стем. Фаза 2: нормализованный ключ (пунктуация неважна).
         let mut matches: Vec<&(String, String, usize)> =
             catalog.iter().filter(|(stem, _, _)| *stem == key).collect();
+        if matches.is_empty() {
+            let key_norm = normalized_stem(&key);
+            matches = catalog
+                .iter()
+                .filter(|(stem, _, _)| normalized_stem(stem) == key_norm)
+                .collect();
+        }
         if matches.is_empty() {
             let mut known: Vec<String> = catalog.iter().map(|(s, _, _)| s.clone()).collect();
             known.sort();
@@ -182,7 +208,7 @@ pub fn resolve_lora_specs_for_base(
                 list
             ));
         }
-        matches.sort_by_key(|(_, _, prio)| *prio);
+        matches.sort_by(|a, b| a.2.cmp(&b.2).then_with(|| a.1.cmp(&b.1)));
         out.push(LoraSpec {
             path: matches[0].1.clone(),
             multiplier: mult,
@@ -578,6 +604,54 @@ mod tests {
         assert!(expected_sub.is_dir(), "подпапка qwen существует");
         // Легаси: None → корень.
         assert_eq!(lora_spawn_args_for_base(&d, None), lora_spawn_args(&d));
+    }
+
+    /// Фаза 2 нормализации: LLM переписала стем «…V2.1» как «…v2_1»
+    /// (точка → подчёркивание, инцидент 30.10.26) — файл обязан найтись.
+    /// Пробелы и дефисы нормализуются так же.
+    #[test]
+    fn resolve_matches_normalized_punctuation_variants() {
+        let d = sandbox("resolve_normalized");
+        std::fs::write(d.join("Minimax_H3_Unlocked_V2.1.safetensors"), b"x").expect("стаб-файл");
+        for wanted in [
+            "Minimax_H3_Unlocked_V2_1",
+            "minimax_h3_unlocked_v2_1",
+            "minimax-h3-unlocked-v2-1",
+            "minimax h3 unlocked v2 1",
+        ] {
+            let out = resolve_lora_names(&d, &[wanted.to_string()], 0.7).expect("нормализ-матч");
+            assert_eq!(out[0].path, "Minimax_H3_Unlocked_V2.1.safetensors", "запрос: {wanted}");
+            assert!((out[0].multiplier - 0.7).abs() < f32::EPSILON);
+        }
+    }
+
+    /// Точный стем сильнее нормализованного: «alpha_v2» бьёт «alpha.v2»-запрос
+    /// только если точного нет; при нормализованной коллизии двух файлов
+    /// выбор детерминирован (приоритет расширения, затем имя файла).
+    #[test]
+    fn resolve_exact_stem_wins_and_collision_is_deterministic() {
+        let d = sandbox("resolve_exact_vs_norm");
+        std::fs::write(d.join("alpha_v2.safetensors"), b"x").expect("стаб-файл");
+        std::fs::write(d.join("alpha.v2.safetensors"), b"x").expect("стаб-файл");
+        // Точный запрос: только alpha_v2.safetensors.
+        let out = resolve_lora_names(&d, &["alpha_v2".to_string()], 1.0).expect("точный");
+        assert_eq!(out[0].path, "alpha_v2.safetensors");
+        // Нормализованная коллизия (запрос «alpha v2» не совпадает точно ни с
+        // одним стемом): оба файла дают "alphav2" — побеждает меньшее имя
+        // файла (детерминизм независимо от порядка read_dir).
+        let out = resolve_lora_names(&d, &["alpha v2".to_string()], 1.0).expect("нормализ-коллизия");
+        assert_eq!(out[0].path, "alpha.v2.safetensors", "a.alpha... < alpha_v2... по имени");
+    }
+
+    /// Совсем чужое имя — прежний честный отказ со списком стемов
+    /// (нормализация не должна превращать опечатку в «какую-нибудь» лору).
+    #[test]
+    fn resolve_unknown_name_still_errors_after_normalization() {
+        let d = sandbox("resolve_norm_unknown");
+        std::fs::write(d.join("alpha.safetensors"), b"x").expect("стаб-файл");
+        let err = resolve_lora_names(&d, &["alpha_v9".to_string()], 1.0)
+            .expect_err("нормализация не матчит не-ту лору");
+        assert!(err.contains("alpha_v9") && err.contains("alpha"), "ошибка: {}", err);
     }
 
     #[test]

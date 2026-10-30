@@ -1,0 +1,25 @@
+[package]
+name = "ko-excel-tools"
+version = "0.1.0"
+edition = "2021"
+description = "Ядро Excel-тулов (SSOT): операции над .xlsx (umya-spreadsheet), QA-гейты формул, пересчёт/PDF через LibreOffice, конвертация CSV/TSV. Общее для CLI agent-tools и хостов (King Orch)"
+license = "MIT"
+
+# Ядро без системных зависимостей: umya-spreadsheet — pure Rust (проверено:
+# ни один транзитивный крейт не требует C-компиляции). LibreOffice — внешняя
+# программа, детект + честный отказ (не зависимость). csv/encoding_rs —
+# pure Rust. Python и скриптовые движки исключены (решение задачи 31.10.26).
+[dependencies]
+umya-spreadsheet = "3.1"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+log = { workspace = true }
+# CSV/TSV конвертация (RFC4180, кавычки/разделители) + Windows-1251 для
+# старых русских выгрузок (UTF-8 и UTF-8-BOM — основной путь).
+csv = "1"
+encoding_rs = "0.8"
+
+[lib]
+name = "ko_excel_tools"
+path = "src/lib.rs"

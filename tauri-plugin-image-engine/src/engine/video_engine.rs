@@ -752,6 +752,7 @@ where
         use std::io::{BufRead, BufReader};
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
+        let mut deduper = crate::engine::log_filter::LineDeduper::new();
         loop {
             line.clear();
             match reader.read_line(&mut line) {
@@ -759,13 +760,15 @@ where
                 Ok(_) => {}
             }
             let text = line.trim_end();
-            if text.is_empty() {
+            if text.is_empty() || crate::engine::log_filter::is_noise_line(text) {
                 continue;
             }
-            if text.contains("[ERROR]") || text.contains("error:") {
-                log::error!("[{}] {}", tag, text);
-            } else {
-                log::info!("[{}] {}", tag, text);
+            for out in deduper.feed(text) {
+                if out.contains("[ERROR]") || out.contains("error:") {
+                    log::error!("[{}] {}", tag, out);
+                } else {
+                    log::info!("[{}] {}", tag, out);
+                }
             }
         }
     });
@@ -1066,6 +1069,9 @@ impl VideoEngine {
         L: Fn(String),
     {
         let start = Instant::now();
+        // Heartbeat каждые 5-й опрос (15с): «Рендер видео» каждые 3с давал
+        // сотни строк в лог на длинных генерациях (281 строка за сессию).
+        let mut poll_tick = 0u32;
         loop {
             if let Some(flag) = &cancel_flag {
                 if flag.load(Ordering::SeqCst) {
@@ -1116,7 +1122,10 @@ impl VideoEngine {
                     .send();
                 return Err("Таймаут видео-генерации (60 мин) — job отменён.".to_string());
             }
-            log_cb(format!("⏳ Рендер видео… {:.0} сек", start.elapsed().as_secs()));
+            poll_tick += 1;
+            if poll_tick % 5 == 0 {
+                log_cb(format!("⏳ Рендер видео… {:.0} сек", start.elapsed().as_secs()));
+            }
             std::thread::sleep(VIDEO_POLL_INTERVAL);
         }
     }

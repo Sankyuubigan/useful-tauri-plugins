@@ -640,6 +640,7 @@ where
         use std::io::{BufRead, BufReader};
         let mut reader = BufReader::new(stream);
         let mut line = String::new();
+        let mut deduper = crate::engine::log_filter::LineDeduper::new();
         loop {
             line.clear();
             match reader.read_line(&mut line) {
@@ -660,10 +661,15 @@ where
                     }
                 }
             }
-            if text.contains("[ERROR]") || text.contains("error:") {
-                log::error!("[{}] {}", tag, text);
-            } else {
-                log::info!("[{}] {}", tag, text);
+            if crate::engine::log_filter::is_noise_line(text) {
+                continue;
+            }
+            for out in deduper.feed(text) {
+                if out.contains("[ERROR]") || out.contains("error:") {
+                    log::error!("[{}] {}", tag, out);
+                } else {
+                    log::info!("[{}] {}", tag, out);
+                }
             }
         }
     });

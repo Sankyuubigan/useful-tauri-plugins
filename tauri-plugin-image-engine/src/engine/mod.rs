@@ -13,6 +13,7 @@ pub mod gen_guard;
 pub mod image_engine;
 pub mod krea_compare;
 pub mod krea_view;
+pub mod log_filter;
 pub mod lora;
 pub mod models_catalog;
 pub mod preflight;

@@ -25,6 +25,7 @@ use std::path::{Path, PathBuf};
 use crate::tools::codemap::model::{FileEntry, Index, FORMAT_VERSION};
 
 use super::flat_lang::FlatChunk;
+use super::lang::Lang;
 use super::scan;
 use super::tags::Tag;
 
@@ -217,7 +218,16 @@ fn build_from_old(
         match super::parse::tags_of(&file.rel_path, &source, file.lang) {
             Ok(collected) if !collected.is_empty() => {
                 tags.extend(collected);
+                // Markdown отдаёт в тегах заголовки — структуру, — но тело
+                // документа остаётся прозой: полнотекстовый поиск по нему
+                // работает через плоские чанки, как и раньше. Язык и путь
+                // читаются до перемещения `file` в список.
+                let keeps_text_chunks = file.lang == Lang::Markdown;
+                let rel_path = file.rel_path.clone();
                 files.push(file.with_parsed(true));
+                if keeps_text_chunks {
+                    chunks.extend(super::flat_lang::chunks(&rel_path, &source));
+                }
             }
             Ok(_) => {
                 // Парсера нет либо файл не содержит символов. Он не выпадает,
@@ -592,5 +602,40 @@ mod tests {
         assert_eq!(stats.reused, 0, "переиспользовать нечего");
         assert!(index.tags.iter().any(|t| t.name == "alpha"));
         let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Markdown разбирается заголовками И остаётся в полнотекстовых чанках:
+    /// структура идёт в граф и карту, тело — в поиск. Потерять любую из
+    /// двух половин значило бы незаметно обеднить индекс.
+    #[test]
+    fn markdown_file_gets_both_headings_and_text_chunks() {
+        let root = temp_root("markdown");
+        fs::write(
+            root.join("ARCHITECTURE.md"),
+            "# Архитектура\n\nТут описаны слои системы и правила проекта.\n\n## Слой домена\n\nДомен не зависит от инфраструктуры.\n",
+        )
+        .expect("документ");
+
+        let (index, _) = build(&root, scan::walk(&root).expect("обход")).expect("сборка");
+        let file = index
+            .files
+            .iter()
+            .find(|f| f.rel_path == "ARCHITECTURE.md")
+            .expect("документ обязан быть в индексе");
+        assert!(file.parsed, "markdown имеет структуру — он разобран");
+
+        assert!(
+            index.tags.iter().any(|t| t.rel_path == "ARCHITECTURE.md" && t.name == "Архитектура"),
+            "заголовок обязан стать определением: {:?}",
+            index.tags
+        );
+        assert!(
+            index
+                .chunks
+                .iter()
+                .any(|c| c.rel_path == "ARCHITECTURE.md" && c.text.contains("не зависит от инфраструктуры")),
+            "тело документа обязано остаться в полнотекстовом поиске: {:?}",
+            index.chunks
+        );
     }
 }

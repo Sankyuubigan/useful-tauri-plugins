@@ -36,8 +36,8 @@ pub enum SyntaxStatus {
         line: u32,
         message: String,
     },
-    /// Парсера для этого расширения нет (`.md`, `.json`, …) — проверка
-    /// неприменима. Это не «файл сломан», это «мы не обязаны про него судить».
+    /// Проверка неприменима (`.json`, `.toml`, markdown — структура без
+    /// синтаксиса). Это не «файл сломан», это «мы не обязаны про него судить».
     Unsupported,
 }
 
@@ -51,7 +51,9 @@ pub fn inspect(rel_path: &str, source: &str, lang: Lang) -> SyntaxStatus {
         Lang::Rust => rust_status(source),
         Lang::TsJs => ts_status(rel_path, source),
         Lang::Python => python_status(rel_path, source),
-        Lang::Flat => SyntaxStatus::Unsupported,
+        // Markdown имеет структуру (заголовки), но не синтаксис с ошибками:
+        // разбор заголовков не бывает ошибочным, и «валиден» был бы ложью.
+        Lang::Markdown | Lang::Flat => SyntaxStatus::Unsupported,
     }
 }
 
@@ -228,8 +230,10 @@ mod tests {
 
     #[test]
     fn flat_languages_are_explicitly_unsupported() {
-        // Не «ошибка» и не «валидно»: про `.md` мы честно ничего не судим.
-        assert_eq!(inspect("note.md", "# Заголовок\n", Lang::Flat), SyntaxStatus::Unsupported);
+        // Не «ошибка» и не «валидно»: про формат без синтаксиса мы честно
+        // ничего не судим. Markdown тоже: у заголовков нет ошибок разбора,
+        // и «проверен» означал бы проверку, которой не было.
+        assert_eq!(inspect("note.md", "# Заголовок\n", Lang::Markdown), SyntaxStatus::Unsupported);
         assert_eq!(inspect("data.json", "{}", Lang::Flat), SyntaxStatus::Unsupported);
     }
 

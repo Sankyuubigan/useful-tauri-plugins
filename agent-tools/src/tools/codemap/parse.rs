@@ -6,6 +6,7 @@
 //! «индекс построен, но пуст».
 
 use super::lang::Lang;
+use super::md_lang;
 use super::py_lang;
 use super::rust_lang;
 use super::tags::Tag;
@@ -24,6 +25,7 @@ pub fn tags_of(rel_path: &str, source: &str, lang: Lang) -> Result<Vec<Tag>, Str
         Lang::Rust => rust_lang::tags(rel_path, source),
         Lang::TsJs => ts_lang::tags(rel_path, source, lang),
         Lang::Python => py_lang::tags(rel_path, source),
+        Lang::Markdown => Ok(md_lang::tags(rel_path, source)),
         Lang::Flat => Ok(super::flat_lang::tags(rel_path, source)),
     }
 }
@@ -45,10 +47,18 @@ mod tests {
     }
 
     #[test]
+    fn markdown_yields_heading_definitions() {
+        let tags = tags_of("doc.md", "# Правила\n\n## Установка\n", Lang::Markdown)
+            .expect("markdown разбирается без ошибок");
+        let names: Vec<&str> = tags.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(names, vec!["Правила", "Установка"]);
+    }
+
+    #[test]
     fn flat_language_yields_nothing_without_error() {
-        // Не «ошибка разбора», а «символов нет»: иначе `.md` сыпал бы
-        // предупреждениями на каждом файле документации в репозитории.
-        let tags = tags_of("a.md", "# alpha", Lang::Flat).expect("flat не падает");
+        // Не «ошибка разбора», а «символов нет»: иначе произвольный текст
+        // сыпал бы предупреждениями на каждом файле без парсера.
+        let tags = tags_of("a.cfg", "ключ = значение", Lang::Flat).expect("flat не падает");
         assert!(tags.is_empty());
     }
 

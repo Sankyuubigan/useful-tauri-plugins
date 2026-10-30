@@ -733,13 +733,19 @@ fn codemap_no_cache_maps_a_foreign_folder_and_writes_nothing() {
 
     let source = dir.join("src");
     std::fs::create_dir_all(&source).expect("каталог исходников чужого дерева");
-    // Определение + ссылка: карта ранжирует определения по связям, и файл
-    // без единой ссылки в карту не попадает вовсе (см. rank::rank_definitions) —
-    // это поведение флага --no-cache не должно маскировать.
+    // Кросс-файловая ссылка: карта ранжирует определения по связям МЕЖДУ
+    // файлами, и файл, пользующийся только собственными символами, в карту
+    // не попадает вовсе (см. rank::rank_definitions_opts) — это поведение
+    // флага --no-cache не должно маскировать.
     std::fs::write(
         source.join("lib.rs"),
         "pub fn foreign_value() -> u32 { foreign_inner() }\n\
          pub fn foreign_inner() -> u32 { 7 }\n",
+    )
+    .expect("исходник чужого дерева");
+    std::fs::write(
+        source.join("main.rs"),
+        "pub fn foreign_entry() -> u32 { foreign_value() }\n",
     )
     .expect("исходник чужого дерева");
 

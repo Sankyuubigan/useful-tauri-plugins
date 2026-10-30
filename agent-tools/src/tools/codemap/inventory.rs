@@ -25,8 +25,10 @@
 use std::cmp::Ordering;
 use std::collections::HashMap;
 
+use super::lang::Lang;
 use super::model::Index;
 use super::rank::RankedDefinition;
+use super::tags::TagKind;
 use super::tokens;
 
 /// Доля бюджета карты, которую инвентарь вправе занимать.
@@ -54,6 +56,20 @@ const MIN_DIRECTORY_TOKENS: u32 = 16;
 
 /// Заголовок секции.
 const HEADER: &str = "## 📁 Структура проекта\n";
+
+/// Заголовок секции документации. С пустой строкой перед собой: секции карты
+/// отделяются друг от друга, как отделяется инвентарь от шапки.
+const DOCS_HEADER: &str = "\n## 📚 Документация\n";
+
+/// Доля инвентарного бюджета, отведённая секции документации.
+///
+/// Доки откусывают от доли каталогов, а не от доли кода: оглавление — часть
+/// обзора «из чего состоит проект». Если markdown-файлов в проекте нет, доля
+/// целиком возвращается каталогам.
+pub const DOCS_SHARE: f64 = 0.35;
+
+/// Сколько заголовков одного документа показывается в строках оглавления.
+const HEADINGS_PER_DOC: usize = 6;
 
 /// Сумма рангов определений по каждому файлу.
 ///
@@ -242,7 +258,7 @@ fn file_name(rel_path: &str) -> String {
 }
 
 /// Короткая запись числа токенов: `1.5M`, `48k`, `812`.
-fn compact_tokens(tokens: u64) -> String {
+pub(crate) fn compact_tokens(tokens: u64) -> String {
     if tokens >= 1_000_000 {
         format!("{:.1}M", tokens as f64 / 1_000_000.0)
     } else if tokens >= 1_000 {
@@ -250,6 +266,103 @@ fn compact_tokens(tokens: u64) -> String {
     } else {
         tokens.to_string()
     }
+}
+
+/// Секция документации: markdown-файлы с оглавлением из заголовков.
+///
+/// Код ранжируется связями, у документации связей нет — и без отдельной секции
+/// дока не попадала бы в карту ни при каком бюджете, хотя для входа в чужой
+/// проект `ARCHITECTURE.md` полезнее любого блока кода. Заголовки берутся из
+/// индекса (их туда кладёт бэкенд Markdown), поэтому файлы здесь не читаются.
+///
+/// Порядок документов: фокусные (`--file`) выше остальных, далее по токенам.
+/// Как и у каталогов, обрезка честная: признак «ещё N документов» обязателен.
+pub fn docs_section(index: &Index, focus: &[String], budget: u32) -> String {
+    if budget < MIN_BUDGET {
+        return String::new();
+    }
+
+    let docs: Vec<&super::model::FileEntry> = index
+        .files
+        .iter()
+        .filter(|file| file.lang == Lang::Markdown)
+        .collect();
+    if docs.is_empty() {
+        return String::new();
+    }
+
+    // Заголовки уже в тегах индекса: группируем одним проходом, без чтения.
+    let mut headings: HashMap<&str, Vec<(&str, u32)>> = HashMap::new();
+    for tag in index.tags.iter().filter(|t| t.kind == TagKind::Def) {
+        headings
+            .entry(tag.rel_path.as_str())
+            .or_default()
+            .push((tag.name.as_str(), tag.line));
+    }
+
+    let focused: Vec<&String> = focus.iter().collect();
+    let mut ordered: Vec<&&super::model::FileEntry> = docs.iter().collect();
+    ordered.sort_by(|a, b| {
+        let a_focus = focused.contains(&&a.rel_path);
+        let b_focus = focused.contains(&&b.rel_path);
+        b_focus
+            .cmp(&a_focus)
+            .then_with(|| b.tokens.cmp(&a.tokens))
+            .then_with(|| a.rel_path.cmp(&b.rel_path))
+    });
+
+    let mut kept: Vec<String> = Vec::new();
+    let mut spent = 0u32;
+    let mut dropped = 0usize;
+    for doc in &ordered {
+        let Some(doc_headings) = headings.get(doc.rel_path.as_str()) else {
+            // Документ без заголовков всё равно называется: агент должен
+            // знать, что он есть, даже если оглавления у него нет.
+            let line = format!("{} (~{}):\n", doc.rel_path, compact_tokens(doc.tokens as u64));
+            let cost = tokens::estimate(&line);
+            if spent + cost <= budget {
+                spent += cost;
+                kept.push(line);
+            } else {
+                dropped += 1;
+            }
+            continue;
+        };
+
+        let mut block = format!("{} (~{}):\n", doc.rel_path, compact_tokens(doc.tokens as u64));
+        for (name, line) in doc_headings.iter().take(HEADINGS_PER_DOC) {
+            block.push_str(&format!("{line:>5} | {name}\n"));
+        }
+        let hidden = doc_headings.len().saturating_sub(HEADINGS_PER_DOC);
+        if hidden > 0 {
+            block.push_str(&format!("      … ещё {hidden} разделов\n"));
+        }
+        let cost = tokens::estimate(&block);
+        if spent + cost <= budget {
+            spent += cost;
+            kept.push(block);
+        } else {
+            dropped += 1;
+        }
+    }
+
+    if kept.is_empty() {
+        return String::new();
+    }
+
+    let mut out = String::from(DOCS_HEADER);
+    for block in &kept {
+        out.push_str(block);
+    }
+    if dropped > 0 {
+        // Признак обрезки важнее последнего документа: без него список
+        // выглядел бы полным.
+        let trailer = format!("… ещё {dropped} документов\n");
+        if spent + tokens::estimate(&trailer) <= budget {
+            out.push_str(&trailer);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -410,5 +523,115 @@ mod tests {
         assert_eq!(file_name("src/deep/mod.rs"), "mod.rs");
         assert_eq!(file_name(".gitignore"), ".gitignore");
         assert_eq!(file_name("README"), "README");
+    }
+
+    // --- Секция документации -------------------------------------------------
+
+    use crate::tools::codemap::tags::Tag;
+
+    fn md_file(rel_path: &str, tokens: u32) -> FileEntry {
+        FileEntry {
+            rel_path: rel_path.into(),
+            lang: Lang::Markdown,
+            bytes: tokens as u64 * 4,
+            lines: 50,
+            tokens,
+            mtime_secs: 1,
+            parsed: true,
+        }
+    }
+
+    fn md_index(files: Vec<FileEntry>, tags: Vec<Tag>) -> Index {
+        let mut index = index(files);
+        index.tags = tags;
+        index
+    }
+
+    #[test]
+    fn docs_section_lists_documents_with_headings_from_the_index() {
+        let index = md_index(
+            vec![md_file("docs/ARCHITECTURE.md", 3000)],
+            vec![
+                Tag::def("docs/ARCHITECTURE.md", "Архитектура", 1),
+                Tag::def("docs/ARCHITECTURE.md", "Слой домена", 45),
+            ],
+        );
+        let text = docs_section(&index, &[], 400);
+        assert!(text.starts_with(DOCS_HEADER), "заголовок секции обязателен: {text}");
+        assert!(text.contains("docs/ARCHITECTURE.md (~3k):"), "{text}");
+        assert!(text.contains("| Архитектура"), "{text}");
+        assert!(text.contains("| Слой домена"), "{text}");
+    }
+
+    #[test]
+    fn docs_section_is_empty_without_markdown_files() {
+        let index = index(vec![file("src/a.rs", 100)]);
+        assert_eq!(docs_section(&index, &[], 400), "");
+    }
+
+    #[test]
+    fn focused_document_outranks_a_bigger_one() {
+        let index = md_index(
+            vec![md_file("docs/big.md", 9000), md_file("notes/small.md", 100)],
+            vec![Tag::def("notes/small.md", "План", 1)],
+        );
+        let text = docs_section(&index, &["notes/small.md".to_string()], 400);
+        let small_at = text.find("notes/small.md").expect("фокусный док есть");
+        let big_at = text.find("docs/big.md").expect("большой док есть");
+        assert!(
+            small_at < big_at,
+            "--file обязан поднимать документ выше крупного: {text}"
+        );
+    }
+
+    #[test]
+    fn docs_without_headings_are_named_but_not_invented() {
+        let index = md_index(vec![md_file("README.md", 500)], vec![]);
+        let text = docs_section(&index, &[], 400);
+        assert!(text.contains("README.md (~500):"), "документ обязан быть назван: {text}");
+        assert!(!text.contains("|"), "строк оглавления без заголовков не выдумывается: {text}");
+    }
+
+    #[test]
+    fn docs_section_truncates_honestly() {
+        let files: Vec<FileEntry> = (0..12)
+            .map(|i| md_file(&format!("docs/doc{i}.md"), 1000 + i))
+            .collect();
+        let tags: Vec<Tag> = files
+            .iter()
+            .flat_map(|f| {
+                (0..3).map(move |h| Tag::def(&f.rel_path, &format!("Раздел {h}"), h as u32 * 10 + 1))
+            })
+            .collect();
+        let index = md_index(files, tags);
+        let text = docs_section(&index, &[], 120);
+        assert!(
+            text.contains("ещё") && text.contains("документов"),
+            "обрезанный список обязан признать обрезку: {text}"
+        );
+        assert!(
+            tokens::estimate(&text) as f64 <= 120.0 * 1.15,
+            "секция обязана укладываться в бюджет: {}",
+            tokens::estimate(&text)
+        );
+    }
+
+    /// Число заголовков одного документа ограничено: огромная оглавление
+    /// одного файла не должно съедать секцию.
+    #[test]
+    fn heading_list_per_document_is_capped() {
+        let tags: Vec<Tag> = (0..20)
+            .map(|h| Tag::def("docs/big.md", &format!("Раздел номер {h}"), h as u32 * 5 + 1))
+            .collect();
+        let index = md_index(vec![md_file("docs/big.md", 4000)], tags);
+        let text = docs_section(&index, &[], 400);
+        assert!(
+            text.contains("ещё 14 разделов"),
+            "лишние заголовки обязаны быть посчитаны честно: {text}"
+        );
+        assert!(
+            !text.contains("Раздел номер 19"),
+            "заголовки сверх потолка не печатаются: {text}"
+        );
     }
 }

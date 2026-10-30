@@ -15,6 +15,9 @@ pub enum Lang {
     TsJs,
     /// `rustpython-parser`: полный AST.
     Python,
+    /// Разбор заголовков: `#`-уровни становятся определениями секций, тело
+    /// остаётся доступно полнотекстовому поиску через плоские чанки.
+    Markdown,
     /// Парсера нет. Файл не выбрасывается, а попадает в плоский индекс:
     /// инвентарь и текстовые чанки, доступные поиску.
     Flat,
@@ -25,12 +28,13 @@ impl Lang {
     ///
     /// Неизвестное расширение — не ошибка и не повод пропустить файл:
     /// оно даёт [`Lang::Flat`], иначе агент потерял бы из индекса половину
-    /// репозитория (`.md`, `.toml`, `.json`, `.yml`).
+    /// репозитория (`.toml`, `.json`, `.yml`).
     pub fn of_extension(ext: &str) -> Lang {
         match ext.to_ascii_lowercase().as_str() {
             "rs" => Lang::Rust,
             "ts" | "tsx" | "mts" | "cts" | "js" | "jsx" | "mjs" | "cjs" => Lang::TsJs,
             "py" | "pyi" => Lang::Python,
+            "md" | "markdown" | "mdx" => Lang::Markdown,
             _ => Lang::Flat,
         }
     }
@@ -39,7 +43,9 @@ impl Lang {
     ///
     /// У `Flat` его нет, поэтому для него не строится граф вызовов: файл
     /// попадает в поиск как текст, а не как символы. Это различие намеренное:
-    /// делать вид, что `.md` разобран, значило бы врать агенту о структуре.
+    /// делать вид, что произвольный текст разобран, значило бы врать агенту
+    /// о структуре. У `Markdown` структура есть — заголовки, — поэтому он
+    /// парсером считается.
     pub fn has_parser(self) -> bool {
         !matches!(self, Lang::Flat)
     }
@@ -50,6 +56,7 @@ impl Lang {
             Lang::Rust => "rust",
             Lang::TsJs => "ts/js",
             Lang::Python => "python",
+            Lang::Markdown => "markdown",
             Lang::Flat => "flat",
         }
     }
@@ -75,16 +82,24 @@ mod tests {
     }
 
     #[test]
+    fn markdown_extensions_map_to_their_backend() {
+        assert_eq!(Lang::of_extension("md"), Lang::Markdown);
+        assert_eq!(Lang::of_extension("MD"), Lang::Markdown);
+        assert_eq!(Lang::of_extension("markdown"), Lang::Markdown);
+        assert!(Lang::of_extension("md").has_parser(), "у markdown есть структура — заголовки");
+    }
+
+    #[test]
     fn unknown_extension_falls_back_to_flat_instead_of_disappearing() {
-        // `.md` не выбрасывается из индекса — он просто не имеет AST.
-        assert_eq!(Lang::of_extension("md"), Lang::Flat);
-        assert!(!Lang::of_extension("md").has_parser());
+        // `.toml` не выбрасывается из индекса — он просто не имеет парсера.
+        assert_eq!(Lang::of_extension("toml"), Lang::Flat);
+        assert!(!Lang::of_extension("toml").has_parser());
         assert!(Lang::of_extension("rs").has_parser());
     }
 
     #[test]
     fn names_are_distinct() {
-        let all = [Lang::Rust, Lang::TsJs, Lang::Python, Lang::Flat];
+        let all = [Lang::Rust, Lang::TsJs, Lang::Python, Lang::Markdown, Lang::Flat];
         for (i, a) in all.iter().enumerate() {
             for b in &all[i + 1..] {
                 assert_ne!(a.name(), b.name(), "имена бэкендов обязаны различаться");

@@ -68,6 +68,7 @@ pub fn render_map(
     root: &Path,
     index: &Index,
     ranked: &[RankedDefinition],
+    focus: &[String],
     budget_tokens: u32,
 ) -> (String, u32) {
     if ranked.is_empty() {
@@ -93,8 +94,14 @@ pub fn render_map(
             .then_with(|| a.cmp(b))
     });
 
+    // Документация откусывает от инвентарной доли, а не от кода: оглавление —
+    // часть обзора. Без markdown-файлов секция пуста и каталогам возвращается
+    // вся доля — поведение прежнее.
     let inventory_budget = (budget_tokens as f64 * inventory::SHARE) as u32;
-    let inventory_text = inventory::section(index, &inventory::file_weights(ranked), inventory_budget);
+    let docs_budget = (inventory_budget as f64 * inventory::DOCS_SHARE) as u32;
+    let docs_text = inventory::docs_section(index, focus, docs_budget);
+    let dirs_budget = inventory_budget.saturating_sub(tokens::estimate(&docs_text));
+    let inventory_text = inventory::section(index, &inventory::file_weights(ranked), dirs_budget);
 
     let header = format!(
         "# Карта проекта: {}\n\n> {} | файлов: {} | разобрано: {} | символов: {} | токенов: ~{}\n\n",
@@ -106,10 +113,12 @@ pub fn render_map(
         index.total_tokens(),
     );
 
-    // Код покупается на остаток после шапки и инвентаря: инвентарь зарезервирован
-    // долей, а не «сколько вышло», иначе он забирал бы больше трети карты в
-    // проектах с большим числом каталогов.
-    let reserved = tokens::estimate(&header) + tokens::estimate(&inventory_text);
+    // Код покупается на остаток после шапки и обзора: инвентарь с документацией
+    // зарезервированы долей, а не «сколько вышло», иначе обзор забирал бы больше
+    // трети карты в проектах с большим числом каталогов.
+    let reserved = tokens::estimate(&header)
+        + tokens::estimate(&inventory_text)
+        + tokens::estimate(&docs_text);
     let mut budget_left = budget_tokens.saturating_sub(reserved);
     let cap = per_file_cap(budget_tokens);
 
@@ -140,6 +149,7 @@ pub fn render_map(
 
     let mut out = header;
     out.push_str(&inventory_text);
+    out.push_str(&docs_text);
     for plan in &plans {
         out.push_str(&plan.block);
     }
@@ -395,7 +405,7 @@ pub fn entry() -> u32 {
     fn map_shows_source_lines_not_just_names() {
         let root = temp_root("lines");
         std::fs::write(root.join("a.rs"), SOURCE).expect("исходник");
-        let (text, _) = render_map(&root, &index(), &ranked(), 10_000);
+        let (text, _) = render_map(&root, &index(), &ranked(), &[], 10_000);
         assert!(text.contains("pub fn entry"), "карта обязана содержать строки кода");
         assert!(text.contains("a.rs:"), "карта обязана называть файл");
         let _ = std::fs::remove_dir_all(&root);
@@ -405,7 +415,7 @@ pub fn entry() -> u32 {
     fn gaps_are_elided() {
         let root = temp_root("ellipsis");
         std::fs::write(root.join("a.rs"), SOURCE).expect("исходник");
-        let (text, _) = render_map(&root, &index(), &ranked(), 10_000);
+        let (text, _) = render_map(&root, &index(), &ranked(), &[], 10_000);
         assert!(text.contains(ELLIPSIS), "пропуски обязаны быть обозначены");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -417,7 +427,7 @@ pub fn entry() -> u32 {
     fn definitions_inside_a_file_keep_source_order() {
         let root = temp_root("order");
         std::fs::write(root.join("a.rs"), SOURCE).expect("исходник");
-        let (text, _) = render_map(&root, &index(), &ranked(), 10_000);
+        let (text, _) = render_map(&root, &index(), &ranked(), &[], 10_000);
         let run_at = text.find("pub fn run").expect("run есть");
         let helper_at = text.find("fn helper").expect("helper есть");
         let entry_at = text.find("pub fn entry").expect("entry есть");
@@ -447,7 +457,7 @@ pub fn entry() -> u32 {
                 rank: 1.0,
             },
         ];
-        let (text, _) = render_map(&root, &index(), &ranked, 10_000);
+        let (text, _) = render_map(&root, &index(), &ranked, &[], 10_000);
         let z_at = text.find("z.rs:").expect("z.rs есть в карте");
         let a_at = text.find("a.rs:").expect("a.rs есть в карте");
         assert!(
@@ -487,7 +497,7 @@ pub fn entry() -> u32 {
             });
         }
         let budget = 60u32;
-        let (text, cost) = render_map(&root, &index(), &definitions, budget);
+        let (text, cost) = render_map(&root, &index(), &definitions, &[], budget);
         assert!(
             cost as f64 <= budget as f64 * 1.15 + 1.0,
             "карта обязана укладываться в бюджет {budget}, получилось {cost}"
@@ -509,8 +519,8 @@ pub fn entry() -> u32 {
                 rank: 100.0 - i as f64,
             });
         }
-        let (small, _) = render_map(&root, &index(), &definitions, 40);
-        let (large, _) = render_map(&root, &index(), &definitions, 4_000);
+        let (small, _) = render_map(&root, &index(), &definitions, &[], 40);
+        let (large, _) = render_map(&root, &index(), &definitions, &[], 4_000);
         assert!(
             large.len() > small.len(),
             "больший бюджет обязан дать больше кода: {} против {}",
@@ -523,7 +533,7 @@ pub fn entry() -> u32 {
     #[test]
     fn empty_index_renders_empty_map() {
         let root = temp_root("empty");
-        let (text, cost) = render_map(&root, &index(), &[], 1_000);
+        let (text, cost) = render_map(&root, &index(), &[], &[], 1_000);
         assert!(text.is_empty());
         assert_eq!(cost, 0);
         let _ = std::fs::remove_dir_all(&root);
@@ -559,7 +569,7 @@ pub fn entry() -> u32 {
     fn gate8_map_covers_many_files_not_one() {
         let root = temp_root("breadth");
         let definitions = many_files(&root, 40);
-        let (text, _) = render_map(&root, &index(), &definitions, 2_048);
+        let (text, _) = render_map(&root, &index(), &definitions, &[], 2_048);
         let files: Vec<&str> = text
             .lines()
             .filter(|line| line.ends_with(".rs:"))
@@ -579,7 +589,7 @@ pub fn entry() -> u32 {
     fn gate10_no_file_exceeds_its_share_of_the_map() {
         let root = temp_root("cap");
         let definitions = many_files(&root, 12);
-        let (text, used) = render_map(&root, &index(), &definitions, 2_048);
+        let (text, used) = render_map(&root, &index(), &definitions, &[], 2_048);
         let blocks: Vec<&str> = text
             .split_inclusive(".rs:\n")
             .skip(1)
@@ -604,7 +614,7 @@ pub fn entry() -> u32 {
     fn a_file_that_made_it_into_the_map_shows_at_least_one_line() {
         let root = temp_root("firstline");
         let definitions = many_files(&root, 6);
-        let (text, _) = render_map(&root, &index(), &definitions, 4_000);
+        let (text, _) = render_map(&root, &index(), &definitions, &[], 4_000);
         assert!(text.contains(".rs:\n"), "у каждого блока обязано быть тело");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -620,8 +630,55 @@ pub fn entry() -> u32 {
             line: 1,
             rank: 10.0,
         }];
-        let (text, _) = render_map(&root, &index(), &definitions, 4_000);
+        let (text, used) = render_map(&root, &index(), &definitions, &[], 4_000);
         assert!(!text.contains("ghost.rs:"), "нечитаемый файл не должен давать блок");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Markdown-файлы попадают в карту секцией документации: без неё дока не
+    /// попадала бы в карту ни при каком бюджете — у прозы нет связей, которые
+    /// качают ранг. Заголовки берутся из тегов индекса, файлы не читаются.
+    #[test]
+    fn markdown_files_get_a_docs_section_with_headings() {
+        let root = temp_root("docs");
+        std::fs::write(root.join("a.rs"), SOURCE).expect("исходник");
+        std::fs::write(
+            root.join("ARCHITECTURE.md"),
+            "# Архитектура\n\nТекст\n\n## Слои\n",
+        )
+        .expect("документ");
+
+        let mut index = index();
+        index.files.push(crate::tools::codemap::model::FileEntry {
+            rel_path: "ARCHITECTURE.md".into(),
+            lang: crate::tools::codemap::lang::Lang::Markdown,
+            bytes: 40,
+            lines: 5,
+            tokens: 12,
+            mtime_secs: 1,
+            parsed: true,
+        });
+        index.tags = vec![
+            Tag::def("ARCHITECTURE.md", "Архитектура", 1),
+            Tag::def("ARCHITECTURE.md", "Слои", 5),
+        ];
+
+        let (text, _) = render_map(&root, &index, &ranked(), &[], 2_048);
+        assert!(text.contains("## 📚 Документация"), "секция обязана появиться:\n{text}");
+        assert!(text.contains("ARCHITECTURE.md"), "{text}");
+        assert!(text.contains("| Архитектура"), "{text}");
+        assert!(text.contains("| Слои"), "{text}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Без markdown-файлов секции нет и поведение прежнее: инвентарь получает
+    /// всю свою долю.
+    #[test]
+    fn no_markdown_files_means_no_docs_section() {
+        let root = temp_root("no_docs");
+        std::fs::write(root.join("a.rs"), SOURCE).expect("исходник");
+        let (text, _) = render_map(&root, &index(), &ranked(), &[], 2_048);
+        assert!(!text.contains("Документация"), "секции без доков быть не должно:\n{text}");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

@@ -112,6 +112,20 @@ pub struct MapArgs {
     /// stdout флаг ничего не пишет — это канал карты (и JSON-RPC в MCP-режиме).
     #[arg(long)]
     pub explain: bool,
+    /// Не понижать ранг vendored/сгенерированного кода.
+    ///
+    /// По умолчанию пути с каталогами `vendor`/`third_party`/`external` и файлы
+    /// `.d.ts` получают множитель 0.2: они законно собирают входящие ссылки
+    /// (их импортируют все), но читать их агенту почти никогда не нужно.
+    #[arg(long)]
+    pub boost_vendor: bool,
+    /// Gitignore-подобные шаблоны исключения из ранжирования.
+    ///
+    /// Подходящие пути не попадают в карту вовсе (правила те же, что и у
+    /// обхода: `tests/**`, `**/gen`, `*.pb.rs`). Из индекса и поиска файлы
+    /// не удаляются — флаг управляет только картой.
+    #[arg(long = "exclude", value_name = "PATTERN")]
+    pub exclude: Vec<String>,
     /// Вычислить ответ в памяти: не читать кеш и ничего не записывать на диск
     /// (для чужих деревьев: крейтов из cargo registry, соседних репозиториев).
     #[arg(long)]
@@ -203,6 +217,11 @@ pub struct Cli {
     /// MCP-режим флага не имеет: корень MCP-сервера — «свой» проект, кеш там
     /// уместен всегда.
     pub no_cache: bool,
+    /// Настройки ранжирования карты (даунвейт vendored, исключения).
+    ///
+    /// MCP-режим держит значения по умолчанию и позволяет переопределить их
+    /// на каждый вызов `codemap_map` — аргументы тула сильнее настроек сервера.
+    pub rank: rank::RankOptions,
 }
 
 impl Cli {
@@ -213,6 +232,7 @@ impl Cli {
             root: PathBuf::from("."),
             tokens: DEFAULT_TOKENS,
             no_cache: false,
+            rank: rank::RankOptions::default(),
         }
     }
 
@@ -259,7 +279,7 @@ impl Cli {
     pub fn map(&self, tokens: u32, focus: &[String], explain: bool) -> Result<String, String> {
         let index = self.load_or_build()?;
         let graph = graph::build(&index.tags, focus, &[]);
-        let ranked = rank::rank_definitions(&graph, &index.tags);
+        let ranked = rank::rank_definitions_opts(&graph, &index.tags, &self.rank);
         log::info!(
             "codemap: тегов {} | рёбер {} | ранжировано {} | файлов {} | фокус {}",
             index.tags.len(),
@@ -268,7 +288,7 @@ impl Cli {
             index.files.len(),
             focus.len()
         );
-        let (text, used) = render::render_map(&self.root, &index, &ranked, tokens);
+        let (text, used) = render::render_map(&self.root, &index, &ranked, focus, tokens);
         report_concentration(&ranked, explain);
         if text.is_empty() {
             return Err(format!(
@@ -375,31 +395,69 @@ pub fn run(argv: Vec<String>) -> Exit {
                 );
                 return Exit::Input;
             }
-            let cli = Cli { root: root_of(args.path), tokens: DEFAULT_TOKENS, no_cache: false };
+            let cli = Cli {
+                root: root_of(args.path),
+                tokens: DEFAULT_TOKENS,
+                no_cache: false,
+                rank: rank::RankOptions::default(),
+            };
             finish(cli.index(None))
         }
         CodemapSub::Map(args) => {
-            let cli = Cli { root: root_of(args.path), tokens: args.tokens, no_cache: args.no_cache };
+            let cli = Cli {
+                root: root_of(args.path),
+                tokens: args.tokens,
+                no_cache: args.no_cache,
+                rank: rank::RankOptions {
+                    boost_vendor: args.boost_vendor,
+                    exclude: args.exclude,
+                },
+            };
             finish(cli.map(args.tokens, &args.file, args.explain))
         }
         CodemapSub::Search(args) => {
-            let cli = Cli { root: root_of(args.path), tokens: DEFAULT_TOKENS, no_cache: args.no_cache };
+            let cli = Cli {
+                root: root_of(args.path),
+                tokens: DEFAULT_TOKENS,
+                no_cache: args.no_cache,
+                rank: rank::RankOptions::default(),
+            };
             finish(cli.search(&args.query, args.limit))
         }
         CodemapSub::Callers(args) => {
-            let cli = Cli { root: root_of(args.path), tokens: DEFAULT_TOKENS, no_cache: args.no_cache };
+            let cli = Cli {
+                root: root_of(args.path),
+                tokens: DEFAULT_TOKENS,
+                no_cache: args.no_cache,
+                rank: rank::RankOptions::default(),
+            };
             finish(cli.callers(&args.symbol))
         }
         CodemapSub::Skeleton(args) => {
-            let cli = Cli { root: root_of(args.path), tokens: DEFAULT_TOKENS, no_cache: true };
+            let cli = Cli {
+                root: root_of(args.path),
+                tokens: DEFAULT_TOKENS,
+                no_cache: true,
+                rank: rank::RankOptions::default(),
+            };
             finish_lookup(cli.skeleton(&args.file))
         }
         CodemapSub::Body(args) => {
-            let cli = Cli { root: root_of(args.path), tokens: DEFAULT_TOKENS, no_cache: true };
+            let cli = Cli {
+                root: root_of(args.path),
+                tokens: DEFAULT_TOKENS,
+                no_cache: true,
+                rank: rank::RankOptions::default(),
+            };
             finish_lookup(cli.body(&args.file, &args.symbol))
         }
         CodemapSub::Mcp(args) => {
-            let cli = Cli { root: root_of(args.path), tokens: args.tokens, no_cache: false };
+            let cli = Cli {
+                root: root_of(args.path),
+                tokens: args.tokens,
+                no_cache: false,
+                rank: rank::RankOptions::default(),
+            };
             mcp::serve(cli)
         }
     }
@@ -568,6 +626,75 @@ mod tests {
         }
     }
 
+    /// Даунвейт vendored по умолчанию включён, `--boost-vendor` его отключает.
+    #[test]
+    fn boost_vendor_is_off_by_default_and_parses_when_asked() {
+        match parse(&["map"]) {
+            CodemapSub::Map(args) => assert!(!args.boost_vendor),
+            other => panic!("ожидался map, получен {other:?}"),
+        }
+        match parse(&["map", "--boost-vendor"]) {
+            CodemapSub::Map(args) => assert!(args.boost_vendor),
+            other => panic!("ожидался map, получен {other:?}"),
+        }
+    }
+
+    /// `--exclude` накапливает шаблоны, как `--file`.
+    #[test]
+    fn exclude_patterns_accumulate() {
+        match parse(&["map", "--exclude", "tests/**", "--exclude", "**/gen"]) {
+            CodemapSub::Map(args) => {
+                assert_eq!(args.exclude, vec!["tests/**", "**/gen"]);
+            }
+            other => panic!("ожидался map, получен {other:?}"),
+        }
+    }
+
+    /// Исключение из карты — только из ранжирования: файл остаётся в индексе
+    /// и в поиске. Проверяется сквозным путём `Cli::map`, потому что поломка
+    /// вероятнее всего в проводке, а не в фильтре.
+    #[test]
+    fn exclude_hides_files_from_the_map_but_not_from_search() {
+        let root = std::env::temp_dir().join("codemap_exclude_map");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).expect("временный каталог");
+        // fixture.rs ссылается на core: без внешней ссылки core не ранжировался
+        // бы вовсе (определения поднимают только кросс-файловые рёбра).
+        std::fs::write(root.join("core.rs"), "pub fn core_entry() -> u32 { 1 }\n").expect("исходник");
+        std::fs::write(
+            root.join("fixture.rs"),
+            "pub fn fixture_entry() -> u32 { core_entry() }\n",
+        )
+        .expect("исходник");
+
+        let cli = Cli {
+            root: root.clone(),
+            tokens: 1_024,
+            no_cache: true,
+            rank: rank::RankOptions {
+                boost_vendor: false,
+                exclude: vec!["fixture.rs".to_string()],
+            },
+        };
+        let map = cli.map(1_024, &[], false).expect("карта с исключением");
+        assert!(
+            !map.contains("fixture.rs:"),
+            "у исключённого файла нет блока кода в карте:\n{map}"
+        );
+        assert!(map.contains("core_entry"), "остальные файлы на месте:\n{map}");
+        assert!(
+            map.contains("fixture.rs"),
+            "инвентарь обязан называть файл и после исключения — он в проекте: {map}"
+        );
+
+        let hits = cli.search("fixture_entry", 10).expect("поиск");
+        assert!(
+            hits.contains("fixture.rs"),
+            "исключение из карты не удаляет файл из поиска: {hits}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Фокус обязан менять карту — иначе `--file` объявлен, а не работает.
 /// Проверяется сквозным путём `Cli::map`, а не вызовом `graph::build`: чинить
 /// пришлось именно проводку (флаг разбирался и никуда не передавался), и тест
@@ -601,6 +728,7 @@ fn gate12_focus_flag_moves_the_focused_file_up_the_map() {
         root: root.clone(),
         tokens: 2_048,
         no_cache: false,
+        rank: rank::RankOptions::default(),
     };
     let plain = cli.map(2_048, &[], false).expect("карта без фокуса");
     let focused = cli
@@ -683,9 +811,10 @@ fn gate12_focus_flag_moves_the_focused_file_up_the_map() {
     /// Карта чужого дерева в no-cache режиме отвечает, и на диске ничего
     /// не появляется: ни каталога кеша, ни правок exclude в `.git`.
     ///
-    /// Исходник обязан содержать и определение, и ссылку: карта ранжирует
-    /// определения по связям, и файл без единой ссылки картой не показывается
-    /// вовсе (см. [`rank::rank_definitions`]) — это независимое от no-cache
+    /// Исходники обязаны содержать кросс-файловую ссылку: карта ранжирует
+    /// определения по связям МЕЖДУ файлами, и файл, пользующийся только
+    /// собственными символами, картой не показывается (см.
+    /// [`rank::rank_definitions_opts`]) — это независимое от no-cache
     /// поведение, и тест не должен путать его с отказом флага.
     #[test]
     fn map_no_cache_answers_and_writes_nothing() {
@@ -699,11 +828,17 @@ fn gate12_focus_flag_moves_the_focused_file_up_the_map() {
              pub fn plain_inner() -> u32 { 3 }\n",
         )
         .expect("исходник");
+        std::fs::write(
+            root.join("src/main.rs"),
+            "pub fn run() -> u32 { plain_math() }\n",
+        )
+        .expect("исходник");
 
         let cli = Cli {
             root: root.clone(),
             tokens: 1_024,
             no_cache: true,
+            rank: rank::RankOptions::default(),
         };
         let map = cli.map(1_024, &[], false).expect("карта в памяти");
         assert!(

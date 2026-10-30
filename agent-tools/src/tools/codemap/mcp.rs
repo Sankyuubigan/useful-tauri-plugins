@@ -126,6 +126,8 @@ pub fn tool_definitions() -> Vec<Value> {
                 "properties": {
                     "tokens": { "type": "integer", "description": "Бюджет токенов карты; по умолчанию 2048" },
                     "files": { "type": "array", "items": { "type": "string" }, "description": "Файлы, ранжируемые выше остальных" },
+                    "exclude": { "type": "array", "items": { "type": "string" }, "description": "Gitignore-подобные шаблоны исключения из ранжирования (tests/**, **/gen)" },
+                    "boostVendor": { "type": "boolean", "description": "Не понижать ранг vendored/сгенерированного кода (vendor/, *.d.ts)" },
                 },
             }),
         ),
@@ -204,6 +206,14 @@ fn call_tool(params: &Value, cli: &Cli) -> Result<Value, String> {
                 .get("tokens")
                 .and_then(Value::as_u64)
                 .unwrap_or(cli.tokens as u64) as u32;
+            // Аргументы вызова сильнее настроек сервера: exclude и boostVendor
+            // переопределяются на каждый вызов через копию настроек.
+            let mut cli = cli.clone();
+            cli.rank.exclude = string_array(&arguments, "exclude");
+            cli.rank.boost_vendor = arguments
+                .get("boostVendor")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             cli.map(tokens, &string_array(&arguments, "files"), false)
         }
         "codemap_search" => {

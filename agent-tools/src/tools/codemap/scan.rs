@@ -318,7 +318,11 @@ fn parse_rules(text: &str) -> Vec<Rule> {
 /// якорь в начале, `*` внутри компонента и `**` для «на любом уровне».
 /// Полный синтаксис gitignore не воспроизводится — и это осознанно: лишний
 /// файл в индексе лучше, чем молча выпавший файл, который агент потом не найдёт.
-fn matches(pattern: &str, rel_path: &str) -> bool {
+///
+/// `pub(crate)`: те же правила нужны ранжированию для `--exclude` — исключение
+/// из карты обязано работать по тем же шаблонам, что и исключение из обхода,
+/// иначе у агента было бы два разных языка исключений.
+pub(crate) fn matches(pattern: &str, rel_path: &str) -> bool {
     let anchored = pattern.starts_with('/');
     let pattern = pattern.trim_start_matches('/');
 

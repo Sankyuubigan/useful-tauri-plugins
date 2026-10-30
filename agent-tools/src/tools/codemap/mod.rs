@@ -6,10 +6,11 @@
 //!
 //! ## Что уже сделано и что ещё предстоит
 //!
-//! Слой парсинга ([`tags`], [`lang`], [`rust_lang`], [`ts_lang`], [`py_lang`])
-//! и плоский запасной путь ([`flat_lang`]) готовы. Поверх них построены граф
-//! ([`graph`], [`rank`]), рендер под бюджет ([`render`]), поиск ([`search`]),
-//! хранение ([`store`]) и оба режима вызова — CLI ([`cli`]) и MCP ([`mcp`]).
+//! Слой парсинга ([`tags`], [`lang`], [`rust_lang`], [`ts_lang`], [`py_lang`],
+//! [`md_lang`]) и плоский запасной путь ([`flat_lang`]) готовы. Поверх них
+//! построены граф ([`graph`], [`rank`]), рендер под бюджет ([`render`]),
+//! поиск ([`search`]), хранение ([`store`]) и оба режима вызова — CLI ([`cli`])
+//! и MCP ([`mcp`]).
 //!
 //! ## Почему три бэкенда, а не один
 //!
@@ -34,6 +35,7 @@ pub mod graph;
 pub mod inventory;
 pub mod lang;
 pub mod lookup;
+pub mod md_lang;
 pub mod mcp;
 pub mod model;
 pub mod parse;

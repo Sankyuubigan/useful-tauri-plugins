@@ -25,6 +25,52 @@ const ITERATIONS: usize = 20;
 /// Насколько сумма рангов должна сойтись, чтобы итерации остановить.
 const EPSILON: f64 = 1e-9;
 
+/// Каталоги, считающиеся vendored/чужим кодом по имени компонента пути.
+///
+/// Список намеренно короткий: ложное понижение настоящего кода хуже, чем
+/// оставшийся в карте чужой файл. «gen» и подобные слишком общие имена сюда
+/// не попали именно поэтому.
+const VENDOR_DIRS: &[&str] = &["vendor", "vendored", "third_party", "thirdparty", "external"];
+
+/// На сколько множится ранг vendored-пути.
+///
+/// Не ноль, а малое число: vendored-файл, на который ссылается половина
+/// проекта, всё-таки часть графа, и при большом бюджете карты он достоин
+/// последнего места — а не исчезновения. Число подобрано на king_orch_3:
+/// при 0.2 `astronomy.js` (импортируется одним файлом, но 16 упоминаний
+/// имён с ×10 за длину) всё ещё возглавлял карту.
+const VENDOR_FACTOR: f64 = 0.1;
+
+/// Настройки ранжирования, общие для CLI и MCP.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RankOptions {
+    /// Не понижать ранг vendored/сгенерированного кода.
+    pub boost_vendor: bool,
+    /// Gitignore-подобные шаблоны: подходящие пути не ранжируются вовсе.
+    pub exclude: Vec<String>,
+}
+
+/// Vendored-ли путь.
+///
+/// Два признака: имя каталога в любой позиции пути из [`VENDOR_DIRS`] либо
+/// файл объявления типов `.d.ts` — он описывает чужую библиотеку, даже когда
+/// лежит рядом с кодом.
+pub fn is_vendor_path(rel_path: &str) -> bool {
+    let path = rel_path.replace('\\', "/");
+    let file_name = path.rsplit('/').next().unwrap_or(path.as_str());
+    if file_name.ends_with(".d.ts") {
+        return true;
+    }
+    path.split('/').any(|component| VENDOR_DIRS.contains(&component))
+}
+
+/// Подходит ли путь хоть под один шаблон исключения.
+fn is_excluded(rel_path: &str, patterns: &[String]) -> bool {
+    patterns
+        .iter()
+        .any(|pattern| super::scan::matches(pattern, rel_path))
+}
+
 /// Ранг каждого файла.
 pub fn pagerank(graph: &Graph) -> HashMap<String, f64> {
     let n = graph.files.len();
@@ -152,7 +198,40 @@ pub struct RankedDefinition {
 /// по всем определениям одноимённого символа — иначе неоднозначное имя вроде
 /// `new` поднимало бы случайный файл.
 pub fn rank_definitions(graph: &Graph, tags: &[Tag]) -> Vec<RankedDefinition> {
-    let file_ranks = pagerank(graph);
+    rank_definitions_opts(graph, tags, &RankOptions::default())
+}
+
+/// То же с настройками: даунвейт vendored-кода и исключение путей.
+///
+/// ## Почему самопетли не участвуют в накоплении весов
+///
+/// Ребро `файл → файл` честно существует (рекурсия и внутренние вызовы — связи,
+/// см. `graph::build`), и в PageRank оно корректно игнорируется. Но шаг ниже —
+/// «ранг файла × вес рёбер × число упоминаний» — по сырым рёбрам самопетлю
+/// пропускал, и большой файл, использующий собственные символы сотни раз
+/// (типичный vendored-код), накапливал вес, в разы превышающий вклад настоящих
+/// внешних ссылок. На king_orch_3 из-за этого `astronomy.js` с его 348
+/// внутренними упоминаниями возглавлял карту, оттесняя реальное ядро проекта.
+/// Кросс-файловый интерес — единственный, который карта и обещает показывать;
+/// «файл интересен самому себе» интересом не считается.
+pub fn rank_definitions_opts(graph: &Graph, tags: &[Tag], opts: &RankOptions) -> Vec<RankedDefinition> {
+    // Даунвейт vendored-кода применяется к рангу файла после PageRank: множитель
+    // сохраняет порядок между обычными файлами и лишь сдвигает vendored вниз.
+    // Важно, что это делается на копии: сам PageRank обязан оставаться
+    // нормированной на единицу шкалой — на ней держатся тесты сравнимости.
+    let file_ranks: HashMap<String, f64> = pagerank(graph)
+        .into_iter()
+        .map(|(file, rank)| {
+            let rank = if opts.boost_vendor {
+                rank
+            } else if is_vendor_path(&file) {
+                rank * VENDOR_FACTOR
+            } else {
+                rank
+            };
+            (file, rank)
+        })
+        .collect();
     let mut weights: HashMap<(&str, &str), f64> = HashMap::new();
     // Имя → файл → строки объявления. Строки нужны рендеру; если символ
     // объявлен в файле несколько раз, берётся первая — карта показывает одно
@@ -213,16 +292,22 @@ pub fn rank_definitions(graph: &Graph, tags: &[Tag]) -> Vec<RankedDefinition> {
             continue;
         };
         for (definer, weight) in edges {
-            for (name, count) in names {
+            // Самопетля не выражает внешнего интереса: см. докомментарий функции.
+            if *definer == *referencer {
+                continue;
+            }
+            for (name, _count) in names {
                 let Some(places) = defined_at.get(name) else { continue };
                 if !places.contains_key(*definer) {
                     continue;
                 }
-                // Множитель `count` сохранён намеренно: повторное упоминание
-                // имени в файле — это и есть интерес к этому определению,
-                // и исходное поведение это учитывало. Умножение здесь, а не
-                // перебор тегов, даёт то же число без квадратичной работы.
-                *weights.entry((*definer, *name)).or_insert(0.0) += weight * (*count as f64);
+                // Частота упоминаний оплачивается РОВНО ОДИН РАЗ — в весе ребра
+                // (`mul · √num_refs`, см. `graph::build`). Умножение на count
+                // здесь давало бы второй учёт поверх первого: итоговый вклад
+                // рос как count^1.5, и файл, использующий чужие символы сотню
+                // раз (vendored-код, широкий импорт), перетягивал карту, хотя
+                // `√num_refs` задуман именно против этого.
+                *weights.entry((*definer, *name)).or_insert(0.0) += weight;
             }
         }
     }
@@ -241,6 +326,9 @@ pub fn rank_definitions(graph: &Graph, tags: &[Tag]) -> Vec<RankedDefinition> {
                 rank: rank * weight,
             })
         })
+        // Исключённые пути не ранжируются вовсе, а не идут в хвосте: агент
+        // попросил их не видеть, и «последняя строка карты» была бы нарушением.
+        .filter(|definition| !is_excluded(&definition.rel_path, &opts.exclude))
         .collect();
 
     // Сортировка по рангу с обратным порядком — единственное место, где
@@ -434,5 +522,141 @@ mod tests {
             "список обязан идти по убыванию: {:?}",
             ranked.iter().map(|d| (&d.rel_path, &d.name)).collect::<Vec<_>>()
         );
+    }
+
+    // --- Vendored-даунвейт и самопетли ---------------------------------------
+
+    /// Файл, использующий только собственные символы, N раз подряд.
+    fn vendor_tags(count: usize) -> Vec<Tag> {
+        let mut tags = vec![def("vendor/lib.rs", "vendored_entry_point")];
+        for _ in 0..count {
+            tags.push(reference("vendor/lib.rs", "vendored_entry_point"));
+        }
+        tags
+    }
+
+    /// Внутренние упоминания не поднимают определение над кросс-файловым
+    /// интересом. Реальный случай, который это ловит: `astronomy.js` на
+    /// king_orch_3 возглавлял карту благодаря 348 упоминаниям собственных
+    /// символов, оттесняя ядро, на которое реально ссылается проект.
+    #[test]
+    fn self_references_do_not_lift_definitions_into_the_map() {
+        let mut tags = vec![
+            def("core.rs", "core_entry_function"),
+            def("app.rs", "app_entry"),
+            reference("app.rs", "core_entry_function"),
+        ];
+        tags.extend(vendor_tags(400));
+
+        let graph = graph::build(&tags, &[], &[]);
+        let ranked = rank_definitions(&graph, &tags);
+        assert!(
+            ranked.iter().all(|d| d.name != "vendored_entry_point"),
+            "определение, никем внешне не упомянутое, не попадает в ранжирование: {ranked:?}"
+        );
+        let core = ranked
+            .iter()
+            .find(|d| d.name == "core_entry_function")
+            .expect("определение с внешней ссылкой обязано ранжироваться");
+        assert!(core.rank > 0.0, "у core обязан быть положительный ранг: {core:?}");
+    }
+
+    /// Vendored-файл, на который реально ссылаются, остаётся в карте — но ниже
+    /// равного ему обычного файла. Ноль был бы ложью: путь всё-таки в графе.
+    #[test]
+    fn referenced_vendor_file_stays_ranked_but_below_an_equal_plain_file() {
+        // Две одинаковые цепочки: app → core и app_v → vendor. Разница только
+        // в пути второго файла.
+        let tags = vec![
+            def("plain/lib.rs", "plain_symbol_long"),
+            def("app.rs", "app_entry"),
+            reference("app.rs", "plain_symbol_long"),
+            def("vendor/lib2.rs", "vendor_symbol_long"),
+            reference("app.rs", "vendor_symbol_long"),
+        ];
+        let graph = graph::build(&tags, &[], &[]);
+        let ranked = rank_definitions(&graph, &tags);
+        let plain = ranked
+            .iter()
+            .find(|d| d.name == "plain_symbol_long")
+            .expect("обычный путь обязан ранжироваться");
+        let vendor = ranked
+            .iter()
+            .find(|d| d.name == "vendor_symbol_long")
+            .expect("упомянутый снаружи vendored-файл не исчезает из карты");
+        assert!(
+            vendor.rank < plain.rank,
+            "vendored-путь обязан стоять ниже равного обычного: {vendor:?} против {plain:?}"
+        );
+        assert!(
+            vendor.rank > 0.0,
+            "даунвейт — множитель, а не вычёркивание: {vendor:?}"
+        );
+    }
+
+    /// Флаг `--boost-vendor` возвращает прежнее поведение: без понижения
+    /// vendored-путь и обычный равны при равных связях.
+    #[test]
+    fn boost_vendor_option_restores_the_plain_ranking() {
+        let tags = vec![
+            def("plain/lib.rs", "plain_symbol_long"),
+            def("app.rs", "app_entry"),
+            reference("app.rs", "plain_symbol_long"),
+            def("vendor/lib2.rs", "vendor_symbol_long"),
+            reference("app.rs", "vendor_symbol_long"),
+        ];
+        let graph = graph::build(&tags, &[], &[]);
+        let opts = RankOptions { boost_vendor: true, exclude: Vec::new() };
+        let ranked = rank_definitions_opts(&graph, &tags, &opts);
+        let plain = ranked
+            .iter()
+            .find(|d| d.name == "plain_symbol_long")
+            .expect("обычный путь обязан ранжироваться");
+        let vendor = ranked
+            .iter()
+            .find(|d| d.name == "vendor_symbol_long")
+            .expect("vendored-файл обязан ранжироваться");
+        assert!(
+            (vendor.rank - plain.rank).abs() < 1e-9,
+            "без даунвейта равные связи дают равный ранг: {vendor:?} против {plain:?}"
+        );
+    }
+
+    /// Исключённый путь не ранжируется вовсе: не в хвосте, не с нулём.
+    #[test]
+    fn excluded_paths_are_dropped_from_ranking() {
+        let tags = vec![
+            def("src/core.rs", "core_entry_function"),
+            def("tests/helpers.rs", "helper_symbol_long"),
+            def("app.rs", "app_entry"),
+            reference("app.rs", "core_entry_function"),
+            reference("app.rs", "helper_symbol_long"),
+        ];
+        let graph = graph::build(&tags, &[], &[]);
+        let opts = RankOptions {
+            boost_vendor: false,
+            exclude: vec!["tests/**".to_string()],
+        };
+        let ranked = rank_definitions_opts(&graph, &tags, &opts);
+        assert!(
+            ranked.iter().all(|d| !d.rel_path.starts_with("tests/")),
+            "исключённый путь обязан исчезнуть из ранжирования: {ranked:?}"
+        );
+        assert!(
+            ranked.iter().any(|d| d.name == "core_entry_function"),
+            "остальные пути ранжируются как прежде: {ranked:?}"
+        );
+    }
+
+    /// Признак vendored-пути: каталог в любой позиции и `.d.ts`.
+    #[test]
+    fn vendor_paths_are_recognized_by_directory_and_extension() {
+        assert!(is_vendor_path("vendor/lib.rs"));
+        assert!(is_vendor_path("src/vendor/lib.rs"));
+        assert!(is_vendor_path("third_party/lib.c"));
+        assert!(is_vendor_path("types/astronomy.d.ts"));
+        assert!(!is_vendor_path("src/main.rs"));
+        assert!(!is_vendor_path("src/vendor.rs"), "имя ФАЙЛА не признак каталога");
+        assert!(!is_vendor_path("src/vendors/lib.rs"), "признак — точное имя каталога");
     }
 }

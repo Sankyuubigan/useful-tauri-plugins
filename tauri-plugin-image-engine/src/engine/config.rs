@@ -141,25 +141,25 @@ pub fn default_lora_dir() -> PathBuf {
     data_root().join("loras")
 }
 
-/// Миграция имён видео-бандлов (30.10.26): два q3k-бандла (fl2va/ref2va) слиты
-/// в один uni-бандл с ДВУМЯ diffusion-файлами. Старые имена в
-/// `selected_video_bundle` маппятся read-time в ОБОИХ загрузчиках (SSOT —
-/// единая функция): иначе юзер остался бы с «мертвым» выбором, который дал бы
-/// честный отказ «бандл отсутствует в каталоге» на каждый vid_gen.
+/// Миграция имён видео-бандлов (30.10.26): оба старых бандла слиты в uni-наборы
+/// с ДВУМЯ diffusion-файлами (q3k-пара → uni-q3k; q4km-одиночка → uni-q4k).
+/// Старые имена в `selected_video_bundle` маппятся read-time в ОБОИХ
+/// загрузчиках (SSOT — единая функция): иначе юзер остался бы с «мертвым»
+/// выбором, который дал бы честный отказ «бандл отсутствует в каталоге».
 fn normalize_selected_video_bundle(cfg: &mut ImageEngineConfig) {
-    const LEGACY: [&str; 2] = [
-        "minimax_h3_fl2va_pruned-q3k",
-        "minimax_h3_ref2va_pruned-q3k",
+    const RENAMES: [(&str, &str); 3] = [
+        ("minimax_h3_fl2va_pruned-q3k", "minimax_h3_uni-q3k"),
+        ("minimax_h3_ref2va_pruned-q3k", "minimax_h3_uni-q3k"),
+        ("minimax_h3_fl2va_pruned-q4km", "minimax_h3_uni-q4k"),
     ];
-    const MERGED: &str = "minimax_h3_uni-q3k";
     if let Some(sel) = cfg.selected_video_bundle.as_mut() {
-        if LEGACY.contains(&sel.as_str()) {
+        if let Some((_, new)) = RENAMES.iter().find(|(old, _)| old == sel) {
             log::info!(
                 "[image-engine] selected_video_bundle «{}» слит в «{}» — мигрирую",
                 sel,
-                MERGED
+                new
             );
-            *sel = MERGED.to_string();
+            *sel = new.to_string();
         }
     }
 }
@@ -364,14 +364,14 @@ mod tests {
         assert!(legacy.lora_dir.is_none());
     }
 
-    /// Миграция 30.10.26: старые имена q3k-бандлов (fl2va/ref2va) в
-    /// selected_video_bundle маппятся на merged uni-бандл; прочие имена
-    /// (q4km, отсутствующие) не трогаются.
+    /// Миграция 30.10.26: старые имена q3k-пары и q4km-одиночки маппятся на
+    /// соответствующие uni-бандлы; прочие имена (отсутствующие) не трогаются.
     #[test]
     fn selected_video_bundle_legacy_names_map_to_uni() {
-        for legacy in [
-            "minimax_h3_fl2va_pruned-q3k",
-            "minimax_h3_ref2va_pruned-q3k",
+        for (legacy, uni) in [
+            ("minimax_h3_fl2va_pruned-q3k", "minimax_h3_uni-q3k"),
+            ("minimax_h3_ref2va_pruned-q3k", "minimax_h3_uni-q3k"),
+            ("minimax_h3_fl2va_pruned-q4km", "minimax_h3_uni-q4k"),
         ] {
             let mut cfg = ImageEngineConfig {
                 selected_video_bundle: Some(legacy.to_string()),
@@ -380,13 +380,14 @@ mod tests {
             super::normalize_selected_video_bundle(&mut cfg);
             assert_eq!(
                 cfg.selected_video_bundle.as_deref(),
-                Some("minimax_h3_uni-q3k"),
-                "{} → uni",
-                legacy
+                Some(uni),
+                "{} → {}",
+                legacy,
+                uni
             );
         }
         // Не-легаси имена не трогаются.
-        for keep in [None, Some("minimax_h3_fl2va_pruned-q4km".to_string()), Some("что-то-чужое".to_string())] {
+        for keep in [None, Some("minimax_h3_uni-q4k".to_string()), Some("что-то-чужое".to_string())] {
             let mut cfg = ImageEngineConfig {
                 selected_video_bundle: keep.clone(),
                 ..ImageEngineConfig::default()

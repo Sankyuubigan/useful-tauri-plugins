@@ -1,16 +1,25 @@
 [
   {
-    "name": "minimax_h3_fl2va_pruned-q4km",
+    "name": "minimax_h3_uni-q4k",
     "lora_base": "minimax_h3",
-    "label": "MiniMax H3 FL2VA pruned (Q4_K) — видео+речь; для карт ≥12 ГБ",
-    "note": "Дефолт для VRAM ≥12 ГБ. Режимы fl2va: text→video, image→video (init), первый+последний кадр. Русская речь — нативно (prompt). Шаги: draft 4 (Turbo-LoRA DMAD; без LoRA-файла — 6, fallback-поле steps_draft_nolora), final 20 (замеры ролика Ngc6vmyGOyU). Euler/discrete — путь final и draft-без-LoRA; турбо-точка — lcm/simple/shift 12 (поля turbo_* этого пресета). cfg 1.0, 864×480, 24 fps, ≤15 сек. Turbo-LoRA DMAD 4-step подтверждена бенчем 26.10.26: медиана 130.8 с против 505.6 с у 20-шагового final (ускорение 3.87×), см. tasks/26.10.26 Ускорение видео H3 — turbo-LoRA бенч (Фаза 0-1).md и test/bench/video_h3_turbo/report.json. РАЗМЕЩЕНИЕ ВЕСОВ (29.10.26, test/bench/video_h3_disk/): адаптивная лестница placement — при спавне выбирается самый требовательный к ОЗУ вариант, который влезает в свободную RAM (жрёт сколько есть, остальное стримится с SSD/NVMe). te_disk: RSS 13.66 ГБ, 150.3 с (порог 16.0 = 13.66×1.15); all_disk: RSS 2.72 ГБ, 171.2–174.2 с (порог 3.2 = 2.72×1.15), VRAM-пик 14.35 ГБ с резервом --max-vram -2. Контроль auto-fit 27.10.26 (RSS 24.65 ГБ, 153.6 с) ДОМИНИРУЕТСЯ te_disk — из лестницы удалён. На 16 ГБ ОЗУ машине выбирается all_disk, на 32+ ГБ — te_disk. --threads не внедрён (compute на CUDA0, замера пользы нет).",
+    "label": "MiniMax H3 Universal (Q4_K) — видео+речь, все режимы (текст/кадр/флип/референсы); карты ≥12 ГБ",
+    "note": "Дефолт для VRAM ≥12 ГБ, ВСЕ режимы vid_gen в одном бандле: diffusion-файл выбирается при спавне по режиму запроса (движок per-request spawn — переключение бесплатное, в памяти всегда ровно один diffusion). fl2va-файл (is_default, 10.64 ГиБ): text→video, картинка→video (init), первый+последний кадр. ref2va-файл (10.59 ГиБ, добавлен 30.10.26): мультимодальные референсы — до 3 картинок (структурный лимит тула; по субтитрам роликов референсов >6 модель ломает следование), аудио-референс тембра голоса, консистентное лицо по character sheet. t2va идёт на fl2va-файле (семейный дефолт); равнозначность двух файлов для t2va бенчем не подтверждена — доказательств нет. Русская речь — нативно (prompt). Шаги: draft 4 (Turbo-LoRA DMAD; без LoRA-файла — 6, fallback-поле steps_draft_nolora), final 20 (замеры ролика Ngc6vmyGOyU). Euler/discrete — путь final и draft-без-LoRA; турбо-точка — lcm/simple/shift 12 (поля turbo_* этого пресета). cfg 1.0, 864×480, 24 fps, ≤15 сек. Turbo-LoRA DMAD 4-step подтверждена бенчем 26.10.26: медиана 130.8 с против 505.6 с у 20-шагового final (ускорение 3.87×), см. tasks/26.10.26 Ускорение видео H3 — turbo-LoRA бенч (Фаза 0-1).md и test/bench/video_h3_turbo/report.json (замер на fl2va-файле; для ref2va-файла замеров нет). РАЗМЕЩЕНИЕ ВЕСОВ (29.10.26, test/bench/video_h3_disk/): адаптивная лестница placement — при спавне выбирается самый требовательный к ОЗУ вариант, который влезает в свободную RAM (жрёт сколько есть, остальное стримится с SSD/NVMe). te_disk: RSS 13.66 ГБ, 150.3 с (порог 16.0 = 13.66×1.15); all_disk: RSS 2.72 ГБ, 171.2–174.2 с (порог 3.2 = 2.72×1.15), VRAM-пик 14.35 ГБ с резервом --max-vram -2. Контроль auto-fit 27.10.26 (RSS 24.65 ГБ, 153.6 с) ДОМИНИРУЕТСЯ te_disk — из лестницы удалён. На 16 ГБ ОЗУ машине выбирается all_disk, на 32+ ГБ — te_disk. --threads не внедрён (compute на CUDA0, замера пользы нет).",
     "is_default": true,
     "files": [
       {
         "role": "diffusion",
         "filename": "minimax_h3_fl2va_pruned-Q4_K.gguf",
         "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/minimax_h3_fl2va_pruned-Q4_K.gguf?download=true",
-        "size_bytes": 11420663904
+        "size_bytes": 11420663904,
+        "modes": ["t2va", "i2va", "fl2va"],
+        "is_default": true
+      },
+      {
+        "role": "diffusion",
+        "filename": "minimax_h3_ref2va_pruned-Q4_K.gguf",
+        "download_url": "https://huggingface.co/unsloth/MiniMax-H3-GGUF/resolve/main/minimax_h3_ref2va_pruned-Q4_K.gguf?download=true",
+        "size_bytes": 11381096544,
+        "modes": ["t2va", "ref2va"]
       },
       {
         "role": "llm",
@@ -52,7 +61,7 @@
       "turbo_scheduler": "simple",
       "turbo_flow_shift": 12.0
     },
-    "size_gb": "31.7",
+    "size_gb": "43.1",
     "vram_fast_gb": 28.0,
     "vram_min_gb": 12.0,
     "placement": [
@@ -72,7 +81,8 @@
     "modes": [
       "t2va",
       "i2va",
-      "fl2va"
+      "fl2va",
+      "ref2va"
     ]
   },
   {

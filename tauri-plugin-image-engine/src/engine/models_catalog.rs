@@ -1238,8 +1238,8 @@ mod video_tests {
         );
         let def = default_video_bundle_entry().expect("нет видео-бандла по умолчанию");
         assert_eq!(
-            def.name, "minimax_h3_fl2va_pruned-q4km",
-            "дефолт для VRAM ≥12 ГБ — Q4_K (юзер 16 ГБ), got {}",
+            def.name, "minimax_h3_uni-q4k",
+            "дефолт для VRAM ≥12 ГБ — Q4_K uni (юзер 16 ГБ), got {}",
             def.name
         );
         // Правило из PRP: 4 обязательные роли, включая audio_vae (рус. речь).
@@ -1295,7 +1295,7 @@ mod video_tests {
     /// lora_draft, и без), упоминая flow_shift.
     #[test]
     fn video_entry_with_zero_turbo_flow_shift_is_rejected() {
-        let base = video_bundle_by_name("minimax_h3_fl2va_pruned-q4km").expect("бандл");
+        let base = video_bundle_by_name("minimax_h3_uni-q4k").expect("бандл");
         // С lora_draft: 0.0 → отказ с именем поля.
         let mut bad = base.clone();
         bad.preset.turbo_flow_shift = 0.0;
@@ -1328,16 +1328,16 @@ mod video_tests {
                 .cloned()
                 .unwrap_or_else(|| panic!("нет бандла {}", name))
         };
-        let q4km = by("minimax_h3_fl2va_pruned-q4km");
+        let q4km = by("minimax_h3_uni-q4k");
         let uni = by("minimax_h3_uni-q3k");
         // Классы памяти: порог Q4 К выше порога uni-Q3_K (авто-выбор по vram_min_gb).
         assert!(
             q4km.vram_min_gb.unwrap_or(0.0) > uni.vram_min_gb.unwrap_or(0.0),
             "Q4_K обязан требовать больше VRAM, чем Q3_K"
         );
-        // q4km — 4 файла + lora_draft (Turbo-LoRA DMAD, бенч 26.10.26).
-        assert_eq!(q4km.files.len(), 5);
-        // uni — 4 файла + lora_draft + ВТОРОЙ diffusion (fl2va + ref2va).
+        // Оба бандла универсальны (30.10.26): 4 файла + lora_draft + ДВА
+        // diffusion (fl2va + ref2va).
+        assert_eq!(q4km.files.len(), 6);
         assert_eq!(uni.files.len(), 6);
         let diff = |e: &VideoBundleEntry, role: &str| {
             e.files
@@ -1346,18 +1346,22 @@ mod video_tests {
                 .cloned()
                 .unwrap_or_else(|| panic!("нет роли {} у {}", role, e.name))
         };
-        assert_eq!(diff(&q4km, "diffusion").size_bytes, Some(11420663904));
-        let uni_diffusions: Vec<&BundleFile> = uni.files.iter().filter(|f| f.role == "diffusion").collect();
-        assert_eq!(uni_diffusions.len(), 2, "uni-бандл несёт fl2va + ref2va diffusion");
-        assert!(uni_diffusions.iter().any(|f| f.filename == "minimax_h3_fl2va_pruned-Q3_K.gguf" && f.size_bytes == Some(8759328864)));
-        assert!(uni_diffusions.iter().any(|f| f.filename == "minimax_h3_ref2va_pruned-Q3_K.gguf" && f.size_bytes == Some(8716105824)));
+        fn diffusions(e: &VideoBundleEntry) -> Vec<&BundleFile> {
+            e.files.iter().filter(|f| f.role == "diffusion").collect()
+        }
+        assert_eq!(diffusions(&q4km).len(), 2, "uni-q4k несёт fl2va + ref2va diffusion");
+        assert!(diffusions(&q4km).iter().any(|f| f.filename == "minimax_h3_fl2va_pruned-Q4_K.gguf" && f.size_bytes == Some(11420663904)));
+        assert!(diffusions(&q4km).iter().any(|f| f.filename == "minimax_h3_ref2va_pruned-Q4_K.gguf" && f.size_bytes == Some(11381096544)));
+        assert_eq!(diffusions(&uni).len(), 2, "uni-бандл несёт fl2va + ref2va diffusion");
+        assert!(diffusions(&uni).iter().any(|f| f.filename == "minimax_h3_fl2va_pruned-Q3_K.gguf" && f.size_bytes == Some(8759328864)));
+        assert!(diffusions(&uni).iter().any(|f| f.filename == "minimax_h3_ref2va_pruned-Q3_K.gguf" && f.size_bytes == Some(8716105824)));
         for e in [&q4km, &uni] {
             assert_eq!(diff(e, "llm").size_bytes, Some(13102161024));
             assert_eq!(diff(e, "vae").size_bytes, Some(5207808496));
             assert_eq!(diff(e, "audio_vae").size_bytes, Some(605254808));
         }
         // Суммарный размер на диск — по тем же точным байтам.
-        assert!(video_bundle_disk_bytes(&q4km) > 30_000_000_000, "q4km ≈ 30.3 ГБ");
+        assert!(video_bundle_disk_bytes(&q4km) > 42_000_000_000, "uni-q4k ≈ 43.1 ГБ (два diffusion)");
         assert!(video_bundle_disk_bytes(&uni) > 37_000_000_000, "uni ≈ 37.8 ГБ (два diffusion)");
     }
 
@@ -1399,7 +1403,7 @@ mod video_tests {
                 e.modes
             );
         }
-        // fl2va-диффузион q4km умеет кадры; uni покрывает все четыре режима.
+        // Оба бандла универсальны (30.10.26): q4k и q3k покрывают все четыре режима.
         let by = |name: &str| {
             catalog
                 .iter()
@@ -1407,17 +1411,17 @@ mod video_tests {
                 .map(|e| e.modes.clone())
                 .unwrap_or_default()
         };
-        let q4km_modes = by("minimax_h3_fl2va_pruned-q4km");
-        assert!(q4km_modes.contains(&"i2va".to_string()), "fl2va-бандл умеет i2va");
-        assert!(q4km_modes.contains(&"fl2va".to_string()));
-        let uni_modes = by("minimax_h3_uni-q3k");
-        for m in ["t2va", "i2va", "fl2va", "ref2va"] {
-            assert!(
-                uni_modes.contains(&m.to_string()),
-                "uni-бандл обязан покрывать {}, got {:?}",
-                m,
-                uni_modes
-            );
+        for name in ["minimax_h3_uni-q4k", "minimax_h3_uni-q3k"] {
+            let modes = by(name);
+            for m in ["t2va", "i2va", "fl2va", "ref2va"] {
+                assert!(
+                    modes.contains(&m.to_string()),
+                    "{} обязан покрывать {}, got {:?}",
+                    name,
+                    m,
+                    modes
+                );
+            }
         }
 
         // Битые modes — честный отказ валидатора.
@@ -1430,31 +1434,48 @@ mod video_tests {
         assert!(validate_video_entry(&bad).unwrap_err().contains("hypervideo"));
     }
 
-    /// Карта «режим → diffusion-файл» uni-бандла (30.10.26): resolve по всем
-    /// четырём режимам, честные отказы валидатора на битые карты.
+    /// Карта «режим → diffusion-файл» uni-бандлов (30.10.26): resolve по всем
+    /// четырём режимам на ОБЕИХ записях каталога, честные отказы валидатора
+    /// на битые карты, легаси-одиночка без modes.
     #[test]
     fn uni_bundle_resolves_diffusion_file_by_mode() {
-        let uni = video_bundle_by_name("minimax_h3_uni-q3k").expect("uni-бандл в каталоге");
-        // fl2va-файл (is_default): t2va-пересечение обоих файлов → дефолт,
-        // i2va/fl2va — только он.
-        let fl2va = resolve_diffusion_file(&uni, "t2va").expect("t2va");
-        assert_eq!(fl2va.filename, "minimax_h3_fl2va_pruned-Q3_K.gguf", "t2va на пересечении → is_default файл");
-        assert!(fl2va.is_default);
-        for m in ["i2va", "fl2va"] {
-            let f = resolve_diffusion_file(&uni, m).expect(m);
-            assert_eq!(f.filename, "minimax_h3_fl2va_pruned-Q3_K.gguf", "{} → fl2va-файл", m);
+        // Оба uni-бандла: t2va-пересечение → is_default (fl2va-файл),
+        // i2va/fl2va → fl2va-файл, ref2va → ref2va-файл.
+        for (name, fl2va_file, ref2va_file) in [
+            ("minimax_h3_uni-q4k", "minimax_h3_fl2va_pruned-Q4_K.gguf", "minimax_h3_ref2va_pruned-Q4_K.gguf"),
+            ("minimax_h3_uni-q3k", "minimax_h3_fl2va_pruned-Q3_K.gguf", "minimax_h3_ref2va_pruned-Q3_K.gguf"),
+        ] {
+            let uni = video_bundle_by_name(name).unwrap_or_else(|| panic!("{} в каталоге", name));
+            let fl2va = resolve_diffusion_file(&uni, "t2va").expect("t2va");
+            assert_eq!(fl2va.filename, fl2va_file, "{}: t2va на пересечении → is_default файл", name);
+            assert!(fl2va.is_default);
+            for m in ["i2va", "fl2va"] {
+                let f = resolve_diffusion_file(&uni, m).expect(m);
+                assert_eq!(f.filename, fl2va_file, "{}: {} → fl2va-файл", name, m);
+            }
+            let ref_f = resolve_diffusion_file(&uni, "ref2va").expect("ref2va");
+            assert_eq!(ref_f.filename, ref2va_file, "{}: ref2va → ref2va-файл", name);
+            assert!(!ref_f.is_default);
         }
-        // ref2va — второй файл.
-        let ref_f = resolve_diffusion_file(&uni, "ref2va").expect("ref2va");
-        assert_eq!(ref_f.filename, "minimax_h3_ref2va_pruned-Q3_K.gguf");
-        assert!(!ref_f.is_default);
 
-        // Легаси-одиночка без modes: любой режим из entry.modes резолвится в файл.
-        let q4km = video_bundle_by_name("minimax_h3_fl2va_pruned-q4km").expect("бандл");
-        assert!(resolve_diffusion_file(&q4km, "t2va").is_ok());
-        assert!(resolve_diffusion_file(&q4km, "ref2va").is_ok(), "одиночный файл без modes — гейт тула, не resolve");
+        // Легаси-одиночка без modes (задел под будущие записи): любой режим
+        // из entry.modes резолвится в единственный файл.
+        let mut legacy = video_bundle_by_name("minimax_h3_uni-q4k").expect("бандл");
+        legacy.files.retain(|f| f.role != "diffusion");
+        legacy.files.push(BundleFile {
+            role: "diffusion".to_string(),
+            filename: "single.gguf".to_string(),
+            download_url: "https://example.com/single.gguf".to_string(),
+            size_bytes: Some(1),
+            modes: Vec::new(),
+            is_default: false,
+        });
+        assert!(validate_video_entry(&legacy).is_ok(), "одиночка без modes — легаси, валидна");
+        assert!(resolve_diffusion_file(&legacy, "t2va").is_ok());
+        assert!(resolve_diffusion_file(&legacy, "ref2va").is_ok(), "одиночный файл без modes — гейт тула, не resolve");
 
         // Битые карты — честный отказ валидатора.
+        let uni = video_bundle_by_name("minimax_h3_uni-q3k").expect("uni-бандл в каталоге");
         // 1) третий diffusion без modes — выбор был бы неоднозначным.
         let mut no_modes = uni.clone();
         no_modes.files.push(BundleFile {
@@ -1482,7 +1503,7 @@ mod video_tests {
         let msg3 = validate_video_entry(&uncovered).unwrap_err();
         assert!(msg3.contains("не покрыт"), "got: {}", msg3);
         // 4) одиночный diffusion с modes ≠ entry.modes — файл обязан уметь всё заявленное.
-        let mut mismatch = video_bundle_by_name("minimax_h3_fl2va_pruned-q4km").expect("бандл");
+        let mut mismatch = legacy;
         for f in mismatch.files.iter_mut().filter(|f| f.role == "diffusion") {
             f.modes = vec!["t2va".to_string()];
         }
@@ -1537,8 +1558,8 @@ mod video_tests {
         let catalog = load_video_catalog();
         let q4km = catalog
             .iter()
-            .find(|e| e.name == "minimax_h3_fl2va_pruned-q4km")
-            .expect("q4km в каталоге");
+            .find(|e| e.name == "minimax_h3_uni-q4k")
+            .expect("uni-q4k в каталоге");
         // Лестница ровно из двух замеренных вариантов, пороги по правилу
         // «пик × 1.15, округление вверх»: te_disk 13.66→16.0, all_disk 2.72→3.2.
         assert_eq!(q4km.placement.len(), 2, "лестница q4km: te_disk + all_disk");

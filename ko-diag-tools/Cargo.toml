@@ -1,0 +1,22 @@
+[package]
+name = "ko-diag-tools"
+version = "0.1.0"
+edition = "2021"
+description = "Ядро диагностических тулов (SSOT): аудит системы Windows, криминалистика прошлых сбоев (журнал Windows, LiveKernelReports, Minidump), чёрный ящик с принудительным сбросом на диск (sync_all). Общее для хостов (King Orch) и CLI agent-tools."
+license = "MIT"
+
+# Ядро без C-компиляции (проверено: sysinfo/windows-sys/winreg — pure Rust,
+# никаких cc/cmake в транзитивных зависимостях). PowerShell — внешняя
+# программа, не зависимость (как LibreOffice у ko-excel-tools).
+[dependencies]
+sysinfo = { workspace = true }   # 0.30.x — та же версия, что линкует King Orch (Cargo.toml:57)
+chrono = { workspace = true }    # метки времени в отчётах (features из workspace: serde+clock)
+thiserror = { workspace = true }
+log = { workspace = true }
+# Реестр Windows: HVCI/цельность памяти, TDR-настройки видеокарты, PagingFiles.
+# winreg — чистый Rust поверх windows-sys (метаданные, без C-сборки).
+winreg = "0.52"
+
+[lib]
+name = "ko_diag_tools"
+path = "src/lib.rs"

@@ -15,6 +15,7 @@ members = [
     "ko-json-store",
     "ko-code-tools",
     "ko-excel-tools",
+    "ko-diag-tools",
     "agent-tools",
 ]
 

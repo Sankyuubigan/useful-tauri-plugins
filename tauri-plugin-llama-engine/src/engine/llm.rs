@@ -372,11 +372,18 @@ impl LlamaEngine {
         }
 
         // ── Проверка целостности GGUF-файла модели ──
-        // Битые/криво сконвертированные файлы (напр. block_count объявлен
-        // больше, чем реально есть тензоров blk.N) роняют llama-server с
-        // непонятным хвостом лога. Проверяем заранее и даём понятную ошибку.
-        if let Err(msg) = crate::engine::llm_gguf::validate_gguf(&model_path) {
-            return fail(format!("Файл модели повреждён.\n{}", msg));
+        // Объективные дефекты файла по спецификации GGUF — фатальная ошибка с
+        // понятным текстом вместо хвоста лога llama-server. Замечания
+        // (например, block_count больше числа blk.N у MTP-моделей Qwen3.5)
+        // запуск не блокируют: единственный источник истины о загружаемости —
+        // сам llama-server.
+        match crate::engine::llm_gguf::validate_gguf_detailed(&model_path) {
+            Err(msg) => return fail(format!("Файл модели повреждён.\n{}", msg)),
+            Ok(warnings) => {
+                for w in warnings {
+                    log::warn!("GGUF-валидация: {}", w);
+                }
+            }
         }
 
         // ── Проверка установки движка ──

@@ -496,8 +496,10 @@ pub fn reset_model_params(app: AppHandle, model_path: String) -> engine::ModelPa
     get_model_params(app, model_path) // Пересчитает параметры из GGUF заново
 }
 
-/// Результат добавления модели: конфиг + опциональное предупреждение о том,
-/// что GGUF-файл повреждён (модель всё равно добавляется, но не заработает).
+/// Результат добавления модели: конфиг + опциональное предупреждение.
+/// Фатальные дефекты GGUF приходят как `Err` команды; `warning` — замечания,
+/// загрузке не препятствующие (например, block_count больше числа blk.N у
+/// MTP-моделей Qwen3.5 — вердикт выносит движок при старте).
 #[derive(Serialize)]
 pub struct AddModelOutcome {
     pub config: engine::EngineConfig,
@@ -520,10 +522,18 @@ pub fn add_model(
     }
 
     let mut warning = None;
-    if let Err(msg) = engine::llm_gguf::validate_gguf(&path) {
-        let w = format!("Файл модели повреждён.\n{}", msg);
-        log::warn!("add_model: {}", w);
-        warning = Some(w);
+    match engine::llm_gguf::validate_gguf_detailed(&path) {
+        Err(msg) => {
+            let w = format!("Файл модели повреждён.\n{}", msg);
+            log::warn!("add_model: {}", w);
+            warning = Some(w);
+        }
+        Ok(warnings) if !warnings.is_empty() => {
+            let w = warnings.join("\n");
+            log::warn!("add_model: {}", w);
+            warning = Some(w);
+        }
+        Ok(_) => {}
     }
 
     if engine::is_mmproj_file(&path) {

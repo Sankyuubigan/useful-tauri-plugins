@@ -512,24 +512,31 @@ fn read_tensor_infos(p: &mut GgufReader, tensor_count: u64) -> Result<TensorSect
     Ok(section)
 }
 
-/// Проверяет, что число объявленных слоёв совпадает с фактическими `blk.N`.
-///
-/// Ключевая проверка: llama.cpp итерирует блоки от 0 до block_count-1 и падает,
-/// если тензора `blk.N.*` нет (случай битой конвертации qwen3.8-9b).
-fn check_block_count(block_count: Option<u32>, blk_indices: &std::collections::HashSet<u32>) -> Result<(), String> {
-    if let Some(bc) = block_count {
-        if let Some(&max_idx) = blk_indices.iter().max() {
-            let found = max_idx as u64 + 1;
-            if found != bc as u64 {
-                return Err(format!(
-                    "Файл модели повреждён: заголовок GGUF объявляет {} слоёв, но в файле найдено только {} блоков тензоров (blk.0..blk.{}). \
-                     Файл сконвертирован или скачан некорректно — скачайте модель заново или выберите другую квантовку.",
-                    bc, found, max_idx
-                ));
-            }
-        }
+/// Несовпадение `block_count` из заголовка с фактическими `blk.N` — НЕ дефект
+/// спецификации GGUF, а знание о внутренних требованиях llama.cpp, которым
+/// валидатор не владеет. Для архитектур с MTP-головой (Qwen3.5 и подобных)
+/// заголовок объявляет слоёв на единицу больше, чем tensor-блоков, и движок
+/// такие файлы грузит (проверено живым прогоном llama-cli b12019 на
+/// RusMind-Sokol-4.7: SHA-256 идентичен источнику, block_count=33, блоков 32).
+/// Поэтому это предупреждение, а не ошибка: загружаемость определяет сам
+/// llama.cpp при старте (битая конвертация qwen3.8-9b с той же сигнатурой
+/// 33/32 будет отвергнута сервером — с его собственным точным диагнозом).
+fn block_count_mismatch_warning(
+    block_count: Option<u32>,
+    blk_indices: &std::collections::HashSet<u32>,
+) -> Option<String> {
+    let bc = block_count?;
+    let max_idx = blk_indices.iter().max()?;
+    let found = *max_idx as u64 + 1;
+    if found == bc as u64 {
+        return None;
     }
-    Ok(())
+    Some(format!(
+        "Заголовок GGUF объявляет {} слоёв, но в файле найдено {} блоков тензоров (blk.0..blk.{}). \
+         Для архитектур с MTP-головой (например, Qwen3.5) это особенность формата, а не дефект; \
+         в остальных случаях возможна битая конвертация. Загружаемость определит движок при старте.",
+        bc, found, max_idx
+    ))
 }
 
 /// Проверяет монотонность смещений данных и выход за конец файла.
@@ -560,13 +567,19 @@ fn check_offsets(metas: &[TensorMeta], data_len: u64) -> Result<(), String> {
     Ok(())
 }
 
-/// Проверка целостности GGUF-файла модели.
+/// Проверка целостности GGUF-файла модели с разделением на фатальные дефекты
+/// и предупреждения.
 ///
-/// Возвращает `Err` с понятным русским сообщением, если файл повреждён или
-/// сконвертирован некорректно (например, заголовок объявляет слоёв больше,
-/// чем реально есть тензоров `blk.N` — llama.cpp падает в этом случае с
-/// `check_tensor_dims: tensor 'blk.N.*' not found`).
-pub fn validate_gguf(path: &str) -> Result<(), String> {
+/// `Err` с понятным русским сообщением — только объективные дефекты файла по
+/// спецификации GGUF: неверная магия/версия, дубликаты тензоров, нулевые
+/// размерности, немонотонные offset'ы, данные за концом файла, отсутствие
+/// обязательного `token_embd.weight`.
+///
+/// `Ok(warnings)` — файл структурно корректен; `warnings` содержит замечания,
+/// которые загрузке не препятствуют (сейчас одно: несовпадение `block_count`
+/// с числом `blk.N` — признак MTP-архитектуры или битой конвертации; вердикт
+/// выносит сам llama.cpp при старте).
+pub fn validate_gguf_detailed(path: &str) -> Result<Vec<String>, String> {
     let file = std::fs::File::open(path)
         .map_err(|e| format!("Не удалось открыть файл модели «{}»: {}", path, e))?;
     let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
@@ -577,7 +590,10 @@ pub fn validate_gguf(path: &str) -> Result<(), String> {
     let (_, alignment, block_count, _context_length) = read_metadata(&mut p, kv_count)?;
     let section = read_tensor_infos(&mut p, tensor_count)?;
 
-    check_block_count(block_count, &section.blk_indices)?;
+    let mut warnings = Vec::new();
+    if let Some(w) = block_count_mismatch_warning(block_count, &section.blk_indices) {
+        warnings.push(w);
+    }
 
     if !section.has_token_embd {
         return Err("Файл модели повреждён: не найден обязательный тензор token_embd.weight.".to_string());
@@ -587,7 +603,15 @@ pub fn validate_gguf(path: &str) -> Result<(), String> {
     let data_start = align_up(info_end, alignment)?;
     let data_len = file_size.saturating_sub(data_start);
 
-    check_offsets(&section.metas, data_len)
+    check_offsets(&section.metas, data_len)?;
+    Ok(warnings)
+}
+
+/// Проверка целостности GGUF-файла: только фатальные дефекты (см.
+/// `validate_gguf_detailed`). Предупреждения (например, несовпадение
+/// `block_count` с числом `blk.N` у MTP-моделей) здесь не учитываются.
+pub fn validate_gguf(path: &str) -> Result<(), String> {
+    validate_gguf_detailed(path).map(|_| ())
 }
 
 #[cfg(test)]
@@ -717,14 +741,34 @@ mod tests {
     }
 
     #[test]
-    fn block_count_mismatch_fails() {
+    fn block_count_mismatch_warns() {
         // Заголовок объявляет 3 слоя, а тензоры есть только для blk.0..blk.1 —
-        // ровно баг qwen3.8-9b (объявлено 33, реально 32 блока).
+        // сигнатура и у MTP-моделей qwen35 (RusMind-Sokol-4.7: объявлено 33,
+        // блоков 32, движок грузит), и у битой конвертации qwen3.8-9b. По файлу
+        // их не различить, поэтому mismatch — предупреждение, вердикт за
+        // llama.cpp.
         let file = TempFile::new("mismatch", &build_gguf(3, &valid_tensors()));
-        let err = validate_gguf(file.path.to_str().unwrap()).unwrap_err();
-        assert!(err.contains("объявляет 3 слоёв"), "ошибка: {}", err);
-        assert!(err.contains("только 2 блоков"), "ошибка: {}", err);
-        assert!(err.contains("скачайте модель заново"), "ошибка: {}", err);
+        let warnings = validate_gguf_detailed(file.path.to_str().unwrap()).expect("mismatch не фатален");
+        assert_eq!(warnings.len(), 1, "warnings: {:?}", warnings);
+        assert!(warnings[0].contains("объявляет 3 слоёв"), "warning: {}", warnings[0]);
+        assert!(warnings[0].contains("2 блоков тензоров"), "warning: {}", warnings[0]);
+        assert!(
+            !warnings[0].contains("повреждён"),
+            "warning не должен называть файл повреждённым: {}",
+            warnings[0]
+        );
+        // Обёртка validate_gguf считает предупреждение успехом.
+        assert_eq!(validate_gguf(file.path.to_str().unwrap()), Ok(()));
+    }
+
+    #[test]
+    fn block_count_mismatch_with_real_defect_still_fails() {
+        // Предупреждение о block_count не должно маскировать объективные
+        // дефекты: нет token_embd.weight → по-прежнему Err.
+        let tensors = vec![ts("blk.0.attn_norm.weight", 0), ts("blk.1.attn_norm.weight", 16)];
+        let file = TempFile::new("mismatch_no_embd", &build_gguf(3, &tensors));
+        let err = validate_gguf_detailed(file.path.to_str().unwrap()).unwrap_err();
+        assert!(err.contains("token_embd.weight"), "ошибка: {}", err);
     }
 
     #[test]

@@ -12,8 +12,8 @@
   },
   {
     "name": "gemma-4-12b",
-    "size_gb": "6.98",
-    "download_url": "https://huggingface.co/mradermacher/gemma-4-12B-it-qat-q4_0-unquantized-heretic-ja-v2-i1-GGUF/resolve/main/gemma-4-12B-it-qat-q4_0-unquantized-heretic-ja-v2.i1-IQ4_NL.gguf?download=true",
+    "size_gb": "7.38",
+    "download_url": "https://huggingface.co/mradermacher/gemma-4-12B-it-qat-q4_0-unquantized-heretic-ja-v2-i1-GGUF/resolve/main/gemma-4-12B-it-qat-q4_0-unquantized-heretic-ja-v2.i1-Q4_K_M.gguf?download=true",
     "mmproj_url": "https://huggingface.co/mradermacher/gemma-4-12B-it-qat-q4_0-unquantized-heretic-ja-v2-GGUF/resolve/main/gemma-4-12B-it-qat-q4_0-unquantized-heretic-ja-v2.mmproj-Q8_0.gguf?download=true",
     "tokenizer_id": "google/gemma-4-12B-it",
     "uncen": true,
@@ -22,21 +22,11 @@
   },
   {
     "name": "granite-4.1-8b",
-    "size_gb": "4.85",
-    "download_url": "https://huggingface.co/mradermacher/granite-4.1-8b-heretic-i1-GGUF/resolve/main/granite-4.1-8b-heretic.i1-IQ4_NL.gguf?download=true",
+    "size_gb": "5.12",
+    "download_url": "https://huggingface.co/mradermacher/granite-4.1-8b-heretic-i1-GGUF/resolve/main/granite-4.1-8b-heretic.i1-Q4_K_M.gguf?download=true",
     "tokenizer_id": "ibm-granite/granite-4.1-8b",
     "uncen": true,
     "vision": false,
-    "audio": false
-  },
-  {
-    "name": "ternary-bonsai-27b",
-    "size_gb": "7.1",
-    "download_url": "https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/main/Ternary-Bonsai-27B-Q2_g64.gguf?download=true",
-    "mmproj_url": "https://huggingface.co/prism-ml/Ternary-Bonsai-27B-gguf/resolve/main/Ternary-Bonsai-27B-mmproj-Q8_0.gguf?download=true",
-    "tokenizer_id": "Qwen/Qwen3.6-27B",
-    "uncen": false,
-    "vision": true,
     "audio": false
   },
   {
@@ -89,8 +79,8 @@
   },
   {
     "name": "lfm2.5-8b",
-    "size_gb": "4.51",
-    "download_url": "https://huggingface.co/FadedRedStar/LFM2.5-8B-A1B-heretic-imatrix-GGUF/resolve/main/LFM2.5-8B-A1B-heretic-IQ4_NL-imatrix.gguf?download=true",
+    "size_gb": "5.16",
+    "download_url": "https://huggingface.co/FadedRedStar/LFM2.5-8B-A1B-heretic-imatrix-GGUF/resolve/main/LFM2.5-8B-A1B-heretic-Q4_K_M-imatrix.gguf?download=true",
     "tokenizer_id": "LiquidAI/LFM2.5-8B-A1B",
     "uncen": true,
     "vision": false,
@@ -108,8 +98,8 @@
   },
   {
     "name": "qwen3.8-9B",
-    "size_gb": "5.42",
-    "download_url": "https://huggingface.co/mradermacher/Qwen3.8-9B-heretic-uncensored-i1-GGUF/resolve/main/Qwen3.8-9B-heretic-uncensored.i1-IQ4_NL.gguf?download=true",
+    "size_gb": "5.63",
+    "download_url": "https://huggingface.co/mradermacher/Qwen3.8-9B-heretic-uncensored-i1-GGUF/resolve/main/Qwen3.8-9B-heretic-uncensored.i1-Q4_K_M.gguf?download=true",
     "mmproj_url": "https://huggingface.co/mradermacher/Qwen3.8-9B-heretic-uncensored-GGUF/resolve/main/Qwen3.8-9B-heretic-uncensored.mmproj-Q8_0.gguf?download=true",
     "tokenizer_id": "empero-ai/Qwen3.8-9B-Distill",
     "uncen": true,
@@ -118,12 +108,31 @@
   },
   {
     "name": "ornith-1.5-9b",
-    "size_gb": "5.42",
-    "download_url": "https://huggingface.co/mradermacher/Ornith-1.5-9B-uncensored-i1-GGUF/resolve/main/Ornith-1.5-9B-uncensored.i1-IQ4_NL.gguf?download=true",
+    "size_gb": "5.63",
+    "download_url": "https://huggingface.co/mradermacher/Ornith-1.5-9B-uncensored-i1-GGUF/resolve/main/Ornith-1.5-9B-uncensored.i1-Q4_K_M.gguf?download=true",
     "mmproj_url": "https://huggingface.co/mradermacher/Ornith-1.5-9B-uncensored-GGUF/resolve/main/Ornith-1.5-9B-uncensored.mmproj-Q8_0.gguf?download=true",
     "tokenizer_id": "junafinity/Ornith-1.5-9B-uncensored",
     "uncen": true,
     "vision": true,
+    "audio": false
+  },
+  {
+    "name": "mimo-2.6-9b",
+    "size_gb": "5.63",
+    "download_url": "https://huggingface.co/mradermacher/MiMo-V2.6-Distill-Qwen-9B-heretic-i1-GGUF/resolve/main/MiMo-V2.6-Distill-Qwen-9B-heretic.i1-Q4_K_M.gguf?download=true",
+    "mmproj_url": "https://huggingface.co/mradermacher/MiMo-V2.6-Distill-Qwen-9B-heretic-GGUF/resolve/main/MiMo-V2.6-Distill-Qwen-9B-heretic.mmproj-Q8_0.gguf?download=true",
+    "tokenizer_id": "XiaomiMiMo/MiMo-V2.6-Distill-Qwen-9B",
+    "uncen": true,
+    "vision": true,
+    "audio": false
+  },
+  {
+    "name": "rusmind-sokol-4.7",
+    "size_gb": "5.63",
+    "download_url": "https://huggingface.co/mradermacher/RusMind-Sokol-4.7-i1-GGUF/resolve/main/RusMind-Sokol-4.7.i1-Q4_K_M.gguf?download=true",
+    "tokenizer_id": "DICPlay/RusMind-Sokol-4.7",
+    "uncen": false,
+    "vision": false,
     "audio": false
   }
 ]

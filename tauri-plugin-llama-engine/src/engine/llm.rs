@@ -13,7 +13,7 @@
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -84,9 +84,63 @@ impl StreamTimeouts {
 }
 
 const STREAM_RETRY_MARKER: &str = "[stream-retry-before-first-token]";
+
+/// Свежесть stderr-прогресса движка для liveness-сторожа: `print_timing`
+/// печатается каждые ~3 сек (лог 30.10.26: n_gen = 100→302 с шагом 3 сек),
+/// порог 10 сек — ~3-кратный запас на jitter планировщика.
+const STREAM_LIVENESS_FRESH_MS: u64 = 10_000;
+/// Жёсткий кап ожидания от старта генерации, даже если stderr показывает
+/// свежий прогресс. Ограничивает патологию «сервер генерирует, SSE не отдаёт
+/// ничего» навсегда (незакрытый think/tool-call). 600 сек больше худшего
+/// легитимного молчания на целевой машине: think до 1500 токенов при 3 t/s
+/// = 500 сек + префилл ~20 сек. Совпадает с бюджетом `first_token`, поэтому
+/// кап ничего не урезает по сравнению с прежним поведением префилла.
+const STREAM_LIVENESS_HARD_CAP: Duration = Duration::from_secs(600);
+
+/// stderr-строка означает «движок занят работой» (префилл или генерация).
+/// llama-server (verbosity 3) печатает `slot print_timing` каждые ~3 сек:
+/// префилл — `prompt processing, n_tokens = …, progress = 0.77`, генерация —
+/// `n_gen = 302, tg = 5.09 t/s`. Старые сборки вместо этого печатают
+/// `prompt eval progress` / `eval progress`. Оба класса строк появляются
+/// ТОЛЬКО пока движок реально считает.
+fn stderr_line_shows_progress(line: &str) -> bool {
+    line.contains("print_timing") || line.contains("eval progress")
+}
+
+/// Мс-таймштап «сейчас» (unix epoch) — единая шкала для stderr-насосов и сторожа.
+fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Решение сторожа при таймауте SSE: ждать ли дальше.
+/// Свежий stderr-прогресс при недостижимом капе = движок генерирует, но
+/// SSE-буферизация (дифф-парсер llama.cpp молчит, пока не закрыт `<think>`,
+/// ggml-org/llama.cpp#15000) — обрывать нельзя (инцидент 30.10.26: 4 стрима
+/// убиты на 60-й сек, stderr при этом печатал n_gen каждые 3 сек).
+/// Тишина движка (прогресса нет ≥ 10 сек) или превышен кап — обрыв/ретрай.
+fn stream_timeout_should_wait(total_elapsed: Duration, progress_age_ms: u64) -> bool {
+    total_elapsed < STREAM_LIVENESS_HARD_CAP && progress_age_ms < STREAM_LIVENESS_FRESH_MS
+}
+
 /// Диапазон портов для локального сервера
 const PORT_MIN: u16 = 17800;
 const PORT_RANGE: u16 = 1500;
+
+/// Резерв ОЗУ для системы/приложения при прогнозе pinned-буферов BeeLlama.
+const BEE_LLAMA_RAM_RESERVE_MB: f64 = 2048.0;
+
+/// Оценка pinned-потребности BeeLlama в ОЗУ (МБ) по размеру контекста.
+/// Замеры крэшей 30.10.26 (ctx=20390, дословно из лога): 4 811 427 936 Б =
+/// 4588 МиБ и 5 650 288 736 Б = 5388 МиБ → 236-277 КиБ/токен. Берём верхнюю
+/// границу 280 КиБ/токен: прогноз завышает, но не пропускает реальный отказ.
+/// Это ОЦЕНКА, а не точная формула — решение по ней принимает только прогноз
+/// (ram_forecast_notice), отказ ловит детектор текстов (is_host_memory_oom_text).
+fn beellama_pinned_ram_need_mb(ctx_tokens: u32) -> f64 {
+    ctx_tokens as f64 * 280.0 / 1024.0
+}
 
 /// Базовые стоп-слова, одинаковые для всех моделей
 const DEFAULT_STOP_WORDS: &[&str] = &[
@@ -165,6 +219,10 @@ pub struct LlamaEngine {
     /// (GBNF/JSON-schema) принудительно гасится: llama.cpp запрещает кастомную
     /// грамматику вместе с tools[] (HTTP 400).
     pending_tools: std::sync::Mutex<Option<Vec<ToolDefinition>>>,
+    /// Мс-таймштап (unix) последнего признака генеративного прогресса движка
+    /// в stderr. Обновляют оба stderr-насоса (старт + respawn), читает сторож
+    /// стрима: отличает «движок считает, но SSE буферизует» от «движок умер».
+    engine_last_progress_ms: Arc<AtomicU64>,
 }
 
 /// Снимок параметров запуска llama-server, достаточных для авто-перезапуска
@@ -226,7 +284,7 @@ impl LlamaEngine {
 
         // ── Логирование аппаратного обеспечения ──
         log_cb("🖥️ Аппаратное обеспечение:".to_string());
-        let sys = sysinfo::System::new_all();
+        let mut sys = sysinfo::System::new_all();
         if let Some(cpu) = sys.cpus().first() {
             let total_ram_mb = sys.total_memory() / 1024 / 1024;
             log_cb(format!("   CPU: {} | RAM: {} MB", cpu.brand(), total_ram_mb));
@@ -495,7 +553,16 @@ impl LlamaEngine {
                         // под ubatch 512 на 12B-моделях заведомо > 256 МБ; на карте
                         // с двумя параллельными инференсами пик доходил до 98% VRAM
                         // при расчётных ~60%, после чего драйвер сбрасывал GPU — TDR).
-                        const VRAM_RESERVE_MB: f64 = 1024.0;
+                        //
+                        // Резерв снижен 1024 → 512 МБ (31.10.26, tasks/31.10.26):
+                        // SAFETY_FACTOR и резерв страхуют ОДНУ И ТУ ЖЕ остаточную
+                        // погрешность, двойной стек на 8 ГБ карте урезал оффлоад
+                        // Орнита до 26-28/32 слоёв → 5 t/s, хотя полный оффлоад
+                        // влезал (замер лога: использовано 4899 МБ, свободно
+                        // осталось ~2800 МБ). Страховка от реальной нехватки —
+                        // существующий respawn по факту отказа аллокации
+                        // (respawn_with_ngl), он честнее прогноза.
+                        const VRAM_RESERVE_MB: f64 = 512.0;
                         const VRAM_SAFETY_FACTOR: f64 = 1.25;
                         let need_mb = crate::engine::vram_estimate::vram_for_ngl_safe(
                             &est,
@@ -523,7 +590,15 @@ impl LlamaEngine {
                             );
                             log_cb(format!("⚠️ {}", note));
                             log::warn!("{}", note);
-                            vram_notice = Some(format!("⚠️ Не хватает видеопамяти.\n\n{}", note));
+                            // Прогноз, а не факт (G4, tasks/31.10.26): pre-flight
+                            // ОЦЕНИВАЕТ потребность до запуска, и оценка бывала
+                            // завышена (юзер с 8 ГБ: окно заявляло «Не хватает»,
+                            // а модель полностью загрузилась). Формулировка
+                            // живёт в vram::vram_forecast_notice — там же тест,
+                            // запрещающий «Не хватает» в прогнозе. Факт нехватки
+                            // сообщает сам движок отказом аллокации: тот путь
+                            // эмитит vram::vram_oom_fact_notice через notify_vram.
+                            vram_notice = Some(crate::engine::vram::vram_forecast_notice(&note));
                         } else {
                             log_cb(format!(
                                 "💾 Pre-flight VRAM: файл {:.0} МБ + KV {:.0} МБ + буферы {:.0} МБ (итого ~{:.0} МБ с запасом) — свободно {:.0} МБ из {:.0} МБ, полный оффлоад.",
@@ -685,6 +760,12 @@ impl LlamaEngine {
             .tcp_keepalive_interval(Some(Duration::from_secs(10)))
             .tcp_nodelay(true)
             .pool_idle_timeout(Some(Duration::from_secs(300)))
+            // Движок всегда на 127.0.0.1 — системный прокси (Kaspersky/VPN,
+            // detect_and_set_proxy в приложении ставит HTTP(S)_PROXY без
+            // NO_PROXY для localhost) не должен выступать посредником SSE:
+            // буферизация прокси — тот же класс «тихой порчи стрима», что и
+            // think-буфер.
+            .no_proxy()
             // КРИТИЧНО: у `reqwest::blocking` есть СКРЫТЫЙ таймаут 30 с
             // (`Timeout::default()`), который обрывает тело ответа в
             // `Response::read`. На локальном `llama-server` он срабатывал
@@ -700,12 +781,17 @@ impl LlamaEngine {
         };
 
         let server_trace = ServerTrace::new();
+        // Общая ячейка «движок показывает прогресс» — пишут stderr-насосы
+        // (старт + respawn), читает сторож стрима в run_chat_completions.
+        let engine_last_progress_ms = Arc::new(AtomicU64::new(now_unix_ms()));
         let spawn_stderr_reader = {
             let log_cb = log_cb.clone();
             let server_trace = server_trace.clone();
+            let engine_last_progress_ms = engine_last_progress_ms.clone();
             move |stderr: std::process::ChildStderr| {
                 let log_cb = log_cb.clone();
                 let server_trace = server_trace.clone();
+                let engine_last_progress_ms = engine_last_progress_ms.clone();
                 std::thread::spawn(move || {
                     use std::io::BufRead;
                     let reader = std::io::BufReader::new(stderr);
@@ -716,6 +802,9 @@ impl LlamaEngine {
                         };
                         let line = line.trim();
                         if !line.is_empty() {
+                            if stderr_line_shows_progress(line) {
+                                engine_last_progress_ms.store(now_unix_ms(), Ordering::Relaxed);
+                            }
                             server_trace.push_stderr(line.to_string());
                             log_cb(format!("[llama-server] {}", line));
                         }
@@ -864,6 +953,22 @@ impl LlamaEngine {
                     &diag,
                 );
                 log_cb(format!("❌ {}", diag.log_hint));
+                // Факт нехватки памяти — от самого движка (тексты отказа в
+                // диагнозе). Эмитим в чат: «не хватило» здесь подкреплено
+                // отказом аллокации, в отличие от pre-flight-прогноза (G4).
+                if matches!(diag.kind, crate::engine::startup_diagnosis::StartupFailureKind::CudaOom | crate::engine::startup_diagnosis::StartupFailureKind::HostRamOom) {
+                    let (what, action) = match diag.kind {
+                        crate::engine::startup_diagnosis::StartupFailureKind::CudaOom => (
+                            "видеопамять при загрузке модели (CUDA OOM)",
+                            "Уменьшите контекст или возьмите модель полегче — подсказки в сообщении ошибки.",
+                        ),
+                        _ => (
+                            "оперативная память (ОЗУ) при загрузке модели (pinned-буферы)",
+                            "Закройте другие программы или уменьшите контекст — подсказки в сообщении ошибки.",
+                        ),
+                    };
+                    crate::engine::notify_vram(crate::engine::vram::vram_oom_fact_notice(what, action));
+                }
                 diag.user_message
             } else {
                 format!(
@@ -911,6 +1016,7 @@ impl LlamaEngine {
             last_tok_per_sec: std::cell::Cell::new(0.0),
             pending_grammar: std::sync::Mutex::new(None),
             pending_tools: std::sync::Mutex::new(None),
+            engine_last_progress_ms,
         };
 
         log_cb(format!(
@@ -971,6 +1077,7 @@ impl LlamaEngine {
         // Оценка (модель + KV-кэш) сравнивается со свободной RAM. На CPU-режиме
         // модель живёт в RAM (вместе с KV), на GPU — файл всё равно мапится.
         let need_mb = estimate_vram_mb_with_spec(&model_path, global_ctx_limit, &kv_spec) + 512.0;
+        sys.refresh_memory();
         let free_ram_mb = sys.free_memory() as f64 / (1024.0 * 1024.0);
         if need_mb > free_ram_mb {
             let warn = format!(
@@ -980,6 +1087,29 @@ impl LlamaEngine {
             );
             log_cb(warn.clone());
             log::warn!("{}", warn);
+        }
+
+        // ── BeeLlama: прогноз ОЗУ под pinned-буферы (не блокирует запуск) ──
+        // BeeLlama (KVarN) держит KV/compute в pinned CUDA_Host — на машинах с
+        // малой ОЗУ это отказ ДО старта генерации (инцидент 30.10.26: 4.6-5.4 ГБ
+        // не выделились на 16 ГБ ОЗУ). Точную формулу из двух крэшей не вывести
+        // (разброс 236-277 КиБ/токен при одном ctx), поэтому это ПРОГНОЗ по
+        // верхней границе, а факт-диагноз даёт startup_diagnosis по текстам.
+        if source_id == "beellama" {
+            let pinned_need_mb = beellama_pinned_ram_need_mb(global_ctx_limit);
+            let free_now_mb = sys.free_memory() as f64 / (1024.0 * 1024.0);
+            if pinned_need_mb > free_now_mb - BEE_LLAMA_RAM_RESERVE_MB {
+                let note = format!(
+                    "BeeLlama держит KV-кэш и вычисления в обычной памяти (pinned ~{:.1} ГБ при контексте {} токенов), свободно {:.1} ГБ (минус {} ГБ резерва для системы). Запуск может упасть с ошибкой аллокации — сократите контекст в настройках или используйте исходный движок llama.cpp.",
+                    pinned_need_mb / 1024.0,
+                    global_ctx_limit,
+                    free_now_mb / 1024.0,
+                    BEE_LLAMA_RAM_RESERVE_MB as i64 / 1024,
+                );
+                log_cb(format!("⚠️ {}", note));
+                log::warn!("{}", note);
+                crate::engine::notify_vram(crate::engine::vram::ram_forecast_notice(&note));
+            }
         }
 
         let mut gguf_params = Vec::new();
@@ -1616,6 +1746,25 @@ impl LlamaEngine {
                     return Err(message);
                 }
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // ── Liveness-сторож: SSE-тишина ≠ мёртвый движок ──
+                    // Дифф-парсер llama.cpp не эмитит delta, пока не закрыт
+                    // `<think>`/tool-call (ggml-org/llama.cpp#15000), а движок
+                    // всё это время генерирует. Инцидент 30.10.26: 4 стрима
+                    // убиты на 60-й сек, stderr при этом печатал print_timing
+                    // с растущим n_gen каждые 3 сек. Свежий stderr-прогресс —
+                    // ждать дальше; тишина движка или кап 600 сек — обрыв.
+                    let total_elapsed = gen_start.elapsed();
+                    let progress_age_ms = now_unix_ms()
+                        .saturating_sub(self.engine_last_progress_ms.load(Ordering::Relaxed));
+                    if stream_timeout_should_wait(total_elapsed, progress_age_ms) {
+                        log_cb(format!(
+                            "⏳ SSE молчит {} сек, но движок генерирует (stderr-прогресс {} сек назад) — жду дальше (кап {} сек от старта)",
+                            wait.as_secs(),
+                            progress_age_ms / 1000,
+                            STREAM_LIVENESS_HARD_CAP.as_secs()
+                        ));
+                        continue;
+                    }
                     let received_tokens = generated_tokens + reasoning_tokens;
                     let marker = if received_tokens == 0 { STREAM_RETRY_MARKER } else { "" };
                     let reason = if raw_lines > 0 {
@@ -2130,6 +2279,7 @@ impl LlamaEngine {
         if let Some(stderr) = child.stderr.take() {
             let log_cb = self.log_cb.clone();
             let server_trace = self.server_trace.clone();
+            let engine_last_progress_ms = self.engine_last_progress_ms.clone();
             std::thread::spawn(move || {
                 let reader = std::io::BufReader::new(stderr);
                 for line in reader.lines() {
@@ -2139,6 +2289,9 @@ impl LlamaEngine {
                     };
                     let line = line.trim().to_string();
                     if !line.is_empty() {
+                        if stderr_line_shows_progress(&line) {
+                            engine_last_progress_ms.store(now_unix_ms(), Ordering::Relaxed);
+                        }
                         server_trace.push_stderr(line.clone());
                         log_cb(format!("[llama-server] {}", line));
                     }
@@ -2253,7 +2406,8 @@ impl LlamaEngine {
             // расход VRAM во время генерации ≥ 85% карты (см. incident: на 98% VRAM в
             // логе остался только print_timing, stderr оборвался на error decoding).
             let silent_death = is_silent_generation_death(&err);
-            let log_tail_oom = is_cuda_oom_text(&read_log_tail(&self.server_log));
+            let log_tail = read_log_tail(&self.server_log);
+            let log_tail_oom = is_cuda_oom_text(&log_tail);
             let vram_pressure = if silent_death {
                 match (vram_peak_mb_from_error(&err), current_vram_total_free_mb()) {
                     (Some(peak_mb), Some((total_mb, _))) if total_mb > 0.0 => peak_mb >= total_mb * 0.85,
@@ -2262,6 +2416,21 @@ impl LlamaEngine {
             } else {
                 false
             };
+            // Host-RAM отказ (pinned-буферы BeeLlama, инцидент 30.10.26) — ПЕРЕД
+            // CUDA-веткой: там ответ «урезать -ngl», что при host-отказе делает
+            // причину ХУЖЕ (больше слоёв уйдёт в ОЗУ). Честный отказ + факт в чат.
+            if is_host_memory_oom_text(&err) || is_host_memory_oom_text(&log_tail) {
+                (self.log_cb)("❌ Движку не хватило обычной памяти (ОЗУ) под pinned-буферы. Повтор не поможет: памяти не прибавится.".to_string());
+                crate::engine::notify_vram(crate::engine::vram::vram_oom_fact_notice(
+                    "оперативная память (ОЗУ) под pinned-буферы движка",
+                    "Уменьшите размер контекста в настройках или закройте другие приложения; при оффлоаде части слоёв в ОЗУ — увеличьте число GPU-слоёв.",
+                ));
+                return Err(format!(
+                    "{} Движку не хватило обычной памяти (ОЗУ) под pinned-буферы (используется нулевой копией KV/вычислений). \
+                     Уменьшите контекст в настройках или закройте другие приложения.",
+                    err
+                ));
+            }
             let err_is_oom = is_cuda_oom_text(&err) || log_tail_oom || vram_pressure;
             if step >= 2 || !self.can_oom_retry() || !err_is_oom {
                 return Err(err);
@@ -2279,6 +2448,12 @@ impl LlamaEngine {
                 step
             ));
             log::warn!("CUDA OOM → автоперезапуск с -ngl {} (шаг {}/2)", next_ngl, step);
+            // Факт нехватки — от самого движка (OOM-детект) → честное сообщение
+            // в чат (vram.rs: «не хватило» разрешено только здесь).
+            crate::engine::notify_vram(crate::engine::vram::vram_oom_fact_notice(
+                "видеопамять при генерации (CUDA OOM)",
+                "Автоматически перезапускаю движок с меньшим оффлоадом.",
+            ));
             if let Err(resp_err) = self.respawn_with_ngl(next_ngl) {
                 return Err(format!(
                     "{}\n\nНе удалось перезапустить движок для авто-повтора: {}",
@@ -2522,7 +2697,11 @@ pub fn chain_err(e: &dyn std::error::Error, max: usize) -> String {
 }
 
 fn is_stream_retry_candidate(message: &str) -> bool {
-    message.starts_with(STREAM_RETRY_MARKER)
+    // contains, а не starts_with: сообщение проходит через
+    // `stream_diagnostics::format()`, который ставит ПЕРЕД маркером префикс
+    // "STREAM_DIAGNOSTIC " (инцидент 30.10.26: при starts_with ретрай не
+    // срабатывал ни разу — тест кормил голый маркер, которого в проде не бывает).
+    message.contains(STREAM_RETRY_MARKER)
 }
 
 fn should_retry_stream(cancelled: bool, retry_used: bool, message: &str) -> bool {
@@ -2530,7 +2709,18 @@ fn should_retry_stream(cancelled: bool, retry_used: bool, message: &str) -> bool
 }
 
 fn strip_stream_retry_marker(message: &str) -> String {
-    message.strip_prefix(STREAM_RETRY_MARKER).unwrap_or(message).trim_start().to_string()
+    // Удаление по find, а не strip_prefix: маркер может стоять после префикса
+    // "STREAM_DIAGNOSTIC " (см. is_stream_retry_candidate).
+    match message.find(STREAM_RETRY_MARKER) {
+        Some(idx) => {
+            let head = &message[..idx];
+            let tail = message[idx + STREAM_RETRY_MARKER.len()..]
+                .trim_start()
+                .to_string();
+            format!("{}{}", head, tail).trim_start().to_string()
+        }
+        None => message.to_string(),
+    }
 }
 
 /// Хвост лога движка для диагностики ошибок запуска
@@ -2627,6 +2817,26 @@ fn is_cuda_oom_text(text: &str) -> bool {
         || lower.contains("insufficient memory")
         || lower.contains("cudaerrormemoryallocation")
         || lower.contains("nomemory")
+}
+
+/// Детектор нехватки ОБЫЧНОЙ памяти (host RAM) — pinned-буферы BeeLlama.
+/// Инцидент 30.10.26: на 16 ГБ ОЗУ аллокация 4.6-5.4 ГБ падала, тексты не
+/// матчились ни одним детектором → generic EngineCrash без диагноза и ретрая.
+/// ДОЛЖЕН быть отдельным от `is_cuda_oom_text`: направление фикса ОБРАТНОЕ —
+/// понижение -ngl УВЕЛИЧИВАЕТ host-давление (меньше слоёв на GPU = больше
+/// в ОЗУ), поэтому host-отказ запрещено маршрутизировать в respawn с меньшим
+/// оффлоадом (§00.2: маршрут не должен делать причину отказа хуже).
+fn is_host_memory_oom_text(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    // Реальные строки крэша (лог 30.10.26, дословно):
+    //   ggml_gallocr_reserve_n_impl: failed to allocate CUDA_Host buffer of size 4811427936
+    //   graph_reserve: failed to allocate compute buffers
+    //   llama_init_from_model: failed to initialize the context: failed to allocate compute pp buffers
+    //   ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 4811427936
+    lower.contains("cuda_host buffer")
+        || lower.contains("graph_reserve")
+        || (lower.contains("failed to allocate") && lower.contains("compute"))
+        || (lower.contains("cpu_buffer_type_alloc_buffer") && lower.contains("failed to allocate"))
 }
 
 /// «Молчаливая смерть» llama-server при генерации: HTTP-поток оборвался БЕЗ явного
@@ -2778,6 +2988,64 @@ mod tests {
         );
     }
 
+    // ─── Liveness-сторож по stderr (инцидент 30.10.26) ───
+
+    /// G5: строки прогресса распознаются на РЕАЛЬНОЙ форме stderr из лога
+    /// юзера (30.10.26, `[llama-server]` с ANSI-кодами времени и уровня).
+    /// Раньше именно разница «тестовая форма vs продовая» убила ретрай —
+    /// здесь повторять эту ошибку запрещено.
+    #[test]
+    fn stderr_progress_lines_from_real_log_are_recognized() {
+        // Генерация: растущий n_gen каждые ~3 сек (строки 248-276 лога).
+        let gen = "\u{1b}[34m2.53.844.948\u{1b}[0m \u{1b}[32mI \u{1b}[0mslot print_timing: id  0 | task 0 | n_gen =    302, tg =   5.09 t/s, tg_3s =   4.84 t/s";
+        assert!(stderr_line_shows_progress(gen), "print_timing с n_gen обязан быть прогрессом");
+        // Префилл: prompt processing с progress = 0.77 (строка 245 лога).
+        let prefill = "\u{1b}[34m1.50.703.145\u{1b}[0m \u{1b}[32mI \u{1b}[0mslot print_timing: id  0 | task 0 | prompt processing, n_tokens =   1699, progress = 0.77, t =  14.17 s / 119.89 tokens per second";
+        assert!(stderr_line_shows_progress(prefill), "print_timing префилла обязан быть прогрессом");
+        // Старая сборка: eval progress без print_timing.
+        assert!(stderr_line_shows_progress("prompt eval progress = 0.55"));
+        assert!(stderr_line_shows_progress("eval progress = 10/100"));
+        // НЕ прогресс: init/слот/шаблон — на них сторож ждать не продлевает.
+        assert!(!stderr_line_shows_progress("srv init_listene: The UI is disabled"));
+        assert!(!stderr_line_shows_progress("slot get_availabl: id  0 | task -1 | selected slot by LRU, n_tokens = 0, t_last = -1"));
+        assert!(!stderr_line_shows_progress("srv  chat_template:.chat_template"));
+    }
+
+    /// G5: решение сторожа — свежий прогресс движка продолжает ожидание,
+    /// тишина движка или превышение капа ведут к обрыву.
+    #[test]
+    fn liveness_continues_only_on_fresh_engine_progress_under_cap() {
+        // Движок генерирует (print_timing 3 сек назад), стрим молчит 60 сек —
+        // точный кейс юзера: ждать дальше, НЕ убивать живую генерацию.
+        assert!(stream_timeout_should_wait(Duration::from_secs(60), 3_000));
+        // Движок молчит 10+ сек (мёртв/завис) — обрыв, прежнее поведение.
+        assert!(!stream_timeout_should_wait(Duration::from_secs(60), 10_000));
+        assert!(!stream_timeout_should_wait(Duration::from_secs(60), u64::MAX / 2));
+        // Свежий прогресс, но кап достигнут — патология «генерит вечно, SSE
+        // не отдаёт ничего» ограничена: обрыв.
+        assert!(!stream_timeout_should_wait(STREAM_LIVENESS_HARD_CAP, 0));
+        // Границы строгие: порог и кап включительно считаются нарушением.
+        assert!(!stream_timeout_should_wait(Duration::from_secs(599), STREAM_LIVENESS_FRESH_MS));
+        assert!(stream_timeout_should_wait(Duration::from_secs(599), STREAM_LIVENESS_FRESH_MS - 1));
+    }
+
+    /// Числа сторожа выведены из худшего легитимного молчания (tasks/31.10.26):
+    /// think до 1500 токенов при 3 t/s = 500 сек + префилл ~20 сек < капа;
+    /// порог свежести — запас > 2 периодов печати print_timing (~3 сек).
+    /// Изменение констант без пересчёта обоснования — ошибка.
+    #[test]
+    fn liveness_constants_cover_worst_legitimate_silence() {
+        let worst_think_silence = Duration::from_secs(500 + 20);
+        assert!(
+            STREAM_LIVENESS_HARD_CAP > worst_think_silence,
+            "кап {:?} не должен обрезать легитимный think-марафон {:?}",
+            STREAM_LIVENESS_HARD_CAP,
+            worst_think_silence
+        );
+        assert_eq!(STREAM_LIVENESS_HARD_CAP, Duration::from_secs(600));
+        assert!(STREAM_LIVENESS_FRESH_MS > 2 * 3_000);
+    }
+
     /// Один слот — потому что запросы строго последовательные. При дефолте 4
     /// llama-server умножал `-c` на 4 и резервировал KV вчетверо больший.
     #[test]
@@ -2842,6 +3110,50 @@ mod tests {
         assert!(!is_cuda_oom_text("invalid device function"));
     }
 
+    /// Host-RAM отказ BeeLlama (инцидент 30.10.26) обязан распознаваться
+    /// на ДОСЛОВНЫХ строках лога юзера и НЕ матчиться как CUDA OOM:
+    /// у этих двух отказов противоположные фиксы (ngl вниз vs контекст вниз).
+    #[test]
+    fn host_memory_oom_detects_beellama_pinned_failures() {
+        // Дословные строки из лога 30.10.26 (4 попытки, два разных размера).
+        assert!(is_host_memory_oom_text(
+            "ggml_gallocr_reserve_n_impl: failed to allocate CUDA_Host buffer of size 4811427936"
+        ));
+        assert!(is_host_memory_oom_text(
+            "ggml_gallocr_reserve_n_impl: failed to allocate CUDA_Host buffer of size 5650288736"
+        ));
+        assert!(is_host_memory_oom_text("graph_reserve: failed to allocate compute buffers"));
+        assert!(is_host_memory_oom_text(
+            "llama_init_from_model: failed to initialize the context: failed to allocate compute pp buffers"
+        ));
+        assert!(is_host_memory_oom_text(
+            "ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 4811427936"
+        ));
+        // С(ERROR)-строки с ANSI-кодами (как в логе) — тоже матчатся.
+        assert!(is_host_memory_oom_text(
+            "\u{1b}[31mE ggml_gallocr_reserve_n_impl: failed to allocate CUDA_Host buffer of size 4811427936\u{1b}[0m"
+        ));
+        // Не-ООМ строки не матчатся.
+        assert!(!is_host_memory_oom_text("srv init_listene: The UI is disabled"));
+        assert!(!is_host_memory_oom_text("compute buffer size = 217.00 MiB"));
+        // Дизъюнкция с CUDA-детектором: host-текст не должен уводить в respawn ngl.
+        assert!(!is_cuda_oom_text(
+            "ggml_gallocr_reserve_n_impl: failed to allocate CUDA_Host buffer of size 4811427936"
+        ));
+        assert!(!is_host_memory_oom_text("CUDA error: out of memory"));
+    }
+
+    /// Коэффициент pinned-оценки BeeLlama обязан покрывать ОБА замера крэшей
+    /// 30.10.26 (4588 и 5388 МиБ при ctx=20390) — иначе прогноз пропустит
+    /// реальный отказ; и не быть завышенным более чем на 10% (иначе ложные
+    /// тревоги на исправных машинах).
+    #[test]
+    fn beellama_pinned_estimate_covers_both_measured_crashes() {
+        let need = beellama_pinned_ram_need_mb(20_390);
+        assert!(need >= 5388.0, "оценка {:.0} МиБ не покрывает замер 5388 МиБ", need);
+        assert!(need <= 5388.0 * 1.10, "оценка {:.0} МиБ завышена более чем на 10%", need);
+    }
+
     #[test]
     fn stream_retry_marker_is_added_only_before_first_token() {
         let before = format!(
@@ -2855,6 +3167,33 @@ mod tests {
             "Ошибка чтения потока генерации: error decoding response body"
         );
         assert!(!is_stream_retry_candidate(&after));
+    }
+
+    /// РЕАЛЬНАЯ продовая форма сообщения: `stream_diagnostics::format()`
+    /// ставит перед маркером префикс "STREAM_DIAGNOSTIC " (инцидент 30.10.26:
+    /// при `starts_with` ретрай не срабатывал ни разу — старый тест кормил
+    /// голый маркер, которого в проде не бывает).
+    #[test]
+    fn stream_retry_works_on_real_stream_diagnostic_shape() {
+        let real = format!(
+            "STREAM_DIAGNOSTIC {}генерация остановилась: нет данных от движка 60 сек | \
+             response=meta | reader=ok | signals=- | elapsed_ms=66600 | first_event_ms=6592 | \
+             first_token_ms=нет | last_data_age_ms=60012 | raw_lines=2 | events=1 | bytes=295 | \
+             output_tokens=0 | reasoning_tokens=0 | finish=нет | server=pid=1; process=running",
+            STREAM_RETRY_MARKER
+        );
+        assert!(
+            is_stream_retry_candidate(&real),
+            "ретрай обязан распознавать маркер после префигса STREAM_DIAGNOSTIC"
+        );
+        assert!(should_retry_stream(false, false, &real));
+        let stripped = strip_stream_retry_marker(&real);
+        assert!(!stripped.contains(STREAM_RETRY_MARKER));
+        assert!(stripped.starts_with("STREAM_DIAGNOSTIC генерация остановилась"));
+        // После первого токена маркера нет — ретрая нет (без изменений).
+        assert!(!is_stream_retry_candidate(
+            "STREAM_DIAGNOSTIC генерация остановилась | output_tokens=5"
+        ));
     }
 
     #[test]

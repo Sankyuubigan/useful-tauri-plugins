@@ -751,7 +751,7 @@ mod tests {
     /// недозащищал ровно от CUDA OOM/TDR, ради которых запас и добавлен.
     #[test]
     fn pre_flight_ngl_satisfies_the_same_budget_check() {
-        let reserve = 1_024.0;
+        let reserve = 512.0;
         let safety = 1.25;
         let budget = 7_376.0;
         let e = est(5_167.0, 212.0, 32); // Ornith-1.5-9B IQ4_NL, ctx 19968
@@ -780,6 +780,40 @@ mod tests {
             ngl,
             vram_for_ngl_safe(&e, ngl + 1, reserve, safety),
             budget
+        );
+    }
+
+    /// Регрессия на числа юзера ПОСЛЕ снятия двойного стека (G3, tasks/31.10.26).
+    ///
+    /// Факт лога 30.10.26: свободно 7700 из 8192; прежняя формула
+    /// `(5167+640+256)×1.25+1024 = 8603` урезала оффлоад до 26-28/32 → 5 t/s,
+    /// хотя полный оффлоад влезал (замер: использовано 4899 МБ, остаток ~2800).
+    /// После снижения резерва до 512: при реальной гибридной оценке KV
+    /// полный оффлоад обязан помещаться целиком; при консервативной f16-оценке
+    /// (без гибрид-метаданных, как в логе юзера: KV 640) — не урезаться ниже 30.
+    #[test]
+    fn pre_flight_full_offload_fits_users_8gb_card() {
+        let reserve = 512.0; // как в llm.rs pre-flight после 31.10.26
+        let safety = 1.25;
+        let free = 7_700.0; // «свободно 7700 из 8192» — факт юзера
+
+        // Гибридные метаданные KV (реальный боевой кейс BeLlama/KVarN): ~212 МБ.
+        let e_hybrid = est(5_167.0, 212.0, 32);
+        let ngl = max_fitting_ngl_safe_estimate(&e_hybrid, free, reserve, safety);
+        assert_eq!(
+            ngl, e_hybrid.num_layers,
+            "полный оффлоад обязан влезать (need={:.0}, свободно {:.0})",
+            vram_for_ngl_safe(&e_hybrid, e_hybrid.num_layers, reserve, safety),
+            free
+        );
+
+        // Консервативная f16-оценка KV без метаданных (как в логе юзера: KV 640).
+        let e_plain = est(5_167.0, 640.0, 32);
+        let ngl_plain = max_fitting_ngl_safe_estimate(&e_plain, free, reserve, safety);
+        assert!(
+            ngl_plain >= 30,
+            "консервативная оценка не должна урезать ниже 30/32 (было 26-28), got {}",
+            ngl_plain
         );
     }
 

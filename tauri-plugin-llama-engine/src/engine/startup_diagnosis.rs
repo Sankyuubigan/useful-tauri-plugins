@@ -40,6 +40,8 @@ pub enum StartupFailureKind {
     CudaDriverTooOld,
     /// Не хватило видеопамяти при создании контекста.
     CudaOom,
+    /// Не хватило ОБЫЧНОЙ памяти (ОЗУ) под pinned-буферы (BeeLlama CUDA_Host).
+    HostRamOom,
     /// BeeLlama: KV-precision-tail не поддерживается архитектурой модели.
     KvTailIncompatible,
     /// Драйвер/среда не смогли инициализировать CUDA.
@@ -110,6 +112,11 @@ pub fn diagnose_startup_failure(
         return Some(d);
     }
     if let Some(d) = diagnose_driver_too_old(&haystack, ctx) {
+        return Some(d);
+    }
+    // Host-RAM раньше CUDA OOM: pinned-тексты специфичнее, а советы различаются
+    // ресурсом (ОЗУ vs VRAM) — перепутать значит дать вредный совет.
+    if let Some(d) = diagnose_host_ram_oom(&haystack, ctx) {
         return Some(d);
     }
     if let Some(d) = diagnose_cuda_oom(&haystack, ctx) {
@@ -350,6 +357,39 @@ fn diagnose_driver_too_old(haystack: &str, ctx: &DiagnosisContext) -> Option<Sta
         log_hint: format!(
             "cuda_driver_too_old: variant={} required_driver={}+",
             ctx.variant, min
+        ),
+    })
+}
+
+/// BeeLlama: не хватило ОБЫЧНОЙ памяти (ОЗУ) под pinned-буферы (CUDA_Host).
+/// Инцидент 30.10.26: аллокации 4.6-5.4 ГБ падали на 16 ГБ ОЗУ, а тексты
+/// (`failed to allocate CUDA_Host buffer`, `graph_reserve: failed to allocate
+/// compute buffers`) не матчились ни одним диагнозом → generic EngineCrash
+/// без причины и совета. Отдельный вид отказа обязателен: ресурс здесь ОЗУ,
+/// а не VRAM — совет «уменьшите контекст» относится к потребности в ОЗУ,
+/// и урезание -ngl проблему не решает (наоборот, усиливает host-давление).
+fn diagnose_host_ram_oom(haystack: &str, ctx: &DiagnosisContext) -> Option<StartupDiagnosis> {
+    // haystack из combined_log уже в нижнем регистре.
+    let oom = haystack.contains("cuda_host buffer")
+        || haystack.contains("graph_reserve")
+        || (haystack.contains("failed to allocate") && haystack.contains("compute"))
+        || (haystack.contains("cpu_buffer_type_alloc_buffer") && haystack.contains("failed to allocate"));
+    if !oom {
+        return None;
+    }
+    Some(StartupDiagnosis {
+        kind: StartupFailureKind::HostRamOom,
+        user_message: format!(
+            "Движку не хватило обычной памяти (ОЗУ) при загрузке модели «{}».\n\n\
+             Что сделать (по порядку):\n\
+             1. Закройте другие программы, использующие память.\n\
+             2. Уменьшите размер контекста в Настройках — от него напрямую зависит потребность в ОЗУ.\n\
+             3. Если не поможет — переключитесь на исходный источник движка (Настройки → «Движок запуска нейромоделей»): он держит KV-кэш в видеопамяти.",
+            if ctx.model_name.is_empty() { "эта модель".to_string() } else { ctx.model_name.clone() },
+        ),
+        log_hint: format!(
+            "host_ram_oom: variant={} source={} model={}",
+            ctx.variant, ctx.source_id, ctx.model_name
         ),
     })
 }
@@ -703,6 +743,37 @@ E srv llama_server: exiting due to model loading error";
             .expect("диагноз обязателен");
         assert_eq!(d.kind, StartupFailureKind::CudaOom);
         assert!(d.user_message.contains("контекст"), "не сказано про контекст: {}", d.user_message);
+    }
+
+    /// Инцидент 30.10.26: BeeLlama падал на pinned CUDA_Host (аллокации 4.6-5.4 ГБ
+    /// на 16 ГБ ОЗУ) и получал generic EngineCrash — ни причины, ни совета.
+    /// ДОСЛОВНЫЕ строки лога юзера обязаны давать HostRamOom с советом про ОЗУ.
+    #[test]
+    fn beellama_pinned_host_oom_gets_honest_diagnosis() {
+        let ctx = pascal_ctx();
+        // Вариант 1 крэша (19:02, stderr-строка с ANSI уходит в combined_log
+        // уже без регистрозависимости — haystack в нижнем регистре).
+        let d = diagnose_startup_failure(
+            "e ggml_gallocr_reserve_n_impl: failed to allocate cuda_host buffer of size 4811427936\ne graph_reserve: failed to allocate compute buffers",
+            &[],
+            1,
+            &ctx,
+        )
+        .expect("диагноз обязателен для CUDA_Host-отказа");
+        assert_eq!(d.kind, StartupFailureKind::HostRamOom);
+        assert!(d.user_message.contains("ОЗУ"), "совет обязан быть про ОЗУ, не про VRAM: {}", d.user_message);
+        assert!(d.user_message.contains("контекст"), "не сказано про контекст: {}", d.user_message);
+        // Вариант 2 крэша (19:12, другой размер аллокации — тоже матчится).
+        let d2 = diagnose_startup_failure(
+            "e ggml_backend_cpu_buffer_type_alloc_buffer: failed to allocate buffer of size 4039676000",
+            &[],
+            1,
+            &ctx,
+        )
+        .expect("диагноз обязателен для cpu-buffer-отказа");
+        assert_eq!(d2.kind, StartupFailureKind::HostRamOom);
+        // Порядок: host-текст НЕ должен съедаться CUDA-диагнозом (нет слов про out of memory).
+        assert_ne!(d.kind, StartupFailureKind::CudaOom);
     }
 
     #[test]

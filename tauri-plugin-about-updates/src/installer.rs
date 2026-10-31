@@ -112,7 +112,7 @@ pub async fn download_installer(download_url: &str) -> Result<(String, PathBuf),
 pub fn spawn_installer(plan: &LaunchPlan) -> Result<u32, String> {
     use std::os::windows::process::CommandExt;
 
-    // Правило §6.8 global_ai_docs: любой Command на Windows задаёт CREATE_NO_WINDOW.
+    // Правило §6.8 desktop_rust_tauri_rules.md (global_ai_docs): любой Command на Windows задаёт CREATE_NO_WINDOW.
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
     log::info!(

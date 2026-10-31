@@ -19,7 +19,7 @@ zip = { workspace = true }
 # ONNX Runtime грузится динамически (load-dynamic): в бинарь хоста ничего не
 # линкуется, DLL открывается при первом обращении к `ort`. Без этого на машине
 # без DirectML.dll процесс падал с STATUS_DLL_NOT_FOUND ДО main() —
-# см. global_ai_docs AGENTS.md §0.3 и историю хоста (laya_runtime.rs).
+# см. историю хоста (laya_runtime.rs).
 ort = { workspace = true }
 tokenizers = { workspace = true }
 ndarray = { workspace = true }

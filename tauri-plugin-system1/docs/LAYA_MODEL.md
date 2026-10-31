@@ -1543,7 +1543,7 @@ AUC 0.758 против 0.588 — не убыль настройки, а разн
 
 ### 23.1 Зачем
 System-1 — это отдельная переиспользуемая способность (модель + инференс), а не
-часть валидатора психтерапевта. По `global_ai_docs/desktop_rust_tauri/rules.md`
+часть валидатора психтерапевта. По `global_ai_docs/desktop_rust_tauri_rules.md`
 §7.1 такая логика выносится в `my-tauri-plugins` как Tauri-плагин, чтобы все хосты
 получали изменения пересборкой, а не форк-копией.
 
@@ -1591,12 +1591,12 @@ DLL **не** линкуется статически и **не** едет в и�
 так же, как движки llama.cpp и CrispASR.
 
 Основание в глобальной документации:
-- `llama_cpp_engine.md:44` — движок «**не собирается** и **не бандлится** в
+- `tauri-plugin-llama-engine/docs/llama_cpp_engine.md §1` — движок «**не собирается** и **не бандлится** в
   приложение. Он скачивается **пользователем**»;
-- `llama_cpp_engine.md:70-72` — «**В `tauri.conf.json` движок не прописан** —
+- `tauri-plugin-llama-engine/docs/llama_cpp_engine.md §1` — «**В `tauri.conf.json` движок не прописан** —
   `bundle.resources` бандлит только `agents/`, `mcp_servers/`, каталоги и
   `*.json`»;
-- `crispasr_engine.md:41,56-58` — то же для CrispASR: «не бандлится», «это НЕ
+- `tauri-plugin-speech/docs/crispasr_engine.md §1` — то же для CrispASR: «не бандлится», «это НЕ
   Tauri sidecar, бинарь ищется в рантайме по пути».
 
 Доставка: zip `onnxruntime-win-x64-1.28.0.zip` с официального релиза Microsoft →
@@ -1607,7 +1607,7 @@ DLL **не** линкуется статически и **не** едет в и�
 Путь **один**, без альтернатив: `%SystemRoot%\System32` не проверяется сознательно
 — там встречается посторонняя `onnxruntime.dll`, не экспортирующая
 `OrtGetApiBase`, и её загрузка дала бы «сломано» вместо внятного «не найдено, вот
-путь» (`core/rules.md` §2.2).
+путь» (`core_rules.md` §2.2).
 
 `redist/*` в `bundle.resources` — не прецедент: это MSVC-рантайм компилятора,
 который ставит тулкит (`vcRedist: true`), а не AI-движок.
@@ -1622,7 +1622,7 @@ DLL **не** линкуется статически и **не** едет в и�
 
 Пути считаются от `current_exe().parent()`, а не от `app.path().executable_dir()`
 — иначе в dev пути уезжают в корень репозитория
-(`desktop_rust_tauri/rules.md` §2).
+(`desktop_rust_tauri_rules.md` §2).
 
 ### 23.6 Честная граница (не измерено)
 - **Латентность в release не измерена.** Прогоны Rust-тестов идут в debug-сборке,

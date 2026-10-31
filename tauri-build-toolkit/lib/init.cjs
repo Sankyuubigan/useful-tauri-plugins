@@ -19,7 +19,7 @@ function asCrlf(text) {
 // cmd не умеет выполнять строку, начинающуюся с UTF-8 BOM: `@echo off` не
 // срабатывает, весь поток команд печатается в лог, а `exit /b` после ошибки
 // ведёт себя непредсказуемо. Плюс .bat по правилам проекта — только ASCII и
-// CRLF (desktop_rust_tauri/rules.md §2). Поэтому перед записью снимаем BOM и
+// CRLF (desktop_rust_tauri_rules.md §2). Поэтому перед записью снимаем BOM и
 // приводим переводы строк к CRLF.
 function sanitizeBat(text) {
     const withoutBom = text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;

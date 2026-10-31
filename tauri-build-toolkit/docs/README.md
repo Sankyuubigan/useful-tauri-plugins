@@ -76,4 +76,4 @@ node cli.cjs prep --project "D:\Projects\<my_app>"     # без GUI-запуск
 
 - `docs/README.md` — этот файл (механизм интеграции, команды, конфиг).
 - `docs/build_release_rules.md` — правила сборки/релизов (перенесено из глобальной
-  доки `desktop_rust_tauri/rules.md` §2-§3 с обобщением под любой проект).
+  доки `desktop_rust_tauri_rules.md` §2-§3 с обобщением под любой проект).

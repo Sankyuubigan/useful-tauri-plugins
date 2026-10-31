@@ -5,7 +5,7 @@ edition = "2021"
 links = "tauri-plugin-llama-engine"
 description = "Reusable llama.cpp engine: install/update llama-server.exe variants, gguf catalog, model list mgmt, sampling params, vram notices (SSOT for King Orch and other hosts)"
 license = "MIT"
-readme = "docs/README.md"
+readme = "docs/llama_cpp_engine.md"
 
 [dependencies]
 tauri = { workspace = true }

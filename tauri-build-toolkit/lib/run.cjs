@@ -48,7 +48,7 @@ function tryRun(cfg, cmd, args, opts = {}) {
 // missing DLL) — честно фиксируем фейл, а не печатаем безусловно "Launched:".
 // Async: event loop должен крутиться, иначе exit/error не сработают.
 //
-// Два важных решения (см. global_ai_docs/desktop_rust_tauri/rules.md §"cwd"):
+// Два важных решения (см. global_ai_docs/desktop_rust_tauri_rules.md §"cwd"):
 //   1. cwd = папка exe (НЕ корень репо) — иначе приложение «насрёт» DLL
 //      движка в исходниках.
 //   2. WEBVIEW2_USER_DATA_FOLDER — отдельный профиль для dev-инстанса.

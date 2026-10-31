@@ -4,9 +4,9 @@
 //!
 //! Оба нативных движка проекта так устроены и это зафиксировано в глобальной
 //! документации: движок «**не собирается и не бандлится** в приложение, он
-//! скачивается пользователем» (`llama_cpp_engine.md:44`,
-//! `crispasr_engine.md:41`), а `bundle.resources` «бандлит только `agents/`,
-//! `mcp_servers/`, каталоги и `*.json`» (`llama_cpp_engine.md:70-72`).
+//! скачивается пользователем» (`tauri-plugin-llama-engine/docs/llama_cpp_engine.md §1`,
+//! `tauri-plugin-speech/docs/crispasr_engine.md §1`), а `bundle.resources` «бандлит только `agents/`,
+//! `mcp_servers/`, каталоги и `*.json`» (`tauri-plugin-llama-engine/docs/llama_cpp_engine.md §1`).
 //! ONNX Runtime — такой же движок, поэтому ставится тем же способом: с сервера,
 //! в данные пользователя, со сверкой хэша.
 
@@ -186,7 +186,7 @@ fn extract_dll(zip_path: &Path, dll: &Path) -> Result<(), String> {
 /// попытка провалилась, `Once` больше не даёт повторить, и наивная проверка
 /// вида «инициализировано — значит работает» молча сочла бы неработающее
 /// окружение рабочим. Ошибка обязана возвращаться на КАЖДЫЙ вызов
-/// (`global_ai_docs/core/rules.md` §2.2 — запрет молчаливых ошибок).
+/// (`global_ai_docs/core_rules.md` §2.2 — запрет молчаливых ошибок).
 static ENVIRONMENT: OnceLock<Result<(), String>> = OnceLock::new();
 
 /// Число потоков ONNX Runtime.
@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn dll_sha_is_pinned() {
         // Пустой эталон = «проверять нечем», а это молчаливая дыра: скачался бы
-        // любой файл и считался бы верным (core/rules.md §2.2).
+        // любой файл и считался бы верным (core_rules.md §2.2).
         assert_eq!(RUNTIME_DLL_SHA256.len(), 64, "sha256 должен быть 64 hex-символа");
         assert!(
             RUNTIME_DLL_SHA256.chars().all(|c| c.is_ascii_hexdigit()),

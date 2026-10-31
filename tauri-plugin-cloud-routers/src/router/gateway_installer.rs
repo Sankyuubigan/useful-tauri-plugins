@@ -100,7 +100,7 @@ pub fn probe_version(exe: &Path) -> Result<String, String> {
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("--version");
     // CREATE_NO_WINDOW: иначе из GUI-приложения на секунду мигнёт чёрное окно
-    // консоли (global_ai_docs/desktop_rust_tauri/rules.md §6.8).
+    // консоли (global_ai_docs/desktop_rust_tauri_rules.md §6.8).
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

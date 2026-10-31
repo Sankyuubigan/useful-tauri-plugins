@@ -72,13 +72,13 @@ KingOrchData/system1/runtime/onnxruntime.dll
 
 - `<exe>/laya/` ставился установщиком через `bundle.resources`, а глобальная
   документация требует обратного: движок «**не бандлится** в приложение, он
-  скачивается пользователем» (`llama_cpp_engine.md:44`, `crispasr_engine.md:41`),
+  скачивается пользователем» (`tauri-plugin-llama-engine/docs/llama_cpp_engine.md §1`, `tauri-plugin-speech/docs/crispasr_engine.md §1`),
   и `bundle.resources` «бандлит только `agents/`, `mcp_servers/`, каталоги и
-  `*.json`» (`llama_cpp_engine.md:70-72`, `crispasr_engine.md:56-58`);
+  `*.json`» (`tauri-plugin-llama-engine/docs/llama_cpp_engine.md §1`, `tauri-plugin-speech/docs/crispasr_engine.md §1`);
 - `%SystemRoot%\System32` проверяться не должен: там встречается посторонняя
   `onnxruntime.dll`, не экспортирующая `OrtGetApiBase`, и её загрузка дала бы
   пользователю «сломано» вместо внятного «не найдено, вот путь»
-  (`core/rules.md` §2.2).
+  (`core_rules.md` §2.2).
 
 Если DLL нет — ошибка в лог и наружу **с точным ожидаемым путём**, чтобы
 пользователь видел, куда её положит кнопка «Скачать всё».

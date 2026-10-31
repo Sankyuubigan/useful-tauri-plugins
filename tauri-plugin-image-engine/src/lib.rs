@@ -3,7 +3,7 @@
 //! Инференс изображений — ОТДЕЛЬНЫЙ процесс `sd-server.exe` (полный релиз
 //! leejet/stable-diffusion.cpp, папка `<exe>/sdcpp`), общение по HTTP
 //! (localhost, random-порт, нативный async API `/sdcpp/v1/...`).
-//! Приложение НЕ линкует stable-diffusion.cpp нативно (см. global_ai_docs,
+//! Приложение НЕ линкует stable-diffusion.cpp нативно (см. desktop_rust_tauri_rules.md §6.7 глобальной доки,
 //! правило «инференс только отдельным процессом»).
 //!
 //! Плагин владеет: установкой/обновлением выбранного варианта бекенда

@@ -1,7 +1,7 @@
 # tauri-plugin-logs
 
 Переиспользуемый Tauri-плагин «Логи» для desktop-приложений (стандарт по правилам
-`global_ai_docs/core/rules.md` §2.5 / §2.5.1 / §2.5.2).
+`global_ai_docs/core_rules.md` §2.5 / §2.5.1 / §2.5.2).
 
 ## Возможности
 

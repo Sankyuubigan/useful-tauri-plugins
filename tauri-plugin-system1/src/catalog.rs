@@ -172,7 +172,7 @@ pub fn sha256_file(path: &Path) -> Result<String, String> {
 /// Пустой ожидаемый хэш = проверять нечем. Это НЕ «проверка пройдена», и
 /// возвращается наружу явным `None`, чтобы вызывающий знал: контроля не было.
 /// Молчаливый `true` здесь означал бы «файл верный», что было бы ложью
-/// (`core/rules.md` §2.2).
+/// (`core_rules.md` §2.2).
 pub fn verify(path: &Path, expected: &str) -> Result<Option<bool>, String> {
     if expected.trim().is_empty() {
         return Ok(None);

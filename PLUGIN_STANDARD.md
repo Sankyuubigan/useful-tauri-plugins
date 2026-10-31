@@ -404,7 +404,7 @@ JS плагина вшит в бинарник Тauri и вставлен до �
 - **Плагин** (при правке `guest-js/*`): в папке плагина `npm install` → **`npm run build`**
   (→ `dist-js`) **и `npm run build:global`** (→ `api-iife.js`), коммит обоих артефактов.
   Без `build:global` vanilla-хост получит старый JS.
-- **Хост**: только через `.bat`-обёртки (см. `rules.md` §2). `build.bat` компилирует path-зависимый
+- **Хост**: только через `.bat`-обёртки (см. `desktop_rust_tauri_rules.md` §2). `build.bat` компилирует path-зависимый
   крейт плагина (а вместе с ним вшивает и `api-iife.js` из OUT_DIR).
 
 ---
@@ -433,7 +433,7 @@ JS плагина вшит в бинарник Тauri и вставлен до �
 - **camelCase, НЕ snake**: `fn tts_list_models(models_dir)` ждёт от JS `{ modelsDir }`.
 - **Debug-бинарь грузит `devUrl`, а не `frontendDist`** — standalone только через `tauri build`
   (фича `custom-protocol`). В этом проекте dev-режим вообще запрещён.
-- **`sccache` ломает C-сборку** — чисти `CC`/`CXX`/`rustc-wrapper` (см. `rules.md`).
+- **`sccache` ломает C-сборку** — чисти `CC`/`CXX`/`rustc-wrapper` (см. `desktop_rust_tauri_rules.md` §5.1).
 - **«permission not found»** → нет `links`/`build.rs` ИЛИ команда не во всех трёх местах.
 - **`E0277: AppHandle: CommandArg`** → команда не `<R: Runtime>`-дженерик.
 - **`config().version` — `Option<String>`** → `app.package_info().version`.

@@ -1,6 +1,6 @@
 //! Движок llama.cpp — инференс через ОТДЕЛЬНЫЙ процесс `llama-server.exe`
 //! (полный релиз llama.cpp), общение по HTTP localhost (random-порт + api-key).
-//! Приложение НЕ линкует llama.cpp нативно (см. global_ai_docs/llama_cpp_engine.md).
+//! Приложение НЕ линкует llama.cpp нативно (см. docs/llama_cpp_engine.md этого плагина).
 //!
 //! Модуль — переиспользуемое ядро плагина `tauri-plugin-llama-engine`. Хост
 //! пере-экспортирует его через собственный фасад `crate::infra::*` (см. README).

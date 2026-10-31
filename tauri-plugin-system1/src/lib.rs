@@ -22,8 +22,8 @@
 //! Одна: Laya (`mizchi/laya-multilingual-onnx`, ONNX fp16, 322M). Каталог и
 //! контрольные суммы — в [`catalog`]. Ни модель, ни ONNX Runtime не бандлятся
 //! в инсталлер: оба скачиваются пользователем в данные хоста
-//! (`KingOrchData/system1/`). Основание — `llama_cpp_engine.md:44,70-72` и
-//! `crispasr_engine.md:41,56-58`: движок «не бандлится», `bundle.resources`
+//! (`KingOrchData/system1/`). Основание — `tauri-plugin-llama-engine/docs/llama_cpp_engine.md §1` и
+//! `tauri-plugin-speech/docs/crispasr_engine.md §1`: движок «не бандлится», `bundle.resources`
 //! содержит только `agents/`, `mcp_servers/`, каталоги и `*.json`.
 //!
 //! # Пользовательский путь

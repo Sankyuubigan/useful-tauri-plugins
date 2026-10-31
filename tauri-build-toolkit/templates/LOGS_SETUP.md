@@ -68,5 +68,5 @@ import { logFront, onLogMessage, clearLogs, setReportingEnabled } from "@my-taur
 
 ## Примечания
 - `reporting.enabled` включается с рабочего места: до этого облако молчит, файл живёт всегда.
-- Файл лога кладётся рядом с exe через `current_exe().parent()` (правило cwd, см. global_ai_docs).
+- Файл лога кладётся рядом с exe через `current_exe().parent()` (правило cwd, см. desktop_rust_tauri_rules.md §2 в global_ai_docs).
 - Exe-файл лога и dev-зеркало `test/last_logs.txt` (пишется только если рядом с exe есть каталог `test/`) обнуляются на старте сессии (truncate, §2.5.1) — каждый запуск чистая история, роста между сессиями нет.

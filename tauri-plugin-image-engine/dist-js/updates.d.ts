@@ -10,7 +10,7 @@ export declare function setUpdateState(next: PluginUpdateState): void;
  * Проверка апдейта движка.
  *
  * При сетевой ошибке состояние НЕ трогаем: «не смогли проверить» ≠ «обновлений нет»
- * (core/rules.md §2.2 — запрет лжи). Ошибку поднимаем наверх: панель показывает её
+ * (core_rules.md §2.2 — запрет лжи). Ошибку поднимаем наверх: панель показывает её
  * юзеру, фоновый watcher глотает молча, не переписывая состояние.
  */
 export declare function checkUpdate(): Promise<PluginUpdateState>;

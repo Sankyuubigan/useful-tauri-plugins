@@ -82,7 +82,7 @@ fn parse_synth_timing(line: &str) -> Option<SynthTiming> {
 ///
 /// CrispASR запускается как **отдельный prebuilt-процесс** (`crispasr.exe`) и общается
 /// по HTTP localhost (OpenAI-совместимый `POST /v1/audio/speech`). Нативная линковка
-/// крейта `crispasr` запрещена глобальным правилом `desktop_rust_tauri/rules.md §6.7`.
+/// крейта `crispasr` запрещена глобальным правилом `desktop_rust_tauri_desktop_rust_tauri_rules.md §6.7`.
 ///
 /// Всегда 100% локально: без API-ключей, без облака (требование пользователя).
 pub struct TtsEngine {

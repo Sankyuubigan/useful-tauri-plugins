@@ -152,6 +152,122 @@ pub fn get_hybrid_grammar(base_gbnf: &str) -> String {
     )
 }
 
+/// Гибридная грамматика с ПОТОЛКОМ размышления: think-block ограничен
+/// `budget_chars` символами (переносы строк разрешены — решение владельца
+/// 31.10.2026), после чего `</think>` и JSON структурно обязательны.
+///
+/// Это тот же механизм, что у сигнальных агентов оркестратора
+/// (`build_signal_envelope_grammar_with_think_budget`), но для произвольной
+/// базовой JSON-грамматики. Потолок — МАКСИМУМ, а не целевая длина: короткая
+/// дума не меняется, обрезается только бесконечный runaway (модель игнорирует
+/// `enable_thinking=false` и сжигает весь `n_predict` в незакрытом `<think>`
+/// — отказ «думатель без ответа», лог юзера 01.11.26). Потребитель появился —
+/// механизм возвращён (в откате G1 от 31.10.26 он удалялся именно как мёртвый код).
+pub fn get_hybrid_grammar_with_think_budget(base_gbnf: &str, budget_chars: usize) -> String {
+    let renamed = base_gbnf.replacen("root ::=", "json-object ::=", 1);
+    let think_start = "<think>";
+    let think_end = "</think>";
+    format!(
+        "root ::= think-block json-object\n\
+         think-block ::= \"{ts}\" [^<]{{0,{budget}}} \"{te}\" | \"\"\n\n{body}",
+        ts = think_start,
+        te = think_end,
+        budget = budget_chars,
+        body = renamed,
+    )
+}
+
+// ── SSOT авто-потолка think для ВСЕХ JSON-контрактов ──
+//
+// Один механизм для всех потребителей гибридной грамматики (signal-агенты
+// оркестратора, узлы `llm_fact_extractor`, fused-группы, вердикт-стенды).
+// До 01.11.2026 формула жила в host-домене (`signals.rs`), и потребители,
+// до которых она не доехала (узел факт-экстрактора), оставались с
+// неограниченным think: модель, игнорирующая `enable_thinking=false`,
+// сжигала весь `n_predict` в незакрытом `<think>` — «думатель без ответа»
+// (лог юзера 01.11.26: Ornith, 2×400 с, 0 видимых токенов, MAX_TOKENS).
+
+/// Резерв токенов под JSON-конверт (имена ключей, скобки, кавычки).
+///
+/// Конверт жёстко задан грамматикой: около 150 символов, то есть порядка 50
+/// токенов. Здесь взят запас примерно пятикратный: резервировать ровно
+/// минимум нельзя, любая ошибка в оценке съедает конверт и возвращает отказ
+/// «слой не ответил».
+pub const ENVELOPE_TOKENS: usize = 256;
+
+/// Символов на токен для русского текста, **взято с запасом вниз**.
+///
+/// Грамматика режет черновик в символах, а движок — в токенах, поэтому перевод
+/// нужен в любую сторону. Замер 11.10.26 при `max_gen_tokens = 2048`: ответы,
+/// дошедшие до конверта, не длиннее 5443 символов, ответы без конверта — от
+/// 6851. Значит бюджет в 2048 токенов вмещает от 2.7 до 3.3 символа на токен.
+/// Берётся 2.0: при меньшем коэффициенте граница черновика наступает раньше,
+/// чем кончится бюджет. Цена — черновики короче измеренного среднего;
+/// выигрыш — «не дошёл до конверта» становится структурно невозможен.
+pub const CHARS_PER_TOKEN: usize = 2;
+
+/// Авто-потолок ОДНОГО черновика размышления, вычисленный от бюджетов движка.
+///
+/// У боевого движка два независимых капа думы, и потолок обязан укладываться
+/// в оба — иначе модель, заполнившая черновик до потолка грамматики,
+/// структурно не доходит до JSON-конверта (тот механический отказ, который
+/// граница должна устранять):
+///
+/// 1. `--reasoning-budget N` (N > 0) — жёсткий кап СУММАРНОГО размышления в
+///    токенах, enforced парсером reasoning на стороне сервера. Измерено на
+///    батче 31.10.2026: LFM2.5-8B в валидаторе сжёг 1491 токен из 1500 —
+///    граница движка наступила раньше конверта.
+/// 2. `n_predict = max_gen_tokens` — общий бюджет генерации, покрывающий
+///    думу И конверт вместе.
+///
+/// `reasoning_budget = 0` — кап не активен (не задан или отключён фолбэком
+/// цикла запуска): считаем только от общего бюджета генерации.
+///
+/// Возвращает `None`, если граница выходит нулевой: такой бюджет не способен
+/// вместить даже пустой черновик, и молча ставить `Some(0)` значило бы
+/// запретить модели размышлять вовсе. Тогда грамматика строится без границы,
+/// и отказ приходит из движка, а не из заведомо непроходимого формата.
+pub fn auto_think_budget_chars(
+    max_gen_tokens: usize,
+    reasoning_budget: usize,
+    drafts: usize,
+) -> Option<usize> {
+    let gen_budget = max_gen_tokens.saturating_sub(ENVELOPE_TOKENS.min(max_gen_tokens));
+    let think_tokens = if reasoning_budget == 0 {
+        gen_budget
+    } else {
+        reasoning_budget.min(gen_budget)
+    };
+    let per_draft_tokens = think_tokens / drafts.max(1);
+    let chars = per_draft_tokens.saturating_mul(CHARS_PER_TOKEN);
+    if chars == 0 {
+        None
+    } else {
+        Some(chars)
+    }
+}
+
+/// ЕДИНСТВЕННАЯ точка сборки гибридной грамматики для JSON-контракта.
+///
+/// Любой LLM-вызов с JSON-выходом обязан идти через неё, а не через
+/// [`get_hybrid_grammar`] напрямую: think-блок здесь автоматически ограничен
+/// бюджетами движка ([`auto_think_budget_chars`]) — короткая дума не меняется
+/// (потолок — МАКСИМУМ, не целевая длина), а бесконечный runaway становится
+/// невозможным по грамматике. `None` (нулевой бюджет) — деградация к
+/// неограниченной гибридной грамматике: отказ тогда приходит из движка, а не
+/// из заведомо непроходимого формата.
+pub fn get_json_contract_grammar(
+    base_json_gbnf: &str,
+    max_gen_tokens: usize,
+    reasoning_budget: usize,
+    drafts: usize,
+) -> String {
+    match auto_think_budget_chars(max_gen_tokens, reasoning_budget, drafts) {
+        Some(budget) => get_hybrid_grammar_with_think_budget(base_json_gbnf, budget),
+        None => get_hybrid_grammar(base_json_gbnf),
+    }
+}
+
 /// Строго-JSON грамматика с ФИКСИРОВАННЫМИ ключами — контракт fact_extractor.
 /// Ключи перечислены в фиксированном порядке и без опций: boolean-факты строго
 /// `true`/`false`, строковые поля — JSON-строка. Модель физически НЕ может выдать
@@ -417,5 +533,29 @@ mod tests {
     fn key_exact_grammar_empty_falls_back_to_object() {
         let g = build_json_object_grammar_with_keys(&[], &[]);
         assert!(g.starts_with("root ::= json-object"), "{}", g);
+    }
+
+    #[test]
+    fn auto_think_budget_matches_battle_values() {
+        // Боевые бюджеты (max_gen_tokens=2048, reasoning_budget=1500):
+        // один черновик → 3000 симв; девять (батч 31.10.26) → 332 симв.
+        assert_eq!(auto_think_budget_chars(2048, 1500, 1), Some(3000));
+        assert_eq!(auto_think_budget_chars(2048, 1500, 9), Some(332));
+        // rb=0 — от общего бюджета генерации.
+        assert_eq!(auto_think_budget_chars(2048, 0, 1), Some((2048 - 256) * 2));
+        // Нулевой бюджет → None (грамматика без границы, а не Some(0)).
+        assert_eq!(auto_think_budget_chars(256, 0, 1), None);
+    }
+
+    #[test]
+    fn json_contract_grammar_bounds_think_by_engine_budgets() {
+        let base = build_json_object_grammar_with_keys(&["has_problem".to_string()], &[]);
+        let g = get_json_contract_grammar(&base, 2048, 1500, 1);
+        assert!(g.contains("root ::= think-block json-object"), "{}", g);
+        assert!(g.contains("[^<]{0,3000}"), "нет авто-потолка: {}", g);
+        assert!(g.contains("has_problem"), "потерян ключ: {}", g);
+        // Нулевой бюджет — деградация к неограниченной гибридной, не Some(0).
+        let unbounded = get_json_contract_grammar(&base, 256, 0, 1);
+        assert!(unbounded.contains("[^<]*"), "{}", unbounded);
     }
 }

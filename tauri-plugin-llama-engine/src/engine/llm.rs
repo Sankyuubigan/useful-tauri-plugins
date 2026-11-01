@@ -30,7 +30,7 @@ use crate::engine::stream_diagnostics::{
     StreamDiagnostics, StreamReaderError,
 };
 
-pub use super::llm_types::{ChatAttachment, PromptFormat, LlmMessage, extract_model_filename, GenerationResult, LlmMetrics, GrammarSpec, build_base_grammar, build_json_only_grammar, build_json_object_grammar_with_keys, get_hybrid_grammar, ToolDefinition, FunctionDef, ToolCall};
+pub use super::llm_types::{ChatAttachment, PromptFormat, LlmMessage, extract_model_filename, GenerationResult, LlmMetrics, GrammarSpec, build_base_grammar, build_json_only_grammar, build_json_object_grammar_with_keys, get_hybrid_grammar, get_hybrid_grammar_with_think_budget, get_json_contract_grammar, auto_think_budget_chars, ENVELOPE_TOKENS, CHARS_PER_TOKEN, ToolDefinition, FunctionDef, ToolCall};
 pub use super::llm_gguf::{extract_string_from_gguf, extract_f32_from_gguf, extract_u32_from_gguf, extract_gguf_arch, extract_u32_with_arch};
 
 /// Таймаут ожидания готовности движка (загрузка модели в память)
@@ -570,19 +570,31 @@ impl LlamaEngine {
                         // существующий respawn по факту отказа аллокации
                         // (respawn_with_ngl), он честнее прогноза.
                         const VRAM_RESERVE_MB: f64 = 512.0;
+                        // Решение о резке — ТОЛЬКО по факту (§00.2): измеренные
+                        // компоненты (файл + KV + буферы) + резерв, БЕЗ множителя.
+                        // Инцидент 01.11.26 (king_orch (9).log, 8 ГБ, сборка уже
+                        // с резервом 512): (5167+768+256)×1.25+512 = 8251 МБ >
+                        // свободно 7697 урезало Орнита до 29/32 слоёв → 5 t/s →
+                        // два сгоревших факт-экстрактора = «14 минут юзера».
+                        // Реальный пик VRAM по тому же логу — 5822 МБ, полный
+                        // оффлоад влезал. SAFETY_FACTOR в резку не входит:
+                        // TDR-кейс (два параллельных инференса) закрыт гейтом
+                        // движка (локальные ходы сериализованы), а факт нехватки
+                        // ловит respawn_with_ngl по отказу аллокации — это и есть
+                        // «страховка по факту», признанная в комментарии выше.
                         const VRAM_SAFETY_FACTOR: f64 = 1.25;
-                        let need_mb = crate::engine::vram_estimate::vram_for_ngl_safe(
+                        let need_factual_mb = crate::engine::vram_estimate::vram_for_ngl_safe(
                             &est,
                             est.num_layers,
                             VRAM_RESERVE_MB,
-                            VRAM_SAFETY_FACTOR,
+                            1.0,
                         );
-                        if need_mb > free_vram_mb {
+                        if need_factual_mb > free_vram_mb {
                             // Ступенчатый offload: максимальное число слоёв из бюджета
-                            // (с тем же фактором безопасности на МБ/слой).
+                            // (по той же фактической формуле — фактор в резку не входит).
                             let new_ngl = crate::engine::vram_estimate::max_fitting_ngl_safe_with_spec(
                                 &model_path, global_ctx_limit, &kv_spec,
-                                free_vram_mb, VRAM_RESERVE_MB, VRAM_SAFETY_FACTOR,
+                                free_vram_mb, VRAM_RESERVE_MB, 1.0,
                             );
                             let was_ngl = gpu_layers;
                             gpu_layers = new_ngl.min(gpu_layers);
@@ -593,7 +605,7 @@ impl LlamaEngine {
                             let note = format!(
                                 "Pre-flight VRAM: модели по оценке нужно ~{:.0} МБ ({}) — свободно {:.0} МБ из {:.0} МБ. \
                                  Оффлоад урезан с {} до {} слоёв на GPU, остальные — в ОЗУ (медленнее, но модель запустится).",
-                                need_mb, components, free_vram_mb, total_vram_mb, was_ngl, gpu_layers
+                                need_factual_mb, components, free_vram_mb, total_vram_mb, was_ngl, gpu_layers
                             );
                             log_cb(format!("⚠️ {}", note));
                             log::warn!("{}", note);
@@ -607,9 +619,27 @@ impl LlamaEngine {
                             // эмитит vram::vram_oom_fact_notice через notify_vram.
                             vram_notice = Some(crate::engine::vram::vram_forecast_notice(&note));
                         } else {
+                            // По фактической формуле влезает — полный оффлоад, резать
+                            // нельзя: множитель — прогнозная перестраховка, а не факт.
+                            // Если даже оценка с фактором не влезает — предупреждение
+                            // ТОЛЬКО в лог (не резка и не уведомление в чат: ложные
+                            // тревоги по прогнозу — анти-паттерн G4). Реальную
+                            // нехватку поймает respawn_with_ngl по факту отказа.
+                            let need_padded_mb = crate::engine::vram_estimate::vram_for_ngl_safe(
+                                &est,
+                                est.num_layers,
+                                VRAM_RESERVE_MB,
+                                VRAM_SAFETY_FACTOR,
+                            );
+                            if need_padded_mb > free_vram_mb {
+                                log::warn!(
+                                    "Pre-flight VRAM: оценка с надёжностью ×{:.2} ~{:.0} МБ превышает свободные {:.0} МБ, но по фактическим компонентам (~{:.0} МБ) влезает — запускаем полный оффлоад; при отказе аллокации движок урежет слои и перезапустится.",
+                                    VRAM_SAFETY_FACTOR, need_padded_mb, free_vram_mb, need_factual_mb
+                                );
+                            }
                             log_cb(format!(
                                 "💾 Pre-flight VRAM: файл {:.0} МБ + KV {:.0} МБ + буферы {:.0} МБ (итого ~{:.0} МБ с запасом) — свободно {:.0} МБ из {:.0} МБ, полный оффлоад.",
-                                est.model_mb, est.kv_mb, est.buffers_mb, need_mb, free_vram_mb, total_vram_mb
+                                est.model_mb, est.kv_mb, est.buffers_mb, need_factual_mb, free_vram_mb, total_vram_mb
                             ));
                         }
                     }
@@ -2025,6 +2055,17 @@ impl LlamaEngine {
                 "⚙️ Сгенерировано {} токенов за {:.1}с ({:.0} tok/s). Причина: {}",
                 generated_tokens, gen_elapsed, speed, stop_reason
             ));
+        }
+        // llama.cpp#15000: сервер не эмитит SSE-дельты, пока think не закрыт, —
+        // счётчики стоят на нуле при живой генерации. Без пояснения «0 токенов»
+        // выглядит как зависший движок (лог юзера 01.11.26: экстрактор 2×400с,
+        // телеметрия 0+0, MAX_TOKENS). Пояснение — только при нулях и length:
+        // при других stop_reason нули означают иное (пустой ответ, ошибка).
+        if generated_tokens == 0 && reasoning_tokens == 0 && stop_reason == "length" {
+            log_cb(
+                "⚠️ Стрим не эмитил ни одной дельты: вывод уходил в незакрытый <think> — сервер держит дельты до его закрытия (llama.cpp#15000), бюджет генерации исчерпан, JSON/ответ не родился."
+                    .to_string(),
+            );
         }
 
         if reasoning_tokens > 0 {

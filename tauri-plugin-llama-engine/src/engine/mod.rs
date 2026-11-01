@@ -39,7 +39,8 @@ pub use llm::{
     build_json_object_grammar_with_keys, build_json_only_grammar, chain_err, estimate_vram_mb,
     estimate_vram_mb_with_spec,
     extract_f32_from_gguf, extract_gguf_arch, extract_model_filename, extract_u32_from_gguf,
-    extract_u32_with_arch, get_hybrid_grammar,
+    extract_u32_with_arch, get_hybrid_grammar, get_hybrid_grammar_with_think_budget,
+    get_json_contract_grammar, auto_think_budget_chars, ENVELOPE_TOKENS, CHARS_PER_TOKEN,
     ChatAttachment, GrammarSpec, LlamaEngine, LlmMessage, PromptFormat,
     ToolDefinition, FunctionDef, ToolCall,
 };

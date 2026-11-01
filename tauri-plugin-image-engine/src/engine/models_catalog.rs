@@ -937,8 +937,8 @@ mod tests {
         let catalog = load_image_catalog();
         assert_eq!(
             catalog.len(),
-            4,
-            "после добавления стека Krea2 в каталоге 4 бандла, got {}",
+            5,
+            "после добавления FLUX.3 Klein в каталоге 5 бандлов, got {}",
             catalog.len()
         );
         let def = default_bundle_entry().expect("нет бандла по умолчанию");
@@ -1102,7 +1102,7 @@ mod tests {
     #[test]
     fn ref_edit_contract_catalog_bundles() {
         let catalog = load_image_catalog();
-        assert_eq!(catalog.len(), 4, "каталог должен пройти валидацию целым");
+        assert_eq!(catalog.len(), 5, "каталог должен пройти валидацию целым");
         let by = |name: &str| {
             catalog
                 .iter()
@@ -1152,6 +1152,18 @@ mod tests {
                 "contract отдаёт готовую строку ref_image_args серверу"
             );
         }
+        let flux3 = by("flux3-klein-adq4k");
+        assert_eq!(
+            flux3.ref_edit_mode,
+            Some(RefEditMode::Native),
+            "FLUX.3 Klein правит нативно (docs/flux3.md), без mmproj и edit-лоры"
+        );
+        let fc = ref_edit_contract(&flux3).unwrap().unwrap();
+        assert_eq!(fc.mode, RefEditMode::Native);
+        assert!(
+            fc.lora.is_none() && fc.ref_image_args.is_none(),
+            "native: лора и ref_image_args не нужны серверу"
+        );
     }
 
     /// Fail-closed по дизайну (§00.2): бандл без ref_edit_mode не редактирует
@@ -1679,13 +1691,14 @@ mod video_tests {
     #[test]
     fn embedded_catalog_satisfies_pool_filename_invariant() {
         let cat = load_image_catalog();
-        assert_eq!(cat.len(), 4, "все 4 бандла боевого каталога обязаны грузиться без пропусков");
+        assert_eq!(cat.len(), 5, "все 5 бандлов боевого каталога обязаны грузиться без пропусков");
         let names: std::collections::HashSet<&str> = cat.iter().map(|e| e.name.as_str()).collect();
         for expected in [
             "qwen-image-2.1-turbo-unsloth-q5_ks",
             "qwen-image-2.1-turbo-viggle-q4km",
             "krea2-turbo-q4km",
             "krea2-turbo-q3km",
+            "flux3-klein-adq4k",
         ] {
             assert!(names.contains(expected), "в каталоге нет бандла {}", expected);
         }
@@ -1694,7 +1707,6 @@ mod video_tests {
             "Qwen3VL-8B-Instruct-Q4_K_M.gguf",
             "mmproj-Qwen3VL-8B-Instruct-F16.gguf",
             "qwen_image_2.1_vae_bf16.safetensors",
-            "Qwen3VL-4B-Instruct-Q4_K_M.gguf",
             "mmproj-Qwen3VL-4B-Instruct-F16.gguf",
             "wan_2.1_vae.safetensors",
         ] {
@@ -1703,6 +1715,28 @@ mod video_tests {
                 .filter(|e| e.files.iter().any(|f| f.filename == shared))
                 .count();
             assert_eq!(owners, 2, "файл {} ожиданно общий для двух бандлов", shared);
+        }
+        // TE Qwen3-VL-4B общий у ТРЁХ бандлов: krea2-q4km, krea2-q3km и flux3-klein
+        // (flux3-стек использует тот же энкодер — файл из пула не перекачивается).
+        let te4b_owners = cat
+            .iter()
+            .filter(|e| {
+                e.files
+                    .iter()
+                    .any(|f| f.filename == "Qwen3VL-4B-Instruct-Q4_K_M.gguf")
+            })
+            .count();
+        assert_eq!(te4b_owners, 3, "TE Qwen3-VL-4B общий для трёх бандлов");
+        // Файлы flux3-бандла — единоличные (одно имя файла = один контент).
+        for solo in [
+            "FLUX-3-Image-Klein-AD-Q4_K.gguf",
+            "flux3_klein_ae.safetensors",
+        ] {
+            let owners = cat
+                .iter()
+                .filter(|e| e.files.iter().any(|f| f.filename == solo))
+                .count();
+            assert_eq!(owners, 1, "файл {} уникален для flux3-бандла", solo);
         }
     }
 }

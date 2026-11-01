@@ -1132,8 +1132,36 @@ pub async fn generate_video(
     // Дефолты ИЗ ПРЕСЕТА КАТАЛОГА; явные аргументы переопределяют.
     let preset = &entry.preset;
     let fps = preset.fps;
-    let w = width.unwrap_or(preset.width);
-    let h = height.unwrap_or(preset.height);
+    // Шаг 5 (план 01.11.26, баг №4): canvas под формат первого кадра —
+    // i2va/fl2va без явных размеров адаптируется от пресета (портрет → свап);
+    // любая явная пара юзера (частичная добирается пресетом) выигрывает;
+    // t2va/ref2va — пресет без изменений. Ранний mode повторяет семантику
+    // req.mode() (resolve_mode) по тем же полям: финальный mode для спавна
+    // всё равно вычисляется из req внутри spawn_blocking.
+    let init_trimmed = init_path.as_deref().filter(|s| !s.trim().is_empty());
+    let end_trimmed = end_path.as_deref().filter(|s| !s.trim().is_empty());
+    let early_mode = if !ref_paths.is_empty() {
+        "ref2va"
+    } else if init_trimmed.is_some() && end_trimmed.is_some() {
+        "fl2va"
+    } else if init_trimmed.is_some() {
+        "i2va"
+    } else {
+        "t2va"
+    };
+    let user_size = match (width, height) {
+        (Some(w), Some(h)) => Some((w, h)),
+        (Some(w), None) => Some((w, preset.height)),
+        (None, Some(h)) => Some((preset.width, h)),
+        (None, None) => None,
+    };
+    let (w, h) = engine::resolve_video_dimensions(
+        (preset.width, preset.height),
+        early_mode,
+        init_trimmed,
+        user_size,
+        |msg| log::info!("[VID] {}", msg),
+    )?;
     let cfgs = cfg_scale.unwrap_or(preset.cfg_scale);
     let sd = seed.unwrap_or(preset.seed);
     // Сэмплинг-план (шаги/сэмплер/шедулер/shift/LoRA) — из каталога; явные

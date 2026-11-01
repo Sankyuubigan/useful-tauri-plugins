@@ -1193,6 +1193,84 @@ impl Drop for VideoEngine {
 /// файла относительно `--lora-model-dir` спавна, множитель 0..=2). Дописываются
 /// ПОСЛЕ лор сэмплинг-плана: draft добавляет turbo-лору DMAD ×1.0, final идёт
 /// только с юзерскими (`is_high_noise` всегда false — H3 одностадиен).
+// ─────── Шаг 5 (план 01.11.26, баг №4): адаптивный формат canvas ───────
+//
+// Сервер sd.cpp центр-кропит init-кадр под запрошенный canvas (temp/api.md),
+// поэтому портретная картинка на альбомном пресете 864×480 теряет верх/низ.
+// Выбор размеров — обязанность клиента (api.md не описывает авто-размер от
+// init_image в vid_gen). Портретные размеры конструктивно валидны:
+// «Width and height are aligned upward to a multiple of 32» (docs/minimax_h3.md).
+
+/// Границы «квадратности» кадра по aspect ratio (ширина/высота).
+const SQUARE_AR_LO: f64 = 0.95;
+const SQUARE_AR_HI: f64 = 1.05;
+
+/// Чистое ядро адаптации: canvas под формат первого кадра.
+/// Портрет (AR < 0.95) → свап пресета (каталог остаётся SSOT размеров,
+/// пары не хардкодятся); альбом (AR > 1.05) → пресет; квадрат
+/// ([0.95..1.05]) → пресет, метка "square" — вызывающий предупреждает.
+/// Возвращает ((width, height), метка режима).
+pub fn adaptive_video_canvas(preset: (u32, u32), frame: (u32, u32)) -> ((u32, u32), &'static str) {
+    let ar = f64::from(frame.0) / f64::from(frame.1);
+    if ar < SQUARE_AR_LO {
+        ((preset.1, preset.0), "portrait")
+    } else if ar > SQUARE_AR_HI {
+        (preset, "landscape")
+    } else {
+        (preset, "square")
+    }
+}
+
+/// Резолв размеров видео: mode + путь init-кадра (+ явные width/height от
+/// вызывающего) → (width, height).
+///
+/// - явная непустая пара user-размеров выигрывает всегда (GUI/будущие тулы);
+/// - t2va/ref2va или нет init-кадра → пресет каталога без изменений;
+/// - i2va/fl2va («первый кадр») → фактические размеры файла читает
+///   `ref_size::dimensions_from_path` (ручной разбор PNG/JPEG/WebP, включая
+///   progressive JPEG; features image-крейта НЕ добавляются) и применяется
+///   `adaptive_video_canvas`;
+/// - ошибка чтения файла — честный отказ с именем и причиной: молчаливая
+///   подмена размеров маскировала бы симптом, а не устраняла его.
+pub fn resolve_video_dimensions<L: FnMut(String)>(
+    preset: (u32, u32),
+    mode: &str,
+    init_path: Option<&str>,
+    user_size: Option<(u32, u32)>,
+    mut log_cb: L,
+) -> Result<(u32, u32), String> {
+    if let Some((w, h)) = user_size {
+        if w > 0 && h > 0 {
+            return Ok((w, h));
+        }
+    }
+    let has_frame = init_path.map(|p| !p.trim().is_empty()).unwrap_or(false);
+    let first_frame_mode = mode == "i2va" || mode == "fl2va";
+    if !first_frame_mode || !has_frame {
+        return Ok(preset);
+    }
+    let path = init_path.unwrap_or_default();
+    let frame = crate::engine::ref_size::dimensions_from_path(Path::new(path)).ok_or_else(|| {
+        format!(
+            "Не удалось прочитать размеры первого кадра «{}» (битый файл или формат вне \
+             PNG/JPEG/WebP). Размеры canvas не подменяются молча — проверьте файл.",
+            path
+        )
+    })?;
+    let ar = f64::from(frame.0) / f64::from(frame.1);
+    let ((w, h), label) = adaptive_video_canvas(preset, frame);
+    let warn = if label == "square" {
+        " (квадратный кадр: адаптивной пары пока нет — остаёмся на пресете до замера)"
+    } else {
+        ""
+    };
+    log_cb(format!(
+        "🖼 i2va: кадр {}x{} (AR={:.2}) → canvas {}x{} ({}){}",
+        frame.0, frame.1, ar, w, h, label, warn
+    ));
+    Ok((w, h))
+}
+
 pub fn generate_video_simple<L>(
     engine_dir: &Path,
     bundle_dir: &Path,
@@ -1296,14 +1374,24 @@ where
     } else {
         "t2va"
     };
+    // Шаг 5 (баг №4): canvas под формат первого кадра (i2va; fl2va у simple-
+    // входа не бывает — end_b64 всегда None). Явных user-размеров у simple
+    // нет (None) — резолв идёт от пресета каталога.
+    let (req_width, req_height) = resolve_video_dimensions(
+        (preset.width, preset.height),
+        mode,
+        trimmed_init,
+        None,
+        log_cb.clone(),
+    )?;
     let req = VideoRequest {
         prompt: prompt.to_string(),
         negative_prompt: None,
         init_b64,
         end_b64: None,
         ref_images_b64,
-        width: preset.width,
-        height: preset.height,
+        width: req_width,
+        height: req_height,
         steps: plan.steps,
         cfg_scale: preset.cfg_scale,
         seed: preset.seed,
@@ -2155,5 +2243,124 @@ mod tests {
         assert_eq!(ext_for_mime("image/webp"), "webp");
         assert_eq!(ext_for_mime("video/x-msvideo"), "avi");
         assert_eq!(ext_for_mime("что-то иное"), "webm");
+    }
+
+    // ───── Шаг 5 (план 01.11.26, баг №4): адаптивный формат canvas ─────
+
+    #[test]
+    fn adaptive_canvas_swaps_preset_for_portrait() {
+        // Портретный кадр (AR=0.66) → свап пресета 864×480 → 480×864.
+        let ((w, h), label) = adaptive_video_canvas((864, 480), (800, 1200));
+        assert_eq!((w, h), (480, 864));
+        assert_eq!(label, "portrait");
+        // Альбомный кадр при портретном пресете — пресет не меняется: свап
+        // только для портрета (боевой пресет каталога всегда альбомный 864×480).
+        let ((w, h), label) = adaptive_video_canvas((480, 864), (1200, 800));
+        assert_eq!((w, h), (480, 864));
+        assert_eq!(label, "landscape");
+    }
+
+    #[test]
+    fn adaptive_canvas_keeps_preset_for_landscape_and_square() {
+        let ((w, h), label) = adaptive_video_canvas((864, 480), (1920, 1080));
+        assert_eq!((w, h), (864, 480));
+        assert_eq!(label, "landscape");
+        // Квадрат (AR в [0.95..1.05]) → пресет + метка square (warn вызывающего).
+        let ((w, h), label) = adaptive_video_canvas((864, 480), (1000, 1000));
+        assert_eq!((w, h), (864, 480));
+        assert_eq!(label, "square");
+    }
+
+    /// Мини-PNG IHDR с заданными размерами (формат из тестов ref_size.rs).
+    fn png_bytes(w: u32, h: u32) -> Vec<u8> {
+        let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+        bytes.extend_from_slice(&13u32.to_be_bytes());
+        bytes.extend_from_slice(b"IHDR");
+        bytes.extend_from_slice(&w.to_be_bytes());
+        bytes.extend_from_slice(&h.to_be_bytes());
+        bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
+        bytes
+    }
+
+    #[test]
+    fn resolve_dimensions_t2va_and_ref2va_keep_preset() {
+        let mut logs = Vec::new();
+        // Даже с путём кадра: t2va/ref2va не адаптируются.
+        for mode in ["t2va", "ref2va"] {
+            let (w, h) = resolve_video_dimensions((864, 480), mode, Some("/ghost/frame.png"), None, |m| logs.push(m))
+                .expect("пресет без изменений");
+            assert_eq!((w, h), (864, 480), "mode={mode}");
+        }
+        // i2va без пути кадра → пресет.
+        let (w, h) = resolve_video_dimensions((864, 480), "i2va", None, None, |_| {}).expect("пресет");
+        assert_eq!((w, h), (864, 480));
+        // Ни один passthrough-случай не логирует адаптацию.
+        assert!(logs.is_empty(), "без адаптации логов нет: {:?}", logs);
+    }
+
+    #[test]
+    fn resolve_dimensions_user_size_wins_over_everything() {
+        let (w, h) = resolve_video_dimensions((864, 480), "i2va", Some("/ghost/frame.png"), Some((512, 320)), |_| {})
+            .expect("явная пара выигрывает");
+        assert_eq!((w, h), (512, 320));
+    }
+
+    #[test]
+    fn resolve_dimensions_i2va_portrait_swaps_preset() {
+        let dir = std::env::temp_dir().join(format!("vid_dims_{}_portrait", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp");
+        let frame = dir.join("portrait.png");
+        std::fs::write(&frame, png_bytes(600, 900)).expect("кадр записан");
+        let mut logs = Vec::new();
+        let (w, h) = resolve_video_dimensions(
+            (864, 480),
+            "i2va",
+            frame.to_str(),
+            None,
+            |m| logs.push(m),
+        )
+        .expect("резолв по файлу");
+        assert_eq!((w, h), (480, 864), "портретный кадр → свап пресета");
+        assert!(logs.iter().any(|l| l.contains("portrait") && l.contains("600x900")), "лог адаптации: {:?}", logs);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_dimensions_i2va_square_keeps_preset_with_warn() {
+        let dir = std::env::temp_dir().join(format!("vid_dims_{}_square", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp");
+        let frame = dir.join("square.png");
+        std::fs::write(&frame, png_bytes(1000, 1000)).expect("кадр записан");
+        let mut logs = Vec::new();
+        let (w, h) = resolve_video_dimensions(
+            (864, 480),
+            "i2va",
+            frame.to_str(),
+            None,
+            |m| logs.push(m),
+        )
+        .expect("квадрат → пресет");
+        assert_eq!((w, h), (864, 480), "квадратный кадр — пресет без свапа");
+        assert!(
+            logs.iter().any(|l| l.contains("square") && l.contains("адаптивной пары пока нет")),
+            "warn-лог квадрата: {:?}",
+            logs
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn resolve_dimensions_unreadable_frame_is_honest_error() {
+        let dir = std::env::temp_dir().join(format!("vid_dims_{}_garbage", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp");
+        let frame = dir.join("garbage.png");
+        std::fs::write(&frame, b"not an image at all").expect("мусорный файл");
+        let err = resolve_video_dimensions((864, 480), "i2va", frame.to_str(), None, |_| {})
+            .expect_err("битый кадр — честный отказ");
+        assert!(
+            err.contains("garbage.png") && err.contains("размеры"),
+            "отказ называет файл и причину: {err}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

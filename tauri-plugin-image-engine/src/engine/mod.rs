@@ -66,7 +66,8 @@ pub use preflight::{
 };
 pub use process_util::kill_active_engines;
 pub use video_engine::{
-    build_payload, build_spawn_args, file_to_b64, free_ram_gb, generate_video_simple,
-    preflight_video, resolve_mode, sampling_plan_for_quality, seconds_to_frames, VideoEngine,
+    adaptive_video_canvas, build_payload, build_spawn_args, file_to_b64, free_ram_gb,
+    generate_video_simple, preflight_video, resolve_mode, resolve_video_dimensions,
+    sampling_plan_for_quality, seconds_to_frames, VideoEngine,
     VideoGenResult, VideoLoraRef, VideoMode, VideoRequest, VideoSamplingPlan,
 };

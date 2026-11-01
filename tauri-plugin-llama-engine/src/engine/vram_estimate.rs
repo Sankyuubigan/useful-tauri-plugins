@@ -538,6 +538,80 @@ pub fn max_fitting_ngl_safe_with_spec(
     max_fitting_ngl_safe_estimate(&est, budget_mb, reserve_mb, safety_factor)
 }
 
+// ------------------------------------------------------------- RAM-гейт ---
+
+/// Хост-слак RAM-гейта поверх CPU-весов и CPU-KV: кучи llama-server, страницы
+/// рантайма, CPU-side compute-буферы. Константа едина для формулы и тестов
+/// (SSOT — см. шапку модуля).
+pub const RAM_HOST_SLACK_MB: f64 = 512.0;
+
+/// Ожидаемое потребление СИСТЕМНОЙ RAM при оффлоаде `ngl` слоёв на GPU
+/// (остальные `num_layers − ngl` — на CPU).
+///
+/// Зеркало [`vram_for_ngl_estimate`] с обратной долей: веса и KV CPU-слоёв
+/// лежат в ОЗУ. Линейная аппроксимация по слоям — та же, что в VRAM-семействе
+/// (см. комментарий у `vram_for_ngl`). Буферы `buffers_mb` — VRAM-side
+/// (CUDA workspace), в RAM не входят: их CPU-доля покрыта слаком.
+pub fn ram_for_ngl_mb(est: &VramEstimate, ngl: u32) -> f64 {
+    let layers = est.num_layers.max(1) as f64;
+    let cpu_frac = 1.0 - (ngl.min(est.num_layers) as f64) / layers;
+    (est.model_mb + est.kv_mb) * cpu_frac + RAM_HOST_SLACK_MB
+}
+
+/// [`ram_for_ngl_mb`] с масштабированием KV от `base_ctx` (на который считана
+/// `est`) к целевому `ctx`. Линейно по dense-части; SWA-часть при урезании
+/// контекста на деле ужимается слабее (окно ограничено `sliding_window`),
+/// поэтому линейная модель ПЕРЕоценивает RAM при урезании — гейт errs в
+/// безопасную сторону (урежет контекст сильнее, чем необходимо).
+pub fn ram_for_ngl_ctx_mb(est: &VramEstimate, ngl: u32, ctx: u32, base_ctx: u32) -> f64 {
+    if base_ctx == 0 || ctx >= base_ctx {
+        return ram_for_ngl_mb(est, ngl);
+    }
+    let kv_scaled = est.kv_mb * (ctx as f64 / base_ctx as f64);
+    let layers = est.num_layers.max(1) as f64;
+    let cpu_frac = 1.0 - (ngl.min(est.num_layers) as f64) / layers;
+    (est.model_mb + kv_scaled) * cpu_frac + RAM_HOST_SLACK_MB
+}
+
+/// Максимальный контекст, чей RAM-след влезает в `ram_budget_mb` при оффлоаде
+/// `ngl` слоёв (`est` считалась на `base_ctx`).
+///
+/// Аналитическая ОБРАТНАЯ к [`ram_for_ngl_ctx_mb`] (та линейна по `ctx`).
+/// Возвращает:
+/// - `base_ctx`, если влезает как есть;
+/// - 0, если RAM-след не влезает ни при каком контексте (CPU-веса сами по
+///   себе больше бюджета) — вызывающий обязан отказаться от запуска;
+/// - иначе — наибольший кратный 256 контекст, проходящий критерий
+///   `ram_for_ngl_ctx_mb(est, ngl, ctx, base_ctx) ≤ ram_budget_mb`.
+///
+/// Значение ниже 4096 означает «не влезает и на минимальном контексте» —
+/// гейт в `llm.rs` трактует это как отказ.
+pub fn max_fitting_ctx_estimate(est: &VramEstimate, ngl: u32, base_ctx: u32, ram_budget_mb: f64) -> u32 {
+    if base_ctx == 0 {
+        return 0;
+    }
+    if ram_for_ngl_mb(est, ngl) <= ram_budget_mb {
+        return base_ctx;
+    }
+    let layers = est.num_layers.max(1) as f64;
+    let cpu_frac = 1.0 - (ngl.min(est.num_layers) as f64) / layers;
+    let headroom = ram_budget_mb - RAM_HOST_SLACK_MB - est.model_mb * cpu_frac;
+    if headroom <= 0.0 {
+        return 0;
+    }
+    let kv_cpu_full = est.kv_mb * cpu_frac;
+    if kv_cpu_full <= 0.0 {
+        // KV не потребляет, а след на base_ctx уже превысил бюджет —
+        // масштабирование контекста не поможет.
+        return 0;
+    }
+    // Здесь kv_cpu_full > headroom (иначе ram(base_ctx) прошёл бы критерий
+    // выше), поэтому frac < 1.0 гарантированно.
+    let frac = headroom / kv_cpu_full;
+    let ctx = (base_ctx as f64 * frac / 256.0).floor() * 256.0;
+    ctx.max(0.0) as u32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,6 +665,64 @@ mod tests {
         assert_eq!(max_fitting_ngl_estimate(&e, 99_000.0, 0.0), 20);
         // Нулевое число слоёв → 0.
         assert_eq!(max_fitting_ngl_estimate(&est(100.0, 100.0, 0), 1000.0, 0.0), 0);
+    }
+
+    #[test]
+    fn ram_for_ngl_mb_mirrors_vram_with_inverse_fraction() {
+        // Веса 10000, KV 2000, 20 слоёв. CPU-доля = (10000+2000)·(1−ngl/20)+512.
+        let e = est(10_000.0, 2_000.0, 20);
+        // Полный оффлоад: только хост-слак.
+        assert!((ram_for_ngl_mb(&e, 20) - 512.0).abs() < 0.01, "full: {}", ram_for_ngl_mb(&e, 20));
+        // Ноль слоёв: всё на CPU.
+        assert!((ram_for_ngl_mb(&e, 0) - 12_512.0).abs() < 0.01, "zero: {}", ram_for_ngl_mb(&e, 0));
+        // Половина: 6000 + 512.
+        assert!((ram_for_ngl_mb(&e, 10) - 6_512.0).abs() < 0.01, "half: {}", ram_for_ngl_mb(&e, 10));
+        // Больше слоёв, чем есть — кап (полный оффлоад).
+        assert!((ram_for_ngl_mb(&e, 999) - 512.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn ram_for_ngl_ctx_mb_scales_kv_linearly() {
+        let e = est(10_000.0, 2_000.0, 20); // est считалась на base_ctx
+        // ngl=10, ctx = base/2: CPU = 5000 (веса) + 500 (KV) + 512.
+        assert!((ram_for_ngl_ctx_mb(&e, 10, 4096, 8192) - 6_012.0).abs() < 0.01);
+        // ctx ≥ base_ctx → без масштабирования (тот же след, что ram_for_ngl_mb).
+        assert!((ram_for_ngl_ctx_mb(&e, 10, 8192, 8192) - ram_for_ngl_mb(&e, 10)).abs() < 0.01);
+        assert!((ram_for_ngl_ctx_mb(&e, 10, 16384, 8192) - ram_for_ngl_mb(&e, 10)).abs() < 0.01);
+        // base_ctx = 0 — вырожденный случай, без деления на ноль.
+        assert!((ram_for_ngl_ctx_mb(&e, 10, 4096, 0) - ram_for_ngl_mb(&e, 10)).abs() < 0.01);
+    }
+
+    #[test]
+    fn max_fitting_ctx_inverts_ram_formula() {
+        let e = est(10_000.0, 2_000.0, 20); // KV 2000 на base_ctx, 20 слоёв
+        // Полный оффлоад: RAM не зависит от контекста → base_ctx целиком.
+        assert_eq!(max_fitting_ctx_estimate(&e, 20, 28_672, 600.0), 28_672);
+        // ngl=10, base 8192: CPU-веса 5000, KV-CPU 1000 на 8192. Бюджет 6012:
+        // 5000 + 1000·r + 512 ≤ 6012 → r ≤ 0.5 → 4096.
+        assert_eq!(max_fitting_ctx_estimate(&e, 10, 8_192, 6_012.0), 4_096);
+        // Бюджет на волоске выше → base_ctx целиком.
+        assert_eq!(max_fitting_ctx_estimate(&e, 10, 8_192, 13_013.0), 8_192);
+        // CPU-веса сами по себе не влезают (5000 + 512 > 5500) → 0 = отказ.
+        assert_eq!(max_fitting_ctx_estimate(&e, 10, 8_192, 5_500.0), 0);
+        // base_ctx = 0 → 0.
+        assert_eq!(max_fitting_ctx_estimate(&e, 10, 0, 99_000.0), 0);
+    }
+
+    #[test]
+    fn max_fitting_ctx_result_passes_criterion_next_step_fails() {
+        // Свойство-тест, связывающий обратную с прямой формулой: результат
+        // проходит критерий RAM, а шаг вверх на 256 — уже нет (если < base).
+        let e = est(4_000.0, 3_000.0, 30);
+        let base = 16_384u32;
+        let budget = 5_000.0;
+        let ctx = max_fitting_ctx_estimate(&e, 0, base, budget);
+        assert!(ctx > 0 && ctx < base, "ctx: {}", ctx);
+        assert!(ram_for_ngl_ctx_mb(&e, 0, ctx, base) <= budget,
+            "ctx {} must fit: {}", ctx, ram_for_ngl_ctx_mb(&e, 0, ctx, base));
+        assert!(ram_for_ngl_ctx_mb(&e, 0, (ctx + 256).min(base), base) > budget,
+            "ctx+256 must not fit");
+        assert_eq!(ctx % 256, 0, "кратность PAD256");
     }
 
     #[test]

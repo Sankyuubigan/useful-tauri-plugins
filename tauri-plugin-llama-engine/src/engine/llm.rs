@@ -621,6 +621,46 @@ impl LlamaEngine {
         if let Some(note) = vram_notice {
             crate::engine::notify_vram(note);
         }
+
+        // ── RAM-гейт ДО спавна: конфигурация, заведомо не помещающаяся в
+        // системную память, не запускается вовсе. Мгновенная смерть
+        // llama-server посреди работы от исчерпания RAM (os error 10054 без
+        // единой ошибки в stderr — лог юзера, tasks/01.11.26) делается
+        // невозможной у истока, а не лечится ретраем/респауном.
+        // Порядок рычагов: оффлоад уже на потолке VRAM (префлайт выше; поднять
+        // выше нельзя — CUDA OOM, в CPU-режиме GPU нет вообще) → урезание
+        // контекста (KV CPU-слоёв масштабируется от ctx) → честный отказ.
+        const RAM_RESERVE_MB: f64 = 1536.0; // ОС + UI/WebView2 + запас
+        const RAM_MIN_CTX: u32 = 4096;
+        let ram_base_ctx = global_ctx_limit;
+        let mut global_ctx_limit = global_ctx_limit;
+        sys.refresh_memory();
+        let avail_ram_mb = sys.available_memory() as f64 / (1024.0 * 1024.0) - RAM_RESERVE_MB;
+        let ram_est = crate::engine::vram_estimate::estimate_vram_with_spec(&model_path, ram_base_ctx, &kv_spec);
+        let ram_need_mb = crate::engine::vram_estimate::ram_for_ngl_mb(&ram_est, gpu_layers);
+        let ram_need_final_mb = if ram_need_mb > avail_ram_mb {
+            let ctx_new = crate::engine::vram_estimate::max_fitting_ctx_estimate(
+                &ram_est, gpu_layers, ram_base_ctx, avail_ram_mb,
+            );
+            if ctx_new < RAM_MIN_CTX {
+                return fail(format!(
+                    "❌ Запуск отменён: модели с контекстом {} нужно ~{:.0} МБ ОЗУ, доступно ~{:.0} МБ — не хватает даже при минимальном контексте {} токенов. \
+                     Освободите память (закройте другие программы), уменьшите размер контекста в настройках или выберите модель поменьше.",
+                    ram_base_ctx, ram_need_mb, avail_ram_mb, RAM_MIN_CTX
+                ));
+            }
+            let note = format!(
+                "RAM-гейт: контекст урезан {} → {} токенов (доступно ~{:.0} МБ, нужно было ~{:.0} МБ)",
+                ram_base_ctx, ctx_new, avail_ram_mb, ram_need_mb
+            );
+            log_cb(format!("⚠️ {}", note));
+            log::warn!("{}", note);
+            global_ctx_limit = ctx_new;
+            crate::engine::vram_estimate::ram_for_ngl_ctx_mb(&ram_est, gpu_layers, ctx_new, ram_base_ctx)
+        } else {
+            ram_need_mb
+        };
+
         let variant_source = if cfg_early.engine_variant.as_deref().map(|v| v == "auto" || v.is_empty()).unwrap_or(true) {
             format!("авто-подбор по GPU → {}", required_label)
         } else {
@@ -1080,21 +1120,18 @@ impl LlamaEngine {
             }
         }
 
-        // ── Предупреждение о нехватке памяти (не блокирует запуск) ──
-        // Оценка (модель + KV-кэш) сравнивается со свободной RAM. На CPU-режиме
-        // модель живёт в RAM (вместе с KV), на GPU — файл всё равно мапится.
-        let need_mb = estimate_vram_mb_with_spec(&model_path, global_ctx_limit, &kv_spec) + 512.0;
+        // ── Информация о RAM (решение принимает RAM-гейт ДО спавна выше) ──
+        // Старый warn «модели с контекстом нужно ~X, свободно всего Y» после
+        // уже успешного старта удалён: он предупреждал ровно о том отказе,
+        // который гейт теперь предотвращает конструктивно (запуск обречённой
+        // конфигурации стал невозможным). Осталась информационная строка на
+        // вычисленных гейтом числах + свежая доступность после загрузки.
         sys.refresh_memory();
-        let free_ram_mb = sys.free_memory() as f64 / (1024.0 * 1024.0);
-        if need_mb > free_ram_mb {
-            let warn = format!(
-                "⚠️ ВАЖНО: модели с контекстом нужно ~{} МБ памяти, свободно всего {} МБ. \
-                 Загрузка может упасть или работа будет очень медленной. Уменьшите размер контекста в настройках.",
-                need_mb as i64, free_ram_mb as i64
-            );
-            log_cb(warn.clone());
-            log::warn!("{}", warn);
-        }
+        let free_ram_mb = sys.available_memory() as f64 / (1024.0 * 1024.0);
+        log_cb(format!(
+            "ℹ️ RAM: след движка на старте ~{:.0} МБ (контекст {} токенов), сейчас доступно ~{:.0} МБ.",
+            ram_need_final_mb, global_ctx_limit, free_ram_mb
+        ));
 
         // ── BeeLlama: прогноз ОЗУ под pinned-буферы (не блокирует запуск) ──
         // BeeLlama (KVarN) держит KV/compute в pinned CUDA_Host — на машинах с

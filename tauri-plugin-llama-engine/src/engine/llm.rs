@@ -30,7 +30,7 @@ use crate::engine::stream_diagnostics::{
     StreamDiagnostics, StreamReaderError,
 };
 
-pub use super::llm_types::{ChatAttachment, PromptFormat, LlmMessage, extract_model_filename, GenerationResult, LlmMetrics, GrammarSpec, build_base_grammar, build_json_only_grammar, build_json_object_grammar_with_keys, get_hybrid_grammar, get_hybrid_grammar_with_think_budget, get_json_contract_grammar, auto_think_budget_chars, ENVELOPE_TOKENS, CHARS_PER_TOKEN, ToolDefinition, FunctionDef, ToolCall};
+pub use super::llm_types::{ChatAttachment, PromptFormat, LlmMessage, extract_model_filename, GenerationResult, LlmMetrics, GrammarSpec, build_base_grammar, build_json_only_grammar, build_json_object_grammar_with_keys, get_hybrid_grammar, get_hybrid_grammar_with_think_budget, get_json_contract_grammar, auto_think_budget_chars, ENVELOPE_TOKENS, CHARS_PER_TOKEN, THINK_BODY_RULE, ToolDefinition, FunctionDef, ToolCall};
 pub use super::llm_gguf::{extract_string_from_gguf, extract_f32_from_gguf, extract_u32_from_gguf, extract_gguf_arch, extract_u32_with_arch};
 
 /// Таймаут ожидания готовности движка (загрузка модели в память)

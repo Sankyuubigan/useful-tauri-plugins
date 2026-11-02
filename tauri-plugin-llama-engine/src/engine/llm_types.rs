@@ -134,6 +134,25 @@ pub fn build_json_only_grammar() -> String {
     format!("root ::= json-object\n{}", json_grammar_rules())
 }
 
+/// Тело think-блока: свободный текст, ВКЛЮЧАЯ символ «<» (стрелки вида `<-`,
+/// сравнения, теги вроде `<file>`), кроме закрывающей последовательности
+/// `</think` — она зарезервирована за терминалом think-блока.
+///
+/// Стандарт constrained decoding (SGLang `--reasoning-parser`, Fireworks,
+/// vLLM): дум-канал не ограничивают классом одного символа — запрещают только
+/// точную закрывающую последовательность. GBNF не имеет lookahead, поэтому
+/// запрет выражается перечислением всех префиксов тега, не доходящих до него:
+/// каждый альтернативный символ после префикса гарантированно ломает
+/// совпадение с `</think`.
+///
+/// До 02.11.2026 тело было `[^<]`: модель, пытавшаяся написать «<»
+/// (например, стрелку «1 <- Безопасность» из математики переходов),
+/// получала маскировку всех продолжений, и единственным валидным
+/// «<»-продолжением было `</think>` — дум-тело обрывалось посреди слова
+/// (кейс валидатора 02.11.26: 7 из 9 слотов оборвались на строке
+/// «- Сверка…», вердикты вышли без завершённой проверки).
+pub const THINK_BODY_RULE: &str = "think-char ::= [^<] | \"<\" [^/] | \"</\" [^t] | \"</t\" [^h] | \"</th\" [^i] | \"</thi\" [^n] | \"</thin\" [^k]";
+
 /// Универсальная гибридная грамматика (Method 3 из docs/gbnf.md).
 /// Оборачивает базовую JSON-GBNF в think-block: модель может думать в <think>...</think>,
 /// а может сразу выдать JSON. Works для thinking и non-thinking моделей.
@@ -145,9 +164,10 @@ pub fn get_hybrid_grammar(base_gbnf: &str) -> String {
     let think_end = "</think>";
     format!(
         "root ::= think-block json-object\n\
-         think-block ::= \"{ts}\" [^<]* \"{te}\" | \"\"\n\n{body}",
+         think-block ::= \"{ts}\" think-char* \"{te}\" | \"\"\n\n{tbr}\n\n{body}",
         ts = think_start,
         te = think_end,
+        tbr = THINK_BODY_RULE,
         body = renamed,
     )
 }
@@ -169,9 +189,10 @@ pub fn get_hybrid_grammar_with_think_budget(base_gbnf: &str, budget_chars: usize
     let think_end = "</think>";
     format!(
         "root ::= think-block json-object\n\
-         think-block ::= \"{ts}\" [^<]{{0,{budget}}} \"{te}\" | \"\"\n\n{body}",
+         think-block ::= \"{ts}\" think-char{{0,{budget}}} \"{te}\" | \"\"\n\n{tbr}\n\n{body}",
         ts = think_start,
         te = think_end,
+        tbr = THINK_BODY_RULE,
         budget = budget_chars,
         body = renamed,
     )
@@ -552,10 +573,11 @@ mod tests {
         let base = build_json_object_grammar_with_keys(&["has_problem".to_string()], &[]);
         let g = get_json_contract_grammar(&base, 2048, 1500, 1);
         assert!(g.contains("root ::= think-block json-object"), "{}", g);
-        assert!(g.contains("[^<]{0,3000}"), "нет авто-потолка: {}", g);
+        assert!(g.contains("think-char{0,3000}"), "нет авто-потолка: {}", g);
+        assert!(g.contains("think-char ::= [^<]"), "тело think не разрешает «<»: {}", g);
         assert!(g.contains("has_problem"), "потерян ключ: {}", g);
         // Нулевой бюджет — деградация к неограниченной гибридной, не Some(0).
         let unbounded = get_json_contract_grammar(&base, 256, 0, 1);
-        assert!(unbounded.contains("[^<]*"), "{}", unbounded);
+        assert!(unbounded.contains("think-char*"), "{}", unbounded);
     }
 }

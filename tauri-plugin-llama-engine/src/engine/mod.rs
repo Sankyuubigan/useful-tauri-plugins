@@ -41,7 +41,7 @@ pub use llm::{
     extract_f32_from_gguf, extract_gguf_arch, extract_model_filename, extract_u32_from_gguf,
     extract_u32_with_arch, get_hybrid_grammar, get_hybrid_grammar_with_think_budget,
     get_json_contract_grammar, auto_think_budget_chars, ENVELOPE_TOKENS, CHARS_PER_TOKEN,
-    ChatAttachment, GrammarSpec, LlamaEngine, LlmMessage, PromptFormat,
+    THINK_BODY_RULE, ChatAttachment, GrammarSpec, LlamaEngine, LlmMessage, PromptFormat,
     ToolDefinition, FunctionDef, ToolCall,
 };
 pub use llm_gguf::{extract_i64_array_from_gguf, extract_i64_array_with_arch};

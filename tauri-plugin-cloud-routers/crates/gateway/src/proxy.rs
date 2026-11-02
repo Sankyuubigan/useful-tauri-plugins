@@ -429,11 +429,11 @@ async fn route_provider(
                 state.rotation().mark_failure(&provider_id, &key_id, FailureKind::Transport, None);
                 state.events().warn(format!(
                     "ключ {} провайдера «{}»: транспортная ошибка ({}), пробуем следующий",
-                    key_id, provider_id, e
+                    key_id, provider_id, crate::neterr::describe(&e)
                 ));
                 last = Some(openai_error(
                     StatusCode::BAD_GATEWAY,
-                    format!("Не удалось связаться с провайдером «{}»: {}", provider_id, e),
+                    format!("Не удалось связаться с провайдером «{}»: {}", provider_id, crate::neterr::describe(&e)),
                     "upstream_connection_error",
                 ));
                 continue;
@@ -616,7 +616,7 @@ async fn build_passthrough_response(
         Err(e) => Passthrough {
             response: openai_error(
                 StatusCode::BAD_GATEWAY,
-                format!("Не удалось прочитать ответ апстрима: {}", e),
+                format!("Не удалось прочитать ответ апстрима: {}", crate::neterr::describe(&e)),
                 "upstream_read_error",
             ),
             body_hint: None,
@@ -747,7 +747,7 @@ pub async fn fetch_provider_models(
     let up = adapter.models_request(provider, config, &credential)?;
     let req = build_reqwest(state, &up);
     let response = state.http().execute(req).await.map_err(|e| {
-        format!("Не удалось получить список моделей у «{}»: {}", provider.name, e)
+        format!("Не удалось получить список моделей у «{}»: {}", provider.name, crate::neterr::describe(&e))
     })?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
@@ -819,7 +819,7 @@ pub async fn ping_provider(
     let up = adapter.models_request(provider, config, &credential)?;
     let started = std::time::Instant::now();
     let response = state.http().execute(build_reqwest(state, &up)).await.map_err(|e| {
-        format!("Не удалось связаться с провайдером «{}»: {}", provider.name, e)
+        format!("Не удалось связаться с провайдером «{}»: {}", provider.name, crate::neterr::describe(&e))
     })?;
     let status = response.status();
     let latency_ms = started.elapsed().as_millis() as u64;

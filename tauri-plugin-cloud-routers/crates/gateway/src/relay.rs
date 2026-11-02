@@ -140,7 +140,7 @@ pub async fn probe_relay(state: &AppState) -> Result<RelayProbe, String> {
         .timeout(std::time::Duration::from_secs(15))
         .send()
         .await
-        .map_err(|e| format!("Релей недоступен: {}", e))?;
+        .map_err(|e| format!("Релей недоступен: {}", crate::neterr::describe(&e)))?;
     let status = response.status().as_u16();
     let detail = response.text().await.unwrap_or_default();
     let latency_ms = started.elapsed().as_millis() as u64;
@@ -192,7 +192,7 @@ async fn set_relay_env(
         .timeout(std::time::Duration::from_secs(30))
         .send()
         .await
-        .map_err(|e| format!("Не удалось обратиться к Vercel API при настройке {}: {}", RELAY_TOKEN_ENV, e))?;
+        .map_err(|e| format!("Не удалось обратиться к Vercel API при настройке {}: {}", RELAY_TOKEN_ENV, crate::neterr::describe(&e)))?;
     let status = response.status();
     let raw = response.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -300,7 +300,7 @@ async fn create_deployment(
         .timeout(std::time::Duration::from_secs(60))
         .send()
         .await
-        .map_err(|e| format!("Не удалось обратиться к Vercel API: {}", e))?;
+        .map_err(|e| format!("Не удалось обратиться к Vercel API: {}", crate::neterr::describe(&e)))?;
 
     let status = response.status();
     let raw = response.text().await.unwrap_or_default();
@@ -359,7 +359,7 @@ async fn wait_deployment_ready(
             .timeout(std::time::Duration::from_secs(30))
             .send()
             .await
-            .map_err(|e| format!("Не удалось опросить деплой {}: {}", deployment_id, e))?;
+            .map_err(|e| format!("Не удалось опросить деплой {}: {}", deployment_id, crate::neterr::describe(&e)))?;
         let status = response.status();
         let raw = response.text().await.unwrap_or_default();
 
@@ -445,7 +445,7 @@ async fn unprotect_deployment(state: &AppState, vercel_token: &str, project: &st
         .timeout(std::time::Duration::from_secs(30))
         .send()
         .await
-        .map_err(|e| format!("Не удалось обратиться к Vercel API при снятии защиты проекта: {}", e))?;
+        .map_err(|e| format!("Не удалось обратиться к Vercel API при снятии защиты проекта: {}", crate::neterr::describe(&e)))?;
     let status = response.status();
     let raw = response.text().await.unwrap_or_default();
     if !status.is_success() {

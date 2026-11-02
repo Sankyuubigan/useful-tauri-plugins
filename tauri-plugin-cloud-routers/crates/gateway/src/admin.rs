@@ -1268,34 +1268,14 @@ fn merge_hints(into: &mut Vec<(String, Vec<String>)>, hints: Vec<(String, Vec<St
 /// 27.10.26, когда счётчику бесплатных запросов понадобился тот же ключ
 /// дня; без chrono — см. комментарий там).
 
-/// Короткий вид ошибки `reqwest`: что именно сломалось.
-///
-/// Раньше текст ошибки уходил пользователю как есть (`{e}`), и понять, сеть
-/// это, TLS, неверный URL или чужой формат, было не по чему — так родилась
-/// недиагностируемая «builder error».
-fn reqwest_kind(e: &reqwest::Error) -> &'static str {
-    if e.is_builder() {
-        "неверный URL запроса (builder)"
-    } else if e.is_connect() {
-        "нет соединения"
-    } else if e.is_timeout() {
-        "таймаут"
-    } else if e.is_request() {
-        "ошибка отправки запроса"
-    } else if e.is_body() || e.is_decode() {
-        "ошибка чтения тела ответа"
-    } else if e.is_status() {
-        "HTTP-статус ошибки"
-    } else {
-        "ошибка сети"
-    }
-}
-
 /// Честная причина «неизвестный формат тела».
 ///
-/// Голый «неизвестный формат» нодекабжу», так был закрыт целый раунд работы
-/// (кейс 23.10.2026). Релей, чье URL ведёт не на воркер, отдаёт HTML-страницу
-/// SSR приложения — это распознаётся и прямо называется.
+/// Голый «неизвестный формат» вводил в заблуждение — так был закрыт целый раунд
+/// работы (кейс 23.10.2026). Релей, чей URL ведёт не на воркер, отдаёт
+/// HTML-страницу SSR приложения — это распознаётся и прямо называется.
+///
+/// Сетевые ошибки формулирует [`crate::neterr`] (SSOT; копия шкалы
+/// `reqwest_kind` здесь была до 02.11.2026 и удалена).
 fn unknown_body_reason(text: &str) -> String {
     let head = text.trim_start();
     let lower = head.to_ascii_lowercase();
@@ -1394,7 +1374,7 @@ async fn fetch_source_text(
             .timeout(std::time::Duration::from_secs(presets::sources::SOURCE_TIMEOUT_SECS));
 
         let response = request.send().await.map_err(|e| {
-            let msg = format!("{}: запрос к релею: {} ({})", url, reqwest_kind(&e), e);
+            let msg = format!("{}: запрос к релею: {}", url, crate::neterr::describe(&e));
             log::error!("cloud-routers: sync каталога: {msg}");
             msg
         })?;
@@ -1428,7 +1408,7 @@ async fn fetch_source_text(
         .send()
         .await
         .map_err(|e| {
-            let msg = format!("{}: {} ({})", url, reqwest_kind(&e), e);
+            let msg = format!("{}: {}", url, crate::neterr::describe(&e));
             log::error!("cloud-routers: sync каталога: {msg}");
             msg
         })?;
@@ -1723,27 +1703,26 @@ async fn report_ui_error(State(state): State<AppState>, body: axum::body::Bytes)
     if message.is_empty() {
         return bad_request("поле message обязательно");
     }
-    // Хвост как у journal-строк проверки ключей (≤300): stack-trace целиком
-    // журналу не нужен, полезные события он вытеснять не должен.
+    // Голова строки длиной ≤300 (было: хвост — начало сообщения было срезано,
+    // и журнал показывал «ить список моделей…» вместо «Не удалось получить
+    // список…», кейс 02.11.2026). Сообщение важнее стека: стек дашборда
+    // начинается с самого текста ошибки, поэтому честная обрезка — с головы;
+    // хвост-фреймы стека в журнал не доживают — это усечение, а не ложь:
+    // смысл события сохранён.
     state.events().push(
         "warn",
-        format!("ui: {}: {}", where_text, tail_chars(message, 300)),
+        format!("ui: {}: {}", where_text, head_chars(message, 300)),
     );
     StatusCode::OK.into_response()
 }
 
-/// Хвост строки длиной ≤ `max` символов (граница символов, не байт —
+/// Голова строки длиной ≤ `max` символов (граница символов, не байт —
 /// сообщения дашборда содержат кириллицу).
-fn tail_chars(s: &str, max: usize) -> &str {
-    let total = s.chars().count();
-    if total <= max {
-        return s;
+fn head_chars(s: &str, max: usize) -> &str {
+    match s.char_indices().nth(max) {
+        Some((i, _)) => &s[..i],
+        None => s,
     }
-    let skip = total - max;
-    s.char_indices()
-        .nth(skip)
-        .map(|(i, _)| &s[i..])
-        .unwrap_or("")
 }
 
 /// Сообщить хосту (панели настроек), что конфигурация изменилась.
@@ -3216,6 +3195,30 @@ mod tests {
             hit.unwrap().message
         );
 
+        // Длинный отчёт (кейс 02.11.2026): обрезка — с ГОЛОВЫ, а не с хвоста.
+        // Хвост-обрезка убивала начало сообщения и журнал показывал огрызок
+        // «ить список моделей…». Начало длинного сообщения обязано дожить в
+        // журнале полностью.
+        let long = format!("НАЧАЛО-СООБЩЕНИЯ-{}-{}", "м".repeat(100), "х".repeat(400));
+        let r = report_ui_error(
+            State(state.clone()),
+            axum::body::Bytes::from(format!("{{\"where\":\"refreshModels\",\"message\":\"{long}\"}}")),
+        )
+        .await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let events = state.events().tail(10);
+        let hit = events.iter().find(|e| e.message.contains("ui: refreshModels:"));
+        assert!(hit.is_some(), "длинный ui-отчёт обязан быть в журнале: {:?}", events);
+        assert!(
+            hit.unwrap().message.contains("НАЧАЛО-СООБЩЕНИЯ"),
+            "голова сообщения обязана дожить: {}",
+            hit.unwrap().message
+        );
+        assert!(
+            !hit.unwrap().message.contains("хххх") || hit.unwrap().message.chars().count() < 320,
+            "событие обязано остаться коротким (кап 300 символов + префикс)"
+        );
+
         // Пустое тело — 400.
         let r = report_ui_error(State(state.clone()), axum::body::Bytes::new()).await;
         assert_eq!(r.status(), StatusCode::BAD_REQUEST);
@@ -3234,13 +3237,16 @@ mod tests {
 
     /// Хвост строки — на границе символов, не байт: сообщения дашборда
     /// содержат кириллицу, байтовый срез дал бы панику или мусор.
+    /// Голова строки — на границе символов, не байт: сообщения дашборда
+    /// содержат кириллицу, байтовый срез дал бы панику или мусор. Голова
+    /// вместо хвоста: обрезка хвоста убивала начало сообщения (кейс 02.11.2026).
     #[test]
-    fn tail_chars_slices_on_char_boundary() {
-        assert_eq!(tail_chars("короткое", 300), "короткое");
-        assert_eq!(tail_chars("абвгд", 3), "вгд");
-        assert_eq!(tail_chars("абв", 0), "");
+    fn head_chars_slices_on_char_boundary() {
+        assert_eq!(head_chars("короткое", 300), "короткое");
+        assert_eq!(head_chars("абвгд", 3), "абв");
+        assert_eq!(head_chars("абв", 0), "");
         // Многосимвольная юникод-строка: 🚀 — 4 байта, байтовый срез паниковал бы.
-        assert_eq!(tail_chars("🚀🚀🚀🚀", 2), "🚀🚀");
+        assert_eq!(head_chars("🚀🚀🚀🚀", 2), "🚀🚀");
     }
 
     /// Тело `{"models": [...]}` (запрос 25.10.2026): кривой JSON — 400 с

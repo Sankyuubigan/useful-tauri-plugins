@@ -202,7 +202,7 @@ fn build_http_client() -> Result<reqwest::Client, String> {
         .tcp_keepalive(Duration::from_secs(30))
         .user_agent(format!("cloud-routers-gateway/{}", cloud_routers_core::VERSION))
         .build()
-        .map_err(|e| format!("Не удалось создать HTTP-клиент: {}", e))
+        .map_err(|e| format!("Не удалось создать HTTP-клиент: {}", crate::neterr::chain_text(&e)))
 }
 
 #[cfg(test)]

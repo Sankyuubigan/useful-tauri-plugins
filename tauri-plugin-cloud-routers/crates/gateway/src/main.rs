@@ -32,6 +32,7 @@ mod key_check;
 mod kiro_oauth;
 mod kiro_stream;
 mod logbuf;
+mod neterr;
 mod openrouter_check;
 mod protocol;
 mod protocol_kiro;

@@ -351,7 +351,7 @@ pub async fn run_plan(
     let client = reqwest::Client::builder()
         .timeout(REQUEST_TIMEOUT)
         .build()
-        .map_err(|e| format!("не удалось собрать HTTP-клиент: {e}"))?;
+        .map_err(|e| format!("не удалось собрать HTTP-клиент: {}", crate::neterr::chain_text(&e)))?;
 
     // Метод и способ авторизации — по роду проверки: Gemini шлёт POST с
     // JSON-телом (`x-goog-api-key`), OpenRouter — GET без тела (Bearer).
@@ -553,7 +553,7 @@ async fn send_one(
             let body = resp.text().await.unwrap_or_default();
             (Some(status), body)
         }
-        Err(e) => (None, format!("сеть: {e}")),
+        Err(e) => (None, format!("сеть: {}", crate::neterr::describe(&e))),
     }
 }
 

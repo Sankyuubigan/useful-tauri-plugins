@@ -492,7 +492,10 @@ async fn post_json(
     for (k, v) in extra.iter() {
         req = req.header(k, v);
     }
-    let resp = req.send().await.map_err(|e| format!("{}: {}", url, reqwest_kind(&e)))?;
+    let resp = req
+        .send()
+        .await
+        .map_err(|e| format!("{}: {}", url, crate::neterr::describe(&e)))?;
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
     if !status.is_success() {
@@ -505,22 +508,8 @@ fn head(text: &str) -> String {
     text.chars().take(300).collect()
 }
 
-/// Короткий вид сетевой ошибки (та же шкала, что в sync каталога).
-fn reqwest_kind(e: &reqwest::Error) -> &'static str {
-    if e.is_builder() {
-        "неверный URL запроса"
-    } else if e.is_connect() {
-        "нет соединения"
-    } else if e.is_timeout() {
-        "таймаут"
-    } else if e.is_request() {
-        "ошибка отправки запроса"
-    } else if e.is_body() || e.is_decode() {
-        "ошибка чтения тела ответа"
-    } else {
-        "ошибка сети"
-    }
-}
+// Шкала сетевых ошибок (бывший reqwest_kind) и их полные цепочки —
+// в [`crate::neterr`] (SSOT, удалено здесь 02.11.2026).
 
 #[cfg(test)]
 mod tests {

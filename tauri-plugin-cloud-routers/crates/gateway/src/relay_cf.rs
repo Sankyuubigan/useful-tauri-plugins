@@ -133,7 +133,7 @@ async fn cf_json(
         .timeout(HTTP_TIMEOUT)
         .send()
         .await
-        .map_err(|e| format!("Не удалось обратиться к Cloudflare API: {}", e))?;
+        .map_err(|e| format!("Не удалось обратиться к Cloudflare API: {}", crate::neterr::describe(&e)))?;
     parse_envelope(response).await
 }
 
@@ -241,7 +241,7 @@ async fn upload_worker(state: &AppState, api_token: &str, account: &str, script:
         .timeout(HTTP_TIMEOUT)
         .send()
         .await
-        .map_err(|e| format!("Не удалось загрузить воркер в Cloudflare: {}", e))?;
+        .map_err(|e| format!("Не удалось загрузить воркер в Cloudflare: {}", crate::neterr::describe(&e)))?;
     parse_envelope(response).await?;
     Ok(())
 }

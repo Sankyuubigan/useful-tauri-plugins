@@ -23,6 +23,7 @@
 pub mod convert;
 pub mod inspect;
 pub mod ops;
+pub mod ops_bulk;
 pub mod pipeline;
 pub mod qa;
 pub mod soffice;

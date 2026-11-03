@@ -3,6 +3,7 @@
 //! (честный отказ, не тихий пропуск). Список ops известен агенту через
 //! host-схему тула `excel_apply`.
 
+use crate::ops_bulk::write_cell_content;
 use crate::{column_letter, column_number, parse_cell_addr, parse_range, split_sheet_range, ExcelError};
 use serde::Deserialize;
 use umya_spreadsheet::structs::drawing::spreadsheet::MarkerType;
@@ -76,6 +77,33 @@ pub enum Op {
         #[serde(default)]
         height_cells: Option<u32>,
     },
+    /// Блок строк одной операцией: `addr` — левый верхний угол, `rows` —
+    /// массив строк, каждая — массив ячеек. Ячейка: голое значение
+    /// (строка/число/bool/null) или объект {value?, formula?, number_format?,
+    /// style?}; null — ячейка не пишется. Семантика каждой ячейки — как у
+    /// set_cell. Заменяет десятки set_cell на один op (бюджет генерации LLM).
+    SetRows {
+        sheet: String,
+        addr: String,
+        rows: Vec<Vec<serde_json::Value>>,
+    },
+    /// Формат числа и/или стиль на весь диапазон ("A1:H16").
+    FormatRange {
+        sheet: String,
+        range: String,
+        #[serde(default)]
+        number_format: Option<String>,
+        #[serde(default)]
+        style: Option<CellStyle>,
+    },
+    /// Умная таблица Excel (Table): первая строка диапазона — заголовки.
+    /// Имя не указано — первое свободное Table1, Table2, ...
+    AddTable {
+        sheet: String,
+        range: String,
+        #[serde(default)]
+        name: Option<String>,
+    },
 }
 
 /// Стиль ячейки (подмножество, достаточное для отчётов/заголовков).
@@ -115,8 +143,8 @@ pub fn apply_ops(
             ExcelError::Usage(format!(
                 "Операция #{index} ('{name}') не соответствует схеме: {e}. \
                  Известные операции: add_sheet, delete_sheet, rename_sheet, set_cell, \
-                 set_column_width, autofit_columns, merge_cells, auto_filter, \
-                 freeze_panes, add_chart"
+                 set_rows, format_range, add_table, set_column_width, autofit_columns, \
+                 merge_cells, auto_filter, freeze_panes, add_chart"
             ))
         })?;
         apply_one(book, op)
@@ -162,44 +190,7 @@ fn apply_one(book: &mut umya_spreadsheet::Workbook, op: Op) -> Result<(), ExcelE
         } => {
             let sheet_ref = sheet_mut(book, &sheet)?;
             let cell = sheet_ref.cell_mut(addr.as_str());
-            if let Some(v) = value {
-                match v {
-                    serde_json::Value::Number(n) => {
-                        let num = n.as_f64().ok_or_else(|| {
-                            ExcelError::Usage(format!("Число вне диапазона f64: {n}"))
-                        })?;
-                        cell.set_value_number(num);
-                    }
-                    serde_json::Value::Bool(b) => {
-                        cell.set_value_bool(b);
-                    }
-                    serde_json::Value::String(s) => {
-                        // Строка — ровно текст: никаких автопревращений "00123"
-                        // в число (интыент агента обязателен).
-                        cell.set_value_string(s);
-                    }
-                    other => {
-                        return Err(ExcelError::Usage(format!(
-                            "set_cell {addr}: значение должно быть строкой, числом или bool, получено: {other}"
-                        )));
-                    }
-                }
-            }
-            if let Some(f) = formula {
-                if f.starts_with('=') {
-                    return Err(ExcelError::Usage(format!(
-                        "set_cell {addr}: формула передаётся БЕЗ ведущего '=' (получено '{f}')"
-                    )));
-                }
-                cell.set_formula(f);
-            }
-            if let Some(code) = number_format {
-                cell.style_mut().numbering_format_mut().set_format_code(code);
-            }
-            if let Some(style_spec) = style {
-                apply_style(cell.style_mut(), &style_spec)?;
-            }
-            Ok(())
+            write_cell_content(cell, &addr, value, formula, number_format, style)
         }
         Op::SetColumnWidth { sheet, col, width } => {
             let col_num = match col {
@@ -297,10 +288,26 @@ fn apply_one(book: &mut umya_spreadsheet::Workbook, op: Op) -> Result<(), ExcelE
                 height_cells.unwrap_or(15),
             )
         }
+        Op::SetRows { sheet, addr, rows } => crate::ops_bulk::apply_set_rows(book, &sheet, &addr, &rows),
+        Op::FormatRange {
+            sheet,
+            range,
+            number_format,
+            style,
+        } => crate::ops_bulk::apply_format_range(
+            book,
+            &sheet,
+            &range,
+            number_format.as_deref(),
+            style,
+        ),
+        Op::AddTable { sheet, range, name } => {
+            crate::ops_bulk::apply_add_table(book, &sheet, &range, name.as_deref())
+        }
     }
 }
 
-fn sheet_mut<'a>(
+pub(crate) fn sheet_mut<'a>(
     book: &'a mut umya_spreadsheet::Workbook,
     name: &str,
 ) -> Result<&'a mut umya_spreadsheet::Worksheet, ExcelError> {
@@ -382,7 +389,7 @@ fn display_len(text: &str) -> usize {
         .sum()
 }
 
-fn apply_style(style: &mut Style, spec: &CellStyle) -> Result<(), ExcelError> {
+pub(crate) fn apply_style(style: &mut Style, spec: &CellStyle) -> Result<(), ExcelError> {
     let font = style.font_mut();
     if let Some(true) = spec.bold {
         font.set_bold(true);

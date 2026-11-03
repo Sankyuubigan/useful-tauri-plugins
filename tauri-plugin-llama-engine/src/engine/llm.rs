@@ -30,7 +30,7 @@ use crate::engine::stream_diagnostics::{
     StreamDiagnostics, StreamReaderError,
 };
 
-pub use super::llm_types::{ChatAttachment, PromptFormat, LlmMessage, extract_model_filename, GenerationResult, LlmMetrics, GrammarSpec, build_base_grammar, build_json_only_grammar, build_json_object_grammar_with_keys, get_hybrid_grammar, get_hybrid_grammar_with_think_budget, get_json_contract_grammar, auto_think_budget_chars, ENVELOPE_TOKENS, CHARS_PER_TOKEN, THINK_BODY_RULE, ToolDefinition, FunctionDef, ToolCall};
+pub use super::llm_types::{ChatAttachment, PromptFormat, LlmMessage, extract_model_filename, GenerationResult, LlmMetrics, GrammarSpec, build_base_grammar, build_json_only_grammar, build_json_object_grammar_with_keys, get_hybrid_grammar, get_hybrid_grammar_with_think_budget, get_json_contract_grammar, auto_think_budget_chars, strict_json_string_rules, ENVELOPE_TOKENS, CHARS_PER_TOKEN, THINK_BODY_RULE, ToolDefinition, FunctionDef, ToolCall};
 pub use super::llm_gguf::{extract_string_from_gguf, extract_f32_from_gguf, extract_u32_from_gguf, extract_gguf_arch, extract_u32_with_arch};
 
 /// Таймаут ожидания готовности движка (загрузка модели в память)
@@ -2059,9 +2059,12 @@ impl LlamaEngine {
         // llama.cpp#15000: сервер не эмитит SSE-дельты, пока think не закрыт, —
         // счётчики стоят на нуле при живой генерации. Без пояснения «0 токенов»
         // выглядит как зависший движок (лог юзера 01.11.26: экстрактор 2×400с,
-        // телеметрия 0+0, MAX_TOKENS). Пояснение — только при нулях и length:
-        // при других stop_reason нули означают иное (пустой ответ, ошибка).
-        if generated_tokens == 0 && reasoning_tokens == 0 && stop_reason == "length" {
+        // телеметрия 0+0, MAX_TOKENS). Пояснение — только при нулях и
+        // MAX_TOKENS: «length» уже переведён в «MAX_TOKENS» выше (match по
+        // finish_reason), и дефолт до цикла — тоже он; при других stop_reason
+        // нули означают иное (пустой ответ, ошибка). Раньше здесь сравнивали с
+        // «length» — условие было мёртвым и пояснение не выходило никогда.
+        if generated_tokens == 0 && reasoning_tokens == 0 && stop_reason == "MAX_TOKENS" {
             log_cb(
                 "⚠️ Стрим не эмитил ни одной дельты: вывод уходил в незакрытый <think> — сервер держит дельты до его закрытия (llama.cpp#15000), бюджет генерации исчерпан, JSON/ответ не родился."
                     .to_string(),

@@ -40,9 +40,9 @@ pub use llm::{
     estimate_vram_mb_with_spec,
     extract_f32_from_gguf, extract_gguf_arch, extract_model_filename, extract_u32_from_gguf,
     extract_u32_with_arch, get_hybrid_grammar, get_hybrid_grammar_with_think_budget,
-    get_json_contract_grammar, auto_think_budget_chars, ENVELOPE_TOKENS, CHARS_PER_TOKEN,
-    THINK_BODY_RULE, ChatAttachment, GrammarSpec, LlamaEngine, LlmMessage, PromptFormat,
-    ToolDefinition, FunctionDef, ToolCall,
+    get_json_contract_grammar, auto_think_budget_chars, strict_json_string_rules,
+    ENVELOPE_TOKENS, CHARS_PER_TOKEN, THINK_BODY_RULE, ChatAttachment, GrammarSpec, LlamaEngine,
+    LlmMessage, PromptFormat, ToolDefinition, FunctionDef, ToolCall,
 };
 pub use llm_gguf::{extract_i64_array_from_gguf, extract_i64_array_with_arch};
 pub use mem_profiler::{current_process_rss, peak_line, MemGuard, MemSampler};

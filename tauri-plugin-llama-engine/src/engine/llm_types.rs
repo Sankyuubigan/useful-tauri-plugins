@@ -92,22 +92,66 @@ pub struct GrammarSpec {
     pub json_schema: Option<serde_json::Value>,
 }
 
+/// Класс символа строкового значения в MIXED-грамматике (свободный текст ИЛИ
+/// JSON, `build_base_grammar`): raw «<» разрешён — проза не является
+/// машиночитаемым контрактом.
+const FREE_JSON_STRING_CHAR: &str = "[^\"\\\\]";
+
+/// Класс символа строкового значения в СТРОГОМ JSON-контракте: raw «<» запрещён.
+///
+/// Механика отказа (лог юзера 01.11.26): think-тренированная модель (Ornith-класс,
+/// игнорирует `enable_thinking=false`) открывает `<think>` ВНУТРИ строкового
+/// значения факта/сигнала. Дифф-парсер llama-server не эмитит ни одной SSE-дельты,
+/// пока think не закрыт (llama.cpp#15000), весь `n_predict` сгорает в незакрытом
+/// дум-канале, приложение видит «0 токенов, MAX_TOKENS», парсер получает `{}`.
+/// JSON-only ретрай think-блок не содержит, но свободный `string-char`
+/// пропускал smuggle в значениях — оба вызова экстрактора умерли одинаково
+/// (гибрид — через незакрытый think-блок, ретрай — через smuggle в значении).
+/// Легитимный «<» остаётся доступен как escape `\u003c` (альтернатива `escape`
+/// не тронута). THINK_BODY_RULE (дум-тело) это НЕ касается: там «<» разрешён
+/// кроме точной `</think` — то решение (02.11.2026) не откатывается.
+pub const STRICT_JSON_STRING_CHAR: &str = "[^\"\\\\<]";
+
+/// Строковые правила JSON-грамматики (json-string / string-char / escape).
+/// Единственное место, где класс символа строкового значения превращается
+/// в текст правила: [`json_grammar_rules`] вплетает блок в полный набор,
+/// [`strict_json_string_rules`] отдаёт его хостовым сигнальным грамматикам
+/// (signals.rs) — копий правил в хосте быть не должно (SSOT).
+fn json_string_rules(string_char: &str) -> String {
+    format!(
+        "json-string ::= \"\\\"\" string-char* \"\\\"\"\n\
+         string-char ::= {sc} | escape\n\
+         escape ::= \"\\\\\" (\"\\\\\" | \"\\\"\" | \"n\" | \"t\" | \"r\" | \"b\" | \"f\" | \"u\" [0-9a-f] [0-9a-f] [0-9a-f] [0-9a-f])\n",
+        sc = string_char
+    )
+}
+
+/// Канонический блок строковых правил СТРОГОГО JSON-контракта для хостовых
+/// грамматик: raw «<» в строковых значениях запрещён
+/// (см. [`STRICT_JSON_STRING_CHAR`]). Число-правила и `bool ::= …` хост
+/// добавляет сам — они специфичны для его конвертов.
+pub fn strict_json_string_rules() -> String {
+    json_string_rules(STRICT_JSON_STRING_CHAR)
+}
+
 /// Общие JSON-правила для GBNF (строгий JSON + свободный текст).
 /// Используется как база для всех форматов промптов (кроме Auto).
-fn json_grammar_rules() -> &'static str {
-    concat!(
-        "json-object ::= \"{\" ws members ws \"}\"\n",
-        "members ::= (member (\",\" ws member)*)?\n",
-        "member ::= json-string ws \":\" ws json-value\n",
-        "json-array ::= \"[\" ws elements ws \"]\"\n",
-        "elements ::= (json-value (\",\" ws json-value)*)?\n",
-        "json-value ::= json-string | json-number | json-object | json-array | json-bool | \"null\"\n",
-        "json-string ::= \"\\\"\" string-char* \"\\\"\"\n",
-        "string-char ::= [^\"\\\\] | escape\n",
-        "escape ::= \"\\\\\" (\"\\\\\" | \"\\\"\" | \"n\" | \"t\" | \"r\" | \"b\" | \"f\" | \"u\" [0-9a-f] [0-9a-f] [0-9a-f] [0-9a-f])\n",
-        "json-number ::= \"-\"? (\"0\" | [1-9] [0-9]*) (\".\" [0-9]+)? ([eE] [-+]? [0-9]+)?\n",
-        "json-bool ::= \"true\" | \"false\"\n",
-        "ws ::= (\" \" | \"\\t\" | \"\\n\" | \"\\r\")*\n",
+/// `string_char` — класс символа строкового значения: [`FREE_JSON_STRING_CHAR`]
+/// для mixed-грамматики, [`STRICT_JSON_STRING_CHAR`] для строгих JSON-контрактов
+/// (через [`build_json_only_grammar`] / [`build_json_object_grammar_with_keys`]).
+fn json_grammar_rules(string_char: &str) -> String {
+    format!(
+        "json-object ::= \"{{\" ws members ws \"}}\"\n\
+         members ::= (member (\",\" ws member)*)?\n\
+         member ::= json-string ws \":\" ws json-value\n\
+         json-array ::= \"[\" ws elements ws \"]\"\n\
+         elements ::= (json-value (\",\" ws json-value)*)?\n\
+         json-value ::= json-string | json-number | json-object | json-array | json-bool | \"null\"\n\
+         {}\
+         json-number ::= \"-\"? (\"0\" | [1-9] [0-9]*) (\".\" [0-9]+)? ([eE] [-+]? [0-9]+)?\n\
+         json-bool ::= \"true\" | \"false\"\n\
+         ws ::= (\" \" | \"\\t\" | \"\\n\" | \"\\r\")*\n",
+        json_string_rules(string_char)
     )
 }
 
@@ -124,14 +168,19 @@ pub fn build_base_grammar(format: &PromptFormat) -> Option<String> {
          seq ::= (plain-char | \"\\n\" | \"\\r\" | \"\\t\" | json-object)*\n\
          plain-char ::= [^{{}}]\n\
          {}",
-        json_grammar_rules()
+        json_grammar_rules(FREE_JSON_STRING_CHAR)
     ))
 }
 
 /// Строго-JSON грамматика (корень — только JSON-значение). Для агентов,
 /// чей контракт — исключительно машиночитаемый JSON (напр. fact_extractor).
+/// Строковые значения — строгий класс (`STRICT_JSON_STRING_CHAR`): raw «<»
+/// невозможен, think-smuggle в значениях структурно закрыт.
 pub fn build_json_only_grammar() -> String {
-    format!("root ::= json-object\n{}", json_grammar_rules())
+    format!(
+        "root ::= json-object\n{}",
+        json_grammar_rules(STRICT_JSON_STRING_CHAR)
+    )
 }
 
 /// Тело think-блока: свободный текст, ВКЛЮЧАЯ символ «<» (стрелки вида `<-`,
@@ -323,7 +372,7 @@ pub fn build_json_object_grammar_with_keys(bool_keys: &[String], string_keys: &[
         "root ::= \"{{\" sp {} sp \"}}\"\nbool ::= \"true\" | \"false\"\n{}\n{}",
         body,
         sp,
-        json_grammar_rules()
+        json_grammar_rules(STRICT_JSON_STRING_CHAR)
     )
 }
 
@@ -518,6 +567,9 @@ mod tests {
         assert!(chatml.starts_with("root ::= seq"), "{}", chatml);
         assert!(chatml.contains("json-object ::="));
         assert!(chatml.contains("plain-char ::= [^{}]"), "{}", chatml);
+        // Mixed-грамматика НЕ строгий контракт: raw «<» в строковых значениях
+        // разрешён (проза не является машиночитаемым контрактом).
+        assert!(chatml.contains("string-char ::= [^\"\\\\] | escape"), "{}", chatml);
     }
 
     #[test]
@@ -525,6 +577,9 @@ mod tests {
         let g = build_json_only_grammar();
         assert!(g.starts_with("root ::= json-object"));
         assert!(g.contains("json-value ::="));
+        // Строгий контракт: raw «<» в строковых значениях запрещён
+        // (think-smuggle, llama.cpp#15000).
+        assert!(g.contains("string-char ::= [^\"\\\\<] | escape"), "{}", g);
     }
 
     #[test]
@@ -548,6 +603,44 @@ mod tests {
         let p1 = g.find("has_problem").unwrap();
         let p2 = g.find("rewritten_query").unwrap();
         assert!(p1 < p2);
+        // строгий строковый класс: think-smuggle в значениях невозможен
+        assert!(g.contains("string-char ::= [^\"\\\\<] | escape"), "{}", g);
+    }
+
+    #[test]
+    fn strict_json_string_char_bans_think_smuggle_in_values() {
+        // Лог юзера 01.11.26: JSON-only ретрай (без think-блока) всё равно умер —
+        // Ornith открыла <think> ВНУТРИ строкового значения, сервер держал дельты
+        // до его закрытия (llama.cpp#15000), 0 токенов, MAX_TOKENS. В строгом
+        // контракте raw «<» в значении невозможен: smuggle структурно закрыт,
+        // легитимный «<» остаётся доступен как escape \u003c.
+        let bool_keys = vec!["has_problem".to_string()];
+        let strict = build_json_object_grammar_with_keys(&bool_keys, &[]);
+        assert!(strict.contains("string-char ::= [^\"\\\\<] | escape"), "{}", strict);
+        assert!(
+            !strict.contains("string-char ::= [^\"\\\\] | escape"),
+            "старый свободный класс просочился в строгий контракт: {}",
+            strict
+        );
+        // THINK_BODY_RULE не тронуто: «<» в дум-теле по-прежнему разрешён кроме
+        // точной `</think` (решение 02.11.2026, не откатывается) — это правило
+        // подключается гибридом, см. json_contract_grammar_bounds_think_by_engine_budgets.
+    }
+
+    #[test]
+    fn strict_json_string_rules_is_the_canonical_host_block() {
+        // SSOT: хостовые сигнальные грамматики (signals.rs) обязаны получать
+        // строковые правила этим блоком — тот же байт-в-байт, что вплетён в
+        // плагиновые строгие контракты; отдельного текста класса больше нет.
+        let rules = strict_json_string_rules();
+        assert!(rules.contains("json-string ::="), "{}", rules);
+        assert!(rules.contains("string-char ::= [^\"\\\\<] | escape"), "{}", rules);
+        assert!(rules.contains("escape ::="), "{}", rules);
+        assert!(
+            build_json_only_grammar().contains(&rules),
+            "канонический блок не совпадает с вплетённым в строгий контракт: {}",
+            rules
+        );
     }
 
     #[test]

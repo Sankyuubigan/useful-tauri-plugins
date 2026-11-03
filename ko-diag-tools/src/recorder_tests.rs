@@ -102,6 +102,36 @@ fn next_recorder_file_is_monotonic() {
 }
 
 #[test]
+fn spawn_throttle_first_logs_burst_suppressed_window_expires() {
+    // Инварианты троттлинга спавна (замер лога юзера 03.11.26: без окна
+    // taskhostw.exe давал 27 375 из 33 169 строк): первое имя пишется
+    // всегда; повторы внутри окна молча копятся; после окна — одна
+    // агрегированная строка со счётчиком подавленных.
+    let mut th: HashMap<String, SpawnThrottle> = HashMap::new();
+    let first = spawn_line_decision(&mut th, "taskhostw.exe", "12:00:00.000", 1, 9)
+        .expect("первое появление имени пишется всегда");
+    assert!(first.contains("taskhostw.exe"), "{first}");
+    assert!(
+        spawn_line_decision(&mut th, "taskhostw.exe", "12:00:00.400", 2, 9).is_none(),
+        "повтор в окне подавлен"
+    );
+    assert!(
+        spawn_line_decision(&mut th, "taskhostw.exe", "12:00:00.800", 3, 9).is_none(),
+        "повтор в окне подавлен"
+    );
+    // Имитация истечения окна: сдвиг last_logged в прошлое.
+    th.get_mut("taskhostw.exe").unwrap().last_logged = Instant::now() - SPAWN_SUPPRESS_WINDOW;
+    let after = spawn_line_decision(&mut th, "taskhostw.exe", "12:00:06.000", 4, 9)
+        .expect("после окна строка возвращается");
+    assert!(after.contains("[+2 повторов"), "счётчик подавленных в строке: {after}");
+    // Другое имя троттлингом не затронуто.
+    assert!(
+        spawn_line_decision(&mut th, "game.exe", "12:00:06.100", 5, 100).is_some(),
+        "первое появление нового имени пишется всегда"
+    );
+}
+
+#[test]
 fn read_log_tail_happy_and_missing() {
     let dir = sandbox("tail");
     std::fs::create_dir_all(&dir).unwrap();

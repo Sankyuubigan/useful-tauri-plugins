@@ -23,6 +23,15 @@ pub const WINDOW_HOURS: u64 = 72;
 pub const MAX_SYSTEM_ENTRIES: usize = 20;
 pub const MAX_APP_ENTRIES: usize = 15;
 
+/// Кап чтения журнала (`-MaxEvents`): без него Get-WinEvent перечитывает
+/// ВЕСЬ журнал 72 ч (десятки тысяч записей на замусоренных машинах) —
+/// секция уходила в таймаут (замер 03.11.26: diag_snapshot 1 мин 43 с).
+/// Кап ограничивает глубину просмотра НОВЕЙШИМИ N событиями фильтра;
+/// события глубже капа невидимы — что честно указывается в теле пустой
+/// секции (см. section_from_query).
+pub const MAX_EVENTS_SCANNED_SYSTEM: usize = 50;
+pub const MAX_EVENTS_SCANNED_APP: usize = 30;
+
 const TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Форматирование записи журнала в одну строку: время | ID | провайдер | сообщение.
@@ -50,13 +59,14 @@ pub fn system_events_section() -> Section {
               LogName='System'; \
               StartTime=(Get-Date).AddHours(-{WINDOW_HOURS}); \
               Level=1,2,3 }} \
+          -MaxEvents {MAX_EVENTS_SCANNED_SYSTEM} \
           -ErrorAction SilentlyContinue | \
           Where-Object {{ $_.ProviderName -match 'WHEA|Resource-Exhaustion|Kernel-Power|Display|nvlddmkm|amdkmdag|disk|stornvme|volmgr|Ntfs|BugCheck' }} | \
           Select-Object -First {MAX_SYSTEM_ENTRIES} {}",
         one_line_render(180)
     );
 
-    section_from_query(title, &script)
+    section_from_query(title, &script, MAX_EVENTS_SCANNED_SYSTEM)
 }
 
 /// Журнал Application: коды 1000 (краш) и 1002 (выполнение зависшей
@@ -68,20 +78,33 @@ pub fn app_events_section() -> Section {
               LogName='Application'; \
               StartTime=(Get-Date).AddHours(-{WINDOW_HOURS}); \
               Id=1000,1002 }} \
+          -MaxEvents {MAX_EVENTS_SCANNED_APP} \
           -ErrorAction SilentlyContinue | \
           Select-Object -First {MAX_APP_ENTRIES} {}",
         one_line_render(180)
     );
 
-    section_from_query(title, &script)
+    section_from_query(title, &script, MAX_EVENTS_SCANNED_APP)
 }
 
-fn section_from_query(title: &str, script: &str) -> Section {
+fn section_from_query(title: &str, script: &str, scanned_cap: usize) -> Section {
     match sys_helpers::run_powershell(script, TIMEOUT) {
         Ok(out) => {
             let trimmed = out.trim();
             if trimmed.is_empty() {
-                Section::new_ok(title, "В окне 72 часа записей нет — свежих сбоев в этой категории не зарегистрировано.")
+                // Честность: кап -MaxEvents ограничивает ГЛУБИНУ просмотра.
+                // Пустой результат = «в просмотренном ничего нет», а не
+                // «сбоев не было вообще» (§2.2: молчаливое сужение смысла —
+                // ложь).
+                Section::new_ok(
+                    title,
+                    format!(
+                        "В окне 72 часа среди последних {scanned_cap} событий журнала записей этой \
+                         категории нет — свежих сбоев не зарегистрировано. (Чтение ограничено \
+                         {scanned_cap} новейшими событиями фильтра — кап от таймаута; более \
+                         старые события не просмотрены.)"
+                    ),
+                )
             } else {
                 Section::new_findings(title, trimmed.to_string())
             }
@@ -111,12 +134,17 @@ mod tests {
                   LogName='System'; \
                   StartTime=(Get-Date).AddHours(-{WINDOW_HOURS}); \
                   Level=1,2,3 }} \
+              -MaxEvents {MAX_EVENTS_SCANNED_SYSTEM} \
               -ErrorAction SilentlyContinue | \
               Where-Object {{ $_.ProviderName -match 'WHEA|Resource-Exhaustion|Kernel-Power|Display|nvlddmkm|amdkmdag|disk|stornvme|volmgr|Ntfs|BugCheck' }} | \
               Select-Object -First {MAX_SYSTEM_ENTRIES} {}",
             one_line_render(180)
         );
         assert!(script.contains("Get-WinEvent"));
+        assert!(
+            script.contains("-MaxEvents 50"),
+            "кап чтения обязан быть в запросе: {script}"
+        );
         assert!(script.contains("WHEA"), "фильтр обязан брать WHEA: {script}");
         assert!(script.contains("BugCheck"), "фильтр обязан брать BugCheck: {script}");
         assert!(script.contains("stornvme"), "фильтр обязан брать диски: {script}");

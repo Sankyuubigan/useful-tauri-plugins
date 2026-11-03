@@ -36,6 +36,7 @@ pub fn run_snapshot(diag_dir: Option<&Path>) -> Diagnosis {
     sections.extend(dumps::dumps_sections());
     sections.push(eventlog::system_events_section());
     sections.push(eventlog::app_events_section());
+    sections.push(kernel::third_party_drivers_section());
     sections.push(processes::processes_section(&sys));
     if let Some(dir) = diag_dir {
         sections.push(recorder_logs_section(dir));
@@ -50,7 +51,7 @@ pub fn run_snapshot(diag_dir: Option<&Path>) -> Diagnosis {
 /// «что вообще есть на диске», чтобы после перезагрузки агент знал,
 /// какой файл читать.
 pub fn recorder_logs_section(dir: &Path) -> Section {
-    let title = "[13] ЛОГИ ЧЁРНОГО ЯЩИКА ЭТОЙ СЕССИИ (24 ч)";
+    let title = "[14] ЛОГИ ЧЁРНОГО ЯЩИКА ЭТОЙ СЕССИИ (24 ч)";
     // Полный список файлов рекордера с путями и давностью.
     let mut rows: Vec<(std::time::SystemTime, String)> = Vec::new();
     let read_dir = match std::fs::read_dir(dir) {

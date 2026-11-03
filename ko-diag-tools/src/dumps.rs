@@ -95,11 +95,11 @@ pub fn dumps_sections() -> Vec<Section> {
     for (dir, title) in [
         (
             Path::new(r"C:\Windows\LiveKernelReports"),
-            "[9] ЖИВЫЕ ДАМПЫ ЯДРА ЗА 5 ДНЕЙ (LiveKernelReports)",
+            "[10] ЖИВЫЕ ДАМПЫ ЯДРА ЗА 5 ДНЕЙ (LiveKernelReports)",
         ),
         (
             Path::new(r"C:\Windows\Minidump"),
-            "[10] ДАМПЫ BSOD ЗА 5 ДНЕЙ (Minidump)",
+            "[11] ДАМПЫ BSOD ЗА 5 ДНЕЙ (Minidump)",
         ),
     ] {
         let title = title.to_string();
@@ -141,7 +141,7 @@ pub fn dumps_sections() -> Vec<Section> {
 
     // Полный дамп памяти: один файл — достаточно метаданных.
     let full = Path::new(r"C:\Windows\MEMORY.DMP");
-    let title = "[11] ПОЛНЫЙ ДАМП ПАМЯТИ (MEMORY.DMP)".to_string();
+    let title = "[12] ПОЛНЫЙ ДАМП ПАМЯТИ (MEMORY.DMP)".to_string();
     match full.metadata() {
         Ok(meta) => {
             let age = match meta.modified() {

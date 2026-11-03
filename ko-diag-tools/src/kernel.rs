@@ -8,9 +8,12 @@
 //! - **TDR** — тайминги перезапуска зависшего видеодрайвера: их меняют
 //!   «лечилом», превращая обычный сброс драйвера в намертво висящую систему.
 
+use std::time::Duration;
+
 use winreg::enums::*;
 
 use super::Section;
+use crate::sys_helpers;
 
 const HVCI_KEY: &str =
     "SYSTEM\\CurrentControlSet\\Control\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity";
@@ -92,6 +95,48 @@ pub fn tdr_section() -> Section {
     }
 }
 
+/// Потолок строк секции сторонних драйверов (первые 50).
+const MAX_THIRD_PARTY_DRIVERS: usize = 50;
+
+/// Таймаут: перечисление всех работающих kernel-драйверов + чтение
+/// VersionInfo каждого .sys-файла тяжелее обычного WMI-запроса.
+const DRIVERS_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Секция [9]: сторонние (не Microsoft) драйверы, работающие в Ring 0.
+///
+/// Метод: Win32_SystemDriver (State=Running) → CompanyName из VersionInfo
+/// каждого .sys → только НЕ Microsoft. Сторонний драйвер — не «виноват»:
+/// это факты для гипотез (античиты, антивирусы, утилиты сидят ближе всех
+/// к железу и чаще прочего фигурируют в зависаниях и чёрных экранах).
+pub fn third_party_drivers_section() -> Section {
+    let title = "[9] СТОРОННИЕ ДРАЙВЕРЫ ЯДРА (RING 0, НЕ MICROSOFT)";
+    let script = format!(
+        r#"$rows = Get-CimInstance Win32_SystemDriver | Where-Object {{ $_.State -eq 'Running' -and $_.PathName }} | ForEach-Object {{ $p = $_.PathName -replace '^\\\?\?\\', ''; if ($p -and (Test-Path -LiteralPath $p)) {{ $v = (Get-Item -LiteralPath $p).VersionInfo; if ($v.CompanyName -and ($v.CompanyName -notmatch 'Microsoft')) {{ '{{0}} | {{1}} | {{2}} | {{3}} | {{4}}' -f $_.Name, $_.DisplayName, $v.CompanyName, $v.FileVersion, $p }} }} }}; if ($rows) {{ $rows | Select-Object -First {MAX_THIRD_PARTY_DRIVERS} }}"#
+    );
+
+    match sys_helpers::run_powershell(&script, DRIVERS_TIMEOUT) {
+        Ok(out) => {
+            let trimmed = out.trim();
+            if trimmed.is_empty() {
+                Section::new_ok(
+                    title,
+                    "Среди работающих kernel-драйверов сторонних (не Microsoft) не найдено \
+                     (либо у всех файлов не читается VersionInfo).",
+                )
+            } else {
+                Section::new_findings(
+                    title,
+                    format!(
+                        "Сторонние драйверы в ядре — факты для гипотез, не приговор \
+                         (античиты/антивирусы/утилиты сидят ближе всех к железу):\n{trimmed}"
+                    ),
+                )
+            }
+        }
+        Err(reason) => Section::new_failed(title, reason),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,5 +159,18 @@ mod tests {
         let tdr = tdr_section();
         assert!(!tdr.body.is_empty(), "TDR секция пустая");
         assert!(tdr.body.contains("TdrLevel"), "TDR обязан говорить TdrLevel:\n{}", tdr.body);
+    }
+
+    #[test]
+    fn third_party_drivers_section_renders_honest_status() {
+        // Живой запуск (PowerShell до 30 с): статус валиден при любом
+        // раскладе, тело непусто (§2.2: пустых секций нет).
+        let sec = third_party_drivers_section();
+        assert!(!sec.body.is_empty(), "секция обязана иметь тело:\n{}", sec.body);
+        assert!(
+            matches!(sec.status_str(), "OK" | "НАЙДЕНО" | "НЕ УДАЛОСЬ"),
+            "статус обязан быть валидным: {}",
+            sec.status_str()
+        );
     }
 }

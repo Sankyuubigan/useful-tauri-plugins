@@ -51,7 +51,7 @@ fn collect_top(
         .collect()
 }
 
-/// Секция [12]: лидеры по ЦП и по ОЗУ.
+/// Секция [13]: лидеры по ЦП и по ОЗУ.
 pub fn processes_section(sys: &System) -> Section {
     let n_cpus = sys.cpus().len().max(1);
 
@@ -82,7 +82,7 @@ pub fn processes_section(sys: &System) -> Section {
         top_ram.join("\n")
     );
 
-    Section::new_ok("[12] ЛИДЕРЫ НАГРУЗКИ ПРЯМО СЕЙЧАС", body)
+    Section::new_ok("[13] ЛИДЕРЫ НАГРУЗКИ ПРЯМО СЕЙЧАС", body)
 }
 
 #[cfg(test)]

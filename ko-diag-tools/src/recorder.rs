@@ -8,7 +8,8 @@
 //!
 //! Что следит (универсально, без имён конкретного софта):
 //! - любой НОВЫЙ процесс (детектор спавна: игры, античиты, фоновые
-//!   службы — хоть скрытый майнер);
+//!   службы — хоть скрытый майнер; повторы одного имени внутри окна
+//!   5 с сливаются в счётчик — иначе COM-фабрики Windows заваливают лог);
 //! - средняя загрузка ЦП, ОЗУ, своп;
 //! - топ-1 по ЦП и топ-1 по ОЗУ.
 //!
@@ -21,7 +22,7 @@
 //! причина авто-остановки возвращается в [`StopSummary`].
 
 use chrono::Local;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::io::Write as IoWrite;
 use std::path::{Path, PathBuf};
@@ -33,6 +34,24 @@ use sysinfo::System;
 
 /// Префикс файлов рекордера (SSOT: имя образует файл на диске).
 pub const FILE_PREFIX: &str = "diag_recorder_";
+
+/// Окно подавления повторных спавнов одного имени процесса.
+///
+/// Почему существует: COM-фабрики Windows (taskhostw.exe и подобные) рождают
+/// десятки одноразовых PID в минуту, и без окна лог «чёрного ящика» на 80%+
+/// состоит из спавн-шума одного имени (замер 03.11.26: 27 375 из 33 169 строк
+/// лога юзера — taskhostw.exe). Первое появление имени пишется всегда (игра,
+/// античит, инсталлятор не потеряются); повторы внутри окна копятся в
+/// счётчик молча; после окна — одна агрегированная строка со счётчиком.
+/// Структурный фикс вместо чёрного списка имён: работает для ЛЮБОГО
+/// шумного имени, а не только известного (§00.2).
+const SPAWN_SUPPRESS_WINDOW: Duration = Duration::from_secs(5);
+
+/// Состояние троттлинга одного имени процесса.
+struct SpawnThrottle {
+    last_logged: Instant,
+    suppressed: u64,
+}
 
 /// Параметры рекордера (Default — боевые значения).
 #[derive(Debug, Clone)]
@@ -260,6 +279,46 @@ pub fn latest_log(dir: &Path) -> Option<PathBuf> {
 
 // ─────────────────────────── Тело рекордера ───────────────────────────
 
+/// Решение по одному новому PID: Some(строка для лога) или None (повтор
+/// того же имени внутри окна подавления — счётчик растёт молча).
+/// Вынесено из цикла, чтобы инварианты троттлинга проверялись юнит-тестом.
+fn spawn_line_decision(
+    throttle: &mut HashMap<String, SpawnThrottle>,
+    name: &str,
+    now_line: &str,
+    pid: u32,
+    memory_mb: u64,
+) -> Option<String> {
+    match throttle.get_mut(name) {
+        None => {
+            throttle.insert(
+                name.to_string(),
+                SpawnThrottle { last_logged: Instant::now(), suppressed: 0 },
+            );
+            Some(format!(
+                "[{now_line}] + НОВЫЙ ПРОЦЕСС: {name} (PID {pid}, {memory_mb} МБ)"
+            ))
+        }
+        Some(th) if th.last_logged.elapsed() >= SPAWN_SUPPRESS_WINDOW => {
+            let repeats = th.suppressed;
+            th.last_logged = Instant::now();
+            th.suppressed = 0;
+            let suffix = if repeats > 0 {
+                format!(" [+{repeats} повторов имени за окно подавлено]")
+            } else {
+                String::new()
+            };
+            Some(format!(
+                "[{now_line}] + НОВЫЙ ПРОЦЕСС: {name} (PID {pid}, {memory_mb} МБ){suffix}"
+            ))
+        }
+        Some(th) => {
+            th.suppressed += 1;
+            None
+        }
+    }
+}
+
 fn record_loop(
     path: PathBuf,
     cfg: RecorderConfig,
@@ -297,6 +356,7 @@ fn record_loop(
     let mut sys = System::new_all();
     let n_cpus = sys.cpus().len().max(1);
     let mut known_pids: HashSet<u32> = sys.processes().keys().map(|p| p.as_u32()).collect();
+    let mut spawn_throttle: HashMap<String, SpawnThrottle> = HashMap::new();
     let started = Instant::now();
 
     loop {
@@ -309,26 +369,30 @@ fn record_loop(
         sys.refresh_cpu();
         sys.refresh_processes();
 
-        let now = Local::now().format("%H:%M:%S%.3f");
+        let now = Local::now().format("%H:%M:%S%.3f").to_string();
         let avg_cpu: f32 = sys.cpus().iter().map(|c| c.cpu_usage()).sum::<f32>() / n_cpus as f32;
         let ram = sys.used_memory() as f64 / 1_073_741_824.0;
         let ram_total = sys.total_memory() as f64 / 1_073_741_824.0;
         let swap = sys.used_swap() as f64 / 1_073_741_824.0;
         let swap_total = sys.total_swap() as f64 / 1_073_741_824.0;
 
-        // Детектор спавна: новый PID → отдельная строка. Последняя строка
-        // перед «смертью машины» очень часто оказывается именно она.
+        // Детектор спавна: новый PID → строка через троттлинг по имени
+        // (doc SPAWN_SUPPRESS_WINDOW). Последняя строка перед «смертью
+        // машины» очень часто оказывается именно она: первое появление
+        // имени пишется всегда, новый процесс игры не потеряется.
         let mut new_lines: Vec<String> = Vec::new();
         let mut current: HashSet<u32> = HashSet::with_capacity(known_pids.len());
         for p in sys.processes().values() {
             let pid = p.pid().as_u32();
             current.insert(pid);
             if !known_pids.contains(&pid) {
-                new_lines.push(format!(
-                    "[{now}] + НОВЫЙ ПРОЦЕСС: {} (PID {pid}, {} МБ)",
-                    p.name().trim(),
-                    p.memory() / 1_048_576
-                ));
+                let name = p.name().trim().to_string();
+                let memory_mb = p.memory() / 1_048_576;
+                if let Some(line) =
+                    spawn_line_decision(&mut spawn_throttle, &name, &now, pid, memory_mb)
+                {
+                    new_lines.push(line);
+                }
             }
         }
         known_pids = current;

@@ -1422,3 +1422,45 @@ pub async fn download_remote_lora(path: String) -> Result<(), String> {
     on_log(format!("Готово: {}", dest.display()));
     Ok(())
 }
+
+// ───────────── RefMod-карточки персонажей (плашка «Рефмодс», Этап 2) ─────────────
+// Формат и обход папок — SSOT engine/refmod.rs (дублировать обход в commands
+// или на фронтенде запрещено).
+
+/// Одна карточка в списке плашки «Рефмодс».
+#[derive(Serialize, Clone)]
+pub struct RefModCardInfo {
+    pub slug: String,
+    pub name: String,
+    pub description: String,
+    pub frames: usize,
+    pub dir: String,
+}
+
+/// Список карточек для плашки. Пустая папка/её отсутствие — пустой список,
+/// НЕ ошибка (плашка показывает empty-state).
+#[tauri::command]
+pub fn list_refmod_cards() -> Vec<RefModCardInfo> {
+    engine::refmod::list_refmod_cards()
+        .into_iter()
+        .map(|card| {
+            let dir = engine::refmod::refmods_dir()
+                .join(&card.slug)
+                .to_string_lossy()
+                .into_owned();
+            RefModCardInfo {
+                slug: card.slug,
+                name: card.name,
+                description: card.description,
+                frames: card.frames.len(),
+                dir,
+            }
+        })
+        .collect()
+}
+
+/// Миниатюра карточки (первый кадр → JPEG 256px → data URL) для плашки.
+#[tauri::command]
+pub fn refmod_card_thumbnail(slug: String) -> Result<String, String> {
+    engine::refmod::thumbnail_data_url(&slug).map_err(|e| e.to_string())
+}

@@ -1126,6 +1126,84 @@ ${missing.join("\n")}`;
     customElements.define("image-media-panel", MediaEnginePanel);
   }
 
+  // guest-js/components/refmod-panel.ts
+  var RefmodPanel = class extends HTMLElement {
+    connectedCallback() {
+      if (this.root) return;
+      this.root = this.attachShadow({ mode: "open" });
+      this.root.innerHTML = `
+      <style>${STYLE}
+        .cards { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+        .card { display: flex; gap: 10px; align-items: center; border: 1px solid var(--border, #333);
+                border-radius: 8px; padding: 8px 10px; }
+        .thumb { width: 64px; height: 64px; border-radius: 6px; object-fit: cover;
+                 background: var(--bg-elevated, #1c1c1c); flex: none; }
+        .meta { min-width: 0; }
+        .slug { font-weight: 700; word-break: break-all; }
+        .desc { color: var(--text-muted, #999); font-size: 12px; word-break: break-word; }
+        .frames { color: var(--text-muted, #999); font-size: 12px; }
+        .empty { color: var(--text-muted, #999); margin-top: 8px; white-space: pre-line; }
+      </style>
+      <div>
+        <div class="row">
+          <button id="refresh" class="primary">\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C</button>
+          <span class="hint">\u041F\u0435\u0440\u0441\u043E\u043D\u0430\u0436\u0438 \u0434\u043B\u044F \u0433\u0435\u043D\u0435\u0440\u0430\u0446\u0438\u0438 \u0432\u0438\u0434\u0435\u043E. \u0421\u043E\u0437\u0434\u0430\u044E\u0442\u0441\u044F \u0430\u0433\u0435\u043D\u0442\u043E\u043C \u0432 \u0447\u0430\u0442\u0435:
+            \u043F\u0440\u0438\u043A\u0440\u0435\u043F\u0438 \u0444\u043E\u0442\u043E \u043F\u0435\u0440\u0441\u043E\u043D\u0430\u0436\u0430 \u0438 \u043F\u043E\u043F\u0440\u043E\u0441\u0438 \u0441\u043E\u0437\u0434\u0430\u0442\u044C \u043F\u0435\u0440\u0441\u043E\u043D\u0430\u0436\u0430.</span>
+        </div>
+        <div class="cards" id="cards"></div>
+        <div class="empty" id="empty" style="display:none;">RefMod-\u043A\u0430\u0440\u0442\u043E\u0447\u0435\u043A \u043F\u0435\u0440\u0441\u043E\u043D\u0430\u0436\u0435\u0439 \u043D\u0435\u0442.
+
+\u041F\u0440\u0438\u043A\u0440\u0435\u043F\u0438 \u0432 \u0447\u0430\u0442 1\u20138 \u0444\u043E\u0442\u043E \u043E\u0434\u043D\u043E\u0433\u043E \u043F\u0435\u0440\u0441\u043E\u043D\u0430\u0436\u0430 (\u043B\u044E\u0431\u044B\u0445 \u0440\u0430\u0437\u043C\u0435\u0440\u043E\u0432 \u2014 \u0430\u0433\u0435\u043D\u0442 \u0441\u0430\u043C \u043D\u043E\u0440\u043C\u0438\u0440\u0443\u0435\u0442) \u0438 \u043F\u043E\u043F\u0440\u043E\u0441\u0438 \u0441\u043E\u0437\u0434\u0430\u0442\u044C \u043F\u0435\u0440\u0441\u043E\u043D\u0430\u0436\u0430.</div>
+      </div>`;
+      this.root.getElementById("refresh")?.addEventListener("click", () => this.refresh());
+      this.refresh();
+    }
+    async refresh() {
+      const cardsBox = this.root.getElementById("cards");
+      const emptyBox = this.root.getElementById("empty");
+      if (!cardsBox || !emptyBox) return;
+      cardsBox.innerHTML = "";
+      emptyBox.style.display = "none";
+      let cards = [];
+      try {
+        cards = await listRefmodCards();
+      } catch (e) {
+        emptyBox.textContent = `\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u0441\u043F\u0438\u0441\u043E\u043A \u043A\u0430\u0440\u0442\u043E\u0447\u0435\u043A: ${String(e)}`;
+        emptyBox.style.display = "block";
+        return;
+      }
+      if (cards.length === 0) {
+        emptyBox.style.display = "block";
+        return;
+      }
+      for (const card of cards) {
+        const row = document.createElement("div");
+        row.className = "card";
+        const img = document.createElement("img");
+        img.className = "thumb";
+        img.alt = `\u041C\u0438\u043D\u0438\u0430\u0442\u044E\u0440\u0430 ${card.slug}`;
+        refmodCardThumbnail(card.slug).then((url) => {
+          img.src = url;
+        }).catch(() => {
+          img.alt = "\u043D\u0435\u0442 \u043C\u0438\u043D\u0438\u0430\u0442\u044E\u0440\u044B";
+        });
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        const title = card.name && card.name !== card.slug ? `${card.slug} \u2014 ${card.name}` : card.slug;
+        meta.innerHTML = `
+        <div class="slug">${esc(title)}</div>
+        ${card.description ? `<div class="desc">${esc(card.description)}</div>` : ""}
+        <div class="frames">\u041A\u0430\u0434\u0440\u043E\u0432: ${card.frames}</div>`;
+        row.appendChild(img);
+        row.appendChild(meta);
+        cardsBox.appendChild(row);
+      }
+    }
+  };
+  if (!customElements.get("image-refmod-panel")) {
+    customElements.define("image-refmod-panel", RefmodPanel);
+  }
+
   // guest-js/index.ts
   var BUNDLE_CHANGED_EVENT = "image:bundle-changed";
   function notifyBundleChanged() {
@@ -1261,6 +1339,12 @@ ${missing.join("\n")}`;
   function downloadRemoteLora(path) {
     return invoke("plugin:image-engine|download_remote_lora", { path });
   }
+  function listRefmodCards() {
+    return invoke("plugin:image-engine|list_refmod_cards");
+  }
+  function refmodCardThumbnail(slug) {
+    return invoke("plugin:image-engine|refmod_card_thumbnail", { slug });
+  }
 
   // guest-js/iife-entry.ts
   var g4 = window;
@@ -1285,8 +1369,10 @@ ${missing.join("\n")}`;
           getVideoBundles,
           installImageEngine,
           installImageEngineUpdate,
+          listRefmodCards,
           listRemoteLoras,
           notifyBundleChanged,
+          refmodCardThumbnail,
           removeImageBundle,
           removeImageBundleFromList,
           removeVideoBundleFiles,

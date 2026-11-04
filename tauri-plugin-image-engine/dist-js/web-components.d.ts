@@ -15,3 +15,4 @@
 export { ImageEnginePanel } from './components/engine-panel';
 export { BundleTabElement } from './components/bundle-tab';
 export { MediaEnginePanel } from './components/media-panel';
+export { RefmodPanel } from './components/refmod-panel';

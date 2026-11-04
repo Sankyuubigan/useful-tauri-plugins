@@ -245,6 +245,18 @@ export interface RemoteLorasInfo {
 export declare function listRemoteLoras(): Promise<RemoteLorasInfo>;
 /** Скачать один файл каталога в единую папку loras (веса или sidecar). */
 export declare function downloadRemoteLora(path: string): Promise<void>;
+/** Одна карточка персонажа в списке плашки «Рефмодс». */
+export interface RefModCardInfo {
+    slug: string;
+    name: string;
+    description: string;
+    frames: number;
+    dir: string;
+}
+/** Список карточек персонажей (папка `<data>/refmods/`). Отсутствие папки — пустой список. */
+export declare function listRefmodCards(): Promise<RefModCardInfo[]>;
+/** Миниатюра карточки: первый кадр → JPEG 256px → data URL. */
+export declare function refmodCardThumbnail(slug: string): Promise<string>;
 import './web-components';
 export { getUpdateState, onUpdateState, setUpdateState, checkUpdate, initUpdateWatcher, } from './updates';
 export type { PluginUpdateState } from './updates';

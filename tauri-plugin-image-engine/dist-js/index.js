@@ -147,6 +147,14 @@ export function listRemoteLoras() {
 export function downloadRemoteLora(path) {
     return invoke('plugin:image-engine|download_remote_lora', { path });
 }
+/** Список карточек персонажей (папка `<data>/refmods/`). Отсутствие папки — пустой список. */
+export function listRefmodCards() {
+    return invoke('plugin:image-engine|list_refmod_cards');
+}
+/** Миниатюра карточки: первый кадр → JPEG 256px → data URL. */
+export function refmodCardThumbnail(slug) {
+    return invoke('plugin:image-engine|refmod_card_thumbnail', { slug });
+}
 // Регистрируем Web Components при импорте пакета.
 import './web-components';
 export { getUpdateState, onUpdateState, setUpdateState, checkUpdate, initUpdateWatcher, } from './updates';

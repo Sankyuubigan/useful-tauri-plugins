@@ -418,6 +418,27 @@ export function downloadRemoteLora(path: string): Promise<void> {
   return invoke<void>('plugin:image-engine|download_remote_lora', { path })
 }
 
+// ───────────── RefMod-карточки персонажей (плашка «Рефмодс») ─────────────
+
+/** Одна карточка персонажа в списке плашки «Рефмодс». */
+export interface RefModCardInfo {
+  slug: string
+  name: string
+  description: string
+  frames: number
+  dir: string
+}
+
+/** Список карточек персонажей (папка `<data>/refmods/`). Отсутствие папки — пустой список. */
+export function listRefmodCards(): Promise<RefModCardInfo[]> {
+  return invoke<RefModCardInfo[]>('plugin:image-engine|list_refmod_cards')
+}
+
+/** Миниатюра карточки: первый кадр → JPEG 256px → data URL. */
+export function refmodCardThumbnail(slug: string): Promise<string> {
+  return invoke<string>('plugin:image-engine|refmod_card_thumbnail', { slug })
+}
+
 // Регистрируем Web Components при импорте пакета.
 import './web-components'
 

@@ -24,9 +24,10 @@ sha2 = "0.10"
 futures-util = "0.3"
 base64 = "0.22"
 # Бенч (Шаг 6/7 PRP): pHash-индикация различий между наборами картинок.
-# Декод только PNG (default-features off) — не раздувать бинарь хоста.
+# jpeg/webp нужны refmod-карточкам (SSOT engine/refmod.rs): фото юзера — любые
+# форматы (save нормирует в PNG), миниатюра плашки — JPEG-энкод.
 image_hasher = "3.1"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 
 # Единый движок скачивания (SSOT): multi-chunk reqwest + curl + process-фоллбэки,
 # stall/resume/прогресс `downloader:progress`.

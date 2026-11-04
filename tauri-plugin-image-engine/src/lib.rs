@@ -77,6 +77,8 @@ pub fn init() -> TauriPlugin<Wry> {
             commands::generate_video,
             commands::list_remote_loras,
             commands::download_remote_lora,
+            commands::list_refmod_cards,
+            commands::refmod_card_thumbnail,
         ])
         .build()
 }

@@ -169,12 +169,17 @@ pub fn ensure_new_book_sheets(
 ) -> Result<(), ExcelError> {
     let mut required: Vec<String> = Vec::new();
     let mut created: Vec<String> = Vec::new();
+    let mut referenced_others: Vec<String> = Vec::new();
     for raw in ops {
         let Ok(op) = serde_json::from_value::<Op>(raw.clone()) else {
             continue;
         };
         match op {
-            Op::AddSheet { name } | Op::RenameSheet { to: name, .. } => created.push(name),
+            Op::AddSheet { name } => created.push(name),
+            Op::RenameSheet { from, to } => {
+                created.push(to);
+                referenced_others.push(from);
+            }
             Op::SetCell { sheet, .. }
             | Op::SetRows { sheet, .. }
             | Op::FormatRange { sheet, .. }
@@ -189,15 +194,36 @@ pub fn ensure_new_book_sheets(
                     required.push(sheet);
                 }
             }
-            Op::DeleteSheet { .. } => {}
+            Op::DeleteSheet { name } => referenced_others.push(name),
         }
     }
-    for name in required {
-        if book.sheet_by_name(&name).is_ok() || created.contains(&name) {
+    for name in required.iter() {
+        if book.sheet_by_name(name).is_ok() || created.contains(name) {
             continue;
         }
         book.new_sheet(name.clone())
             .map_err(|e| ExcelError::Usage(format!("создание листа '{name}': {e}")))?;
+    }
+    if required.is_empty() && created.is_empty() && referenced_others.is_empty() {
+        return Ok(());
+    }
+    if let Some(default_sheet) = book
+        .sheet_collection()
+        .first()
+        .map(|s| s.name().to_string())
+    {
+        let default_referenced = required
+            .iter()
+            .chain(&created)
+            .chain(&referenced_others)
+            .any(|n| n == &default_sheet);
+        if !default_referenced {
+            book.remove_sheet_by_name(&default_sheet).map_err(|e| {
+                ExcelError::Usage(format!(
+                    "удаление пустого стартового листа '{default_sheet}': {e}"
+                ))
+            })?;
+        }
     }
     Ok(())
 }
@@ -650,8 +676,9 @@ mod tests {
         assert!(book.sheet_by_name("Продажи").is_ok(), "лист из ops не создан");
         // …а имя, которое создаст сам add_sheet, пре-пасс не дублирует.
         assert!(book.sheet_by_name("Аналитика").is_err(), "дубль add_sheet-имени");
-        // Дефолтный лист новой книги на месте.
-        assert!(book.sheet_by_name("Sheet1").is_ok());
+        // Дефолтный лист новой книги, не упомянутый в ops, удалён (T-B1):
+        // пустая вкладка-заглушка не остаётся в созданных файлах.
+        assert!(book.sheet_by_name("Sheet1").is_err(), "неиспользуемый дефолтный лист остался");
     }
 
     #[test]

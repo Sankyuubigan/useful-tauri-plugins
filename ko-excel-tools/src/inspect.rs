@@ -161,10 +161,8 @@ fn cell_record(cell: &Cell) -> Value {
     }
     if !formula.is_empty() {
         obj.insert("f".to_string(), Value::String(formula));
-        obj.insert("t".to_string(), Value::String(data_type));
-    } else {
-        obj.insert("t".to_string(), Value::String(data_type));
     }
+    obj.insert("t".to_string(), Value::String(data_type));
     record
 }
 

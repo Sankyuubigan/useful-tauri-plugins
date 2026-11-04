@@ -40,12 +40,30 @@ pub struct ApplyRequest<'a> {
 /// Единая точка генерации уникального имени результата:
 /// `<stem>_<HHMMSS>.xlsx`. Хронометр берётся из системы; коллизии в пределах
 /// секунды снимает суффикс-счётчик вызывающего хоста (передаётся стемом).
-fn unique_output_path(output_dir: &Path, stem: &str) -> PathBuf {
-    let timestamp = std::time::SystemTime::now()
+/// Уникальный путь результата `<stem>_<epoch>.<ext>`: эпоха в имени закрывает
+/// коллизию после рестарта приложения (seq-счётчик хоста process-global и
+/// сбрасывается, а `std::fs::rename` на Windows заменяет существующий файл).
+fn unique_output_path_at(output_dir: &Path, stem: &str, ext: &str, timestamp: u64) -> PathBuf {
+    output_dir.join(format!("{stem}_{timestamp}.{ext}"))
+}
+
+/// Уникальный .xlsx-путь (контракт `apply`).
+pub fn unique_output_path(output_dir: &Path, stem: &str) -> PathBuf {
+    unique_output_path_at(output_dir, stem, "xlsx", now_epoch_secs())
+}
+
+/// Уникальный .pdf-путь для `excel_render` — тот же SSOT нейминга, что и у
+/// xlsx: без epoch-суффикса рестарт приложения тихо перезаписывал бы старый
+/// PDF той же сессии.
+pub fn unique_pdf_path(output_dir: &Path, stem: &str) -> PathBuf {
+    unique_output_path_at(output_dir, stem, "pdf", now_epoch_secs())
+}
+
+fn now_epoch_secs() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
-    output_dir.join(format!("{stem}_{timestamp}.xlsx"))
+        .unwrap_or(0)
 }
 
 /// Санитизация имени файла: разрешаем буквы/цифры/пробел/дефис/подчерк/точку,
@@ -212,16 +230,27 @@ pub fn audit(
         .map_err(|e| ExcelError::Soffice(format!("копия для аудита: {e}")))?;
     let recalc_result = crate::soffice::recalc_and_save(soffice, &copy_path, soffice_timeout);
     let outcome = match recalc_result {
-        Ok(()) => {
-            let recalculated = open_workbook(&copy_path)?;
-            let errors = qa::scan_error_values(&recalculated);
-            Ok(json!({
+        // open_workbook в match, а не `?`: ранний выход оставлял бы аудиторскую
+        // копию на диске (remove_file ниже не исполнялся). Ошибка чтения копии
+        // после успешного пересчёта — честный note, а не Err с утечкой файла.
+        Ok(()) => match open_workbook(&copy_path) {
+            Ok(recalculated) => {
+                let errors = qa::scan_error_values(&recalculated);
+                Ok(json!({
+                    "file": source.display().to_string(),
+                    "recalculated": true,
+                    "issues": issues_to_json(&issues),
+                    "errors_after_recalc": issues_to_json(&errors),
+                }))
+            }
+            Err(e) => Ok(json!({
                 "file": source.display().to_string(),
                 "recalculated": true,
                 "issues": issues_to_json(&issues),
-                "errors_after_recalc": issues_to_json(&errors),
-            }))
-        }
+                "errors_after_recalc": [],
+                "note": format!("Пересчёт выполнен, но перечитать копию не удалось ({e}) — доступны только статические находки выше."),
+            })),
+        },
         Err(e) => Ok(json!({
             "file": source.display().to_string(),
             "recalculated": false,
@@ -293,6 +322,161 @@ mod tests {
         let book = umya_spreadsheet::reader::xlsx::read(result["output_path"].as_str().unwrap())
             .unwrap();
         assert!(book.sheet_by_name("Продажи").is_ok(), "лист не записан в файл");
+    }
+
+    #[test]
+    fn apply_new_book_drops_unused_default_sheet() {
+        // T-B1: стартовый лист umya («Sheet1») не должен оставаться пустой
+        // вкладкой-заглушкой, когда ops используют другой лист (кейс 1793827705093).
+        let dir = tmp_dir("apply_no_default");
+        let ops = json!([
+            {"op": "set_rows", "sheet": "Бюджет", "addr": "A1",
+             "rows": [["Товар", "Кол-во"], ["Ноутбук", 2]]}
+        ]);
+        let request = ApplyRequest {
+            source: None,
+            output_dir: &dir,
+            output_stem: Some("без_дефолта"),
+            ops: &ops,
+            allow_issues: false,
+        };
+        let result = apply(&request, None, std::time::Duration::from_secs(30)).unwrap();
+        let book = umya_spreadsheet::reader::xlsx::read(result["output_path"].as_str().unwrap())
+            .unwrap();
+        let names: Vec<String> = book
+            .sheet_collection()
+            .iter()
+            .map(|s| s.name().to_string())
+            .collect();
+        assert_eq!(names, vec!["Бюджет".to_string()], "пустой стартовый лист не удалён: {names:?}");
+    }
+
+    #[test]
+    fn apply_new_book_keeps_default_sheet_when_referenced() {
+        // T-B1: ops работают со стартовым листом — он не «мусор», не удалять.
+        let dir = tmp_dir("apply_keep_default");
+        let ops = json!([
+            {"op": "set_cell", "sheet": "Sheet1", "addr": "A1", "value": "Товар"}
+        ]);
+        let request = ApplyRequest {
+            source: None,
+            output_dir: &dir,
+            output_stem: Some("с_дефолтом"),
+            ops: &ops,
+            allow_issues: false,
+        };
+        let result = apply(&request, None, std::time::Duration::from_secs(30)).unwrap();
+        let book = umya_spreadsheet::reader::xlsx::read(result["output_path"].as_str().unwrap())
+            .unwrap();
+        let names: Vec<String> = book
+            .sheet_collection()
+            .iter()
+            .map(|s| s.name().to_string())
+            .collect();
+        assert_eq!(names, vec!["Sheet1".to_string()]);
+    }
+
+    #[test]
+    fn apply_new_book_keeps_default_sheet_when_renamed() {
+        // T-B1: rename_sheet от стартового листа — дефолт упомянут, не удалять.
+        let dir = tmp_dir("apply_rename_default");
+        let ops = json!([
+            {"op": "rename_sheet", "from": "Sheet1", "to": "Итоги"},
+            {"op": "set_cell", "sheet": "Итоги", "addr": "A1", "value": "ok"}
+        ]);
+        let request = ApplyRequest {
+            source: None,
+            output_dir: &dir,
+            output_stem: Some("ренейм_дефолта"),
+            ops: &ops,
+            allow_issues: false,
+        };
+        let result = apply(&request, None, std::time::Duration::from_secs(30)).unwrap();
+        let book = umya_spreadsheet::reader::xlsx::read(result["output_path"].as_str().unwrap())
+            .unwrap();
+        let names: Vec<String> = book
+            .sheet_collection()
+            .iter()
+            .map(|s| s.name().to_string())
+            .collect();
+        assert_eq!(names, vec!["Итоги".to_string()]);
+    }
+
+    #[test]
+    fn apply_new_book_with_add_sheet_drops_default() {
+        // T-B1: add_sheet-only ops — дефолт не упомянут, удаляется (в памяти
+        // книга на миг без листов; к сохранению лист создан самими ops).
+        let dir = tmp_dir("apply_add_only");
+        let ops = json!([
+            {"op": "add_sheet", "name": "Пустой"},
+            {"op": "set_cell", "sheet": "Пустой", "addr": "A1", "value": "x"}
+        ]);
+        let request = ApplyRequest {
+            source: None,
+            output_dir: &dir,
+            output_stem: Some("только_add_sheet"),
+            ops: &ops,
+            allow_issues: false,
+        };
+        let result = apply(&request, None, std::time::Duration::from_secs(30)).unwrap();
+        let book = umya_spreadsheet::reader::xlsx::read(result["output_path"].as_str().unwrap())
+            .unwrap();
+        let names: Vec<String> = book
+            .sheet_collection()
+            .iter()
+            .map(|s| s.name().to_string())
+            .collect();
+        assert_eq!(names, vec!["Пустой".to_string()]);
+    }
+
+    #[test]
+    fn unique_output_paths_resist_cross_restart_collision() {
+        // T-B2: эпоха в имени — защита от тихой перезаписи при рестарте
+        // приложения (seq-счётчик хоста process-global и сбрасывается).
+        let dir = tmp_dir("unique_names");
+        let a = unique_output_path_at(&dir, "stem", "pdf", 111);
+        let b = unique_output_path_at(&dir, "stem", "pdf", 222);
+        assert_ne!(a, b, "разные эпохи — разные имена");
+        assert!(
+            a.to_string_lossy().ends_with("stem_111.pdf"),
+            "ext не применён: {}",
+            a.display()
+        );
+        let pdf = unique_pdf_path(&dir, "s");
+        assert!(pdf.to_string_lossy().ends_with(".pdf"), "{}", pdf.display());
+        let xlsx = unique_output_path(&dir, "s");
+        assert!(xlsx.to_string_lossy().ends_with(".xlsx"), "{}", xlsx.display());
+    }
+
+    #[test]
+    fn audit_with_broken_soffice_leaves_no_leftover_copy() {
+        // T-B3: recalc падает (неисполняемый fake-soffice) → честный note,
+        // копия удалена. Раньше `open_workbook(...)?` перепрыгивал remove_file.
+        let dir = tmp_dir("audit_broken_soffice");
+        let source = create_source(&dir);
+        let temp = dir.join("audit_tmp");
+        let fake = dir.join("fake_soffice.exe");
+        std::fs::write(&fake, b"not a real soffice").unwrap();
+        let result = audit(
+            &source,
+            &temp,
+            Some(&fake),
+            std::time::Duration::from_secs(10),
+        )
+        .unwrap();
+        assert_eq!(result["recalculated"], false);
+        let note = result["note"].as_str().unwrap_or("");
+        assert!(note.contains("Пересчёт не удался"), "{note}");
+        let leftovers: Vec<_> = std::fs::read_dir(&temp)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().map(|x| x == "xlsx").unwrap_or(false))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "аудиторская копия осталась: {:?}",
+            leftovers.iter().map(|e| e.path()).collect::<Vec<_>>()
+        );
     }
 
     #[test]

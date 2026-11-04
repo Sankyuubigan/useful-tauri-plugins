@@ -1,0 +1,13 @@
+# Automatically generated - DO NOT EDIT!
+
+"$schema" = "../../schemas/schema.json"
+
+[[permission]]
+identifier = "allow-refmod-card-thumbnail"
+description = "Enables the refmod_card_thumbnail command without any pre-configured scope."
+commands.allow = ["refmod_card_thumbnail"]
+
+[[permission]]
+identifier = "deny-refmod-card-thumbnail"
+description = "Denies the refmod_card_thumbnail command without any pre-configured scope."
+commands.deny = ["refmod_card_thumbnail"]

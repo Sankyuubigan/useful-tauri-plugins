@@ -155,6 +155,18 @@ identifier = "allow-download-remote-lora"
 description = "Allow downloading one catalog file (weights or sidecar) into the unified loras folder."
 commands.allow = ["download_remote_lora"]
 
+# ── Рефмодс-панель ──
+
+[[permission]]
+identifier = "allow-list-refmod-cards"
+description = "Allow listing RefMod character cards (meta + frames catalog)."
+commands.allow = ["list_refmod_cards"]
+
+[[permission]]
+identifier = "allow-refmod-card-thumbnail"
+description = "Allow reading the thumbnail (JPEG data URL) of a RefMod card."
+commands.allow = ["refmod_card_thumbnail"]
+
 [default]
 description = "Default permissions for the image-engine plugin."
 permissions = [
@@ -188,4 +200,6 @@ permissions = [
   "allow-generate-video",
   "allow-list-remote-loras",
   "allow-download-remote-lora",
+  "allow-list-refmod-cards",
+  "allow-refmod-card-thumbnail",
 ]

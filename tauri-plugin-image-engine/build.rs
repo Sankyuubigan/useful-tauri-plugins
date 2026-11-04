@@ -10,6 +10,7 @@ const COMMANDS: &[&str] = &[
     // ── Каталог бандлов ──
     "get_image_models_catalog",
     "get_image_bundle_info",
+    "set_selected_image_bundle",
     "validate_image_bundle_dir",
     "set_image_bundle_dir",
     "download_image_bundle",
@@ -33,6 +34,9 @@ const COMMANDS: &[&str] = &[
     // ── LoRA-каталог HF ──
     "list_remote_loras",
     "download_remote_lora",
+    // ── Рефмодс-панель ──
+    "list_refmod_cards",
+    "refmod_card_thumbnail",
 ];
 
 fn main() {

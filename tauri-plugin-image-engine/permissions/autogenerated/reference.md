@@ -34,6 +34,8 @@ Default permissions for the image-engine plugin.
 - `allow-generate-video`
 - `allow-list-remote-loras`
 - `allow-download-remote-lora`
+- `allow-list-refmod-cards`
+- `allow-refmod-card-thumbnail`
 
 ## Permission Table
 
@@ -463,6 +465,32 @@ Denies the install_image_engine_update command without any pre-configured scope.
 <tr>
 <td>
 
+`image-engine:allow-list-refmod-cards`
+
+</td>
+<td>
+
+Enables the list_refmod_cards command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:deny-list-refmod-cards`
+
+</td>
+<td>
+
+Denies the list_refmod_cards command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `image-engine:allow-list-remote-loras`
 
 </td>
@@ -482,6 +510,32 @@ Enables the list_remote_loras command without any pre-configured scope.
 <td>
 
 Denies the list_remote_loras command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-refmod-card-thumbnail`
+
+</td>
+<td>
+
+Enables the refmod_card_thumbnail command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:deny-refmod-card-thumbnail`
+
+</td>
+<td>
+
+Denies the refmod_card_thumbnail command without any pre-configured scope.
 
 </td>
 </tr>
@@ -690,6 +744,32 @@ Enables the set_image_engine_variant command without any pre-configured scope.
 <td>
 
 Denies the set_image_engine_variant command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-set-selected-image-bundle`
+
+</td>
+<td>
+
+Enables the set_selected_image_bundle command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:deny-set-selected-image-bundle`
+
+</td>
+<td>
+
+Denies the set_selected_image_bundle command without any pre-configured scope.
 
 </td>
 </tr>
@@ -1171,6 +1251,32 @@ Allow listing the remote LoRA catalog (HF repo, per-base folders).
 <td>
 
 Allow downloading one catalog file (weights or sidecar) into the unified loras folder.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-list-refmod-cards`
+
+</td>
+<td>
+
+Allow listing RefMod character cards (meta + frames catalog).
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`image-engine:allow-refmod-card-thumbnail`
+
+</td>
+<td>
+
+Allow reading the thumbnail (JPEG data URL) of a RefMod card.
 
 </td>
 </tr>

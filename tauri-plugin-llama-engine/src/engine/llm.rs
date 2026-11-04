@@ -685,6 +685,9 @@ impl LlamaEngine {
             );
             log_cb(format!("⚠️ {}", note));
             log::warn!("{}", note);
+            // Симметрично VRAM-notice: урезание RAM-гейта доводится до юзера
+            // (факт — урезание уже свершилось), а не остаётся невидимым в логе.
+            crate::engine::vram::notify_vram(note.clone());
             global_ctx_limit = ctx_new;
             crate::engine::vram_estimate::ram_for_ngl_ctx_mb(&ram_est, gpu_layers, ctx_new, ram_base_ctx)
         } else {

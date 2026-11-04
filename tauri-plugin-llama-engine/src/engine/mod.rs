@@ -44,7 +44,7 @@ pub use llm::{
     ENVELOPE_TOKENS, CHARS_PER_TOKEN, THINK_BODY_RULE, ChatAttachment, GrammarSpec, LlamaEngine,
     LlmMessage, PromptFormat, ToolDefinition, FunctionDef, ToolCall,
 };
-pub use llm_gguf::{extract_i64_array_from_gguf, extract_i64_array_with_arch};
+pub use llm_gguf::{extract_context_length, extract_i64_array_from_gguf, extract_i64_array_with_arch};
 pub use mem_profiler::{current_process_rss, peak_line, MemGuard, MemSampler};
 pub use mmproj::ensure_mmproj_for_model;
 pub use startup_diagnosis::{

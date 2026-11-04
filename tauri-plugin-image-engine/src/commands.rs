@@ -1224,6 +1224,9 @@ pub async fn generate_video(
         init_b64,
         end_b64,
         ref_images_b64: ref_b64,
+        // Панель плагина: прежнее поведение (identity-режим max включает
+        // только host-тул generate_video для кадров RefMod-карточек).
+        ref_image_size_max: false,
         width: w,
         height: h,
         steps: st,

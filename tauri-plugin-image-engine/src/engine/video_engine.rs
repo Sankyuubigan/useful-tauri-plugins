@@ -145,6 +145,10 @@ pub struct VideoRequest {
     pub end_b64: Option<String>,
     /// base64 референсов (ref2va; НЕ смешивается с кадрами).
     pub ref_images_b64: Vec<String>,
+    /// `ref_image_args="ref_image_size=max"` в payload при непустых референсах
+    /// (api.md:936,957 — строковое поле): режим max поднимает лимит референса
+    /// до 2048px по короткой стороне. Хост-тул ставит для кадров RefMod-карточек.
+    pub ref_image_size_max: bool,
     pub width: u32,
     pub height: u32,
     /// Шаги (draft/final решает командный слой через sampling_plan_for_quality).
@@ -552,7 +556,7 @@ pub fn build_payload(params: &VideoRequest) -> Result<serde_json::Value, String>
         }),
     );
 
-    Ok(serde_json::json!({
+    let mut payload = serde_json::json!({
         "prompt": params.prompt,
         "negative_prompt": params.negative_prompt.clone().unwrap_or_default(),
         "clip_skip": -1,
@@ -609,7 +613,16 @@ pub fn build_payload(params: &VideoRequest) -> Result<serde_json::Value, String>
         // webm требует билд движка с WebM — иначе 400 с честной подсказкой юзеру.
         "output_format": "webm",
         "output_compression": 100
-    }))
+    });
+
+    // ref_image_args — строковое поле payload'а (api.md:936,957). Ключ ставится
+    // ТОЛЬКО при явном запросе и непустых референсах: режим max поднимает лимит
+    // референса до 2048px по короткой стороне (кадры RefMod-карточек ≤1024px
+    // идут без серверного ресайза). Без запроса ключ отсутствует.
+    if params.ref_image_size_max && !params.ref_images_b64.is_empty() {
+        payload["ref_image_args"] = serde_json::json!("ref_image_size=max");
+    }
+    Ok(payload)
 }
 
 /// Сумма size_bytes файлов, которых НЕТ в bundle_dir — сколько реально нужно
@@ -1280,6 +1293,7 @@ pub fn generate_video_simple<L>(
     final_quality: bool,
     init_path: Option<&str>,
     ref_paths: &[String],
+    ref_image_size_max: bool,
     out_path: &Path,
     cancel_flag: Option<Arc<AtomicBool>>,
     user_loras: &[LoraSpec],
@@ -1366,6 +1380,9 @@ where
             ref_images_b64.push(b64);
         }
     }
+    if ref_image_size_max && !ref_images_b64.is_empty() {
+        log_cb("🖼 ref_image_args=ref_image_size=max (identity-рефы)".to_string());
+    }
     // Режим для спавна (выбор diffusion-файла): ref2va / i2va / t2va.
     let mode = if !ref_images_b64.is_empty() {
         "ref2va"
@@ -1390,6 +1407,7 @@ where
         init_b64,
         end_b64: None,
         ref_images_b64,
+        ref_image_size_max,
         width: req_width,
         height: req_height,
         steps: plan.steps,
@@ -1881,6 +1899,7 @@ mod tests {
             init_b64: None,
             end_b64: None,
             ref_images_b64: vec![],
+            ref_image_size_max: false,
             width: 864,
             height: 480,
             steps: 6,
@@ -1931,6 +1950,7 @@ mod tests {
             init_b64: None,
             end_b64: None,
             ref_images_b64: vec![],
+            ref_image_size_max: false,
             width: 864,
             height: 480,
             steps: 4,
@@ -1974,6 +1994,7 @@ mod tests {
             init_b64: None,
             end_b64: None,
             ref_images_b64: vec![],
+            ref_image_size_max: false,
             width: 864,
             height: 480,
             steps: 20,
@@ -2005,6 +2026,7 @@ mod tests {
             init_b64: init.map(String::from),
             end_b64: end.map(String::from),
             ref_images_b64: refs,
+            ref_image_size_max: false,
             width: 864,
             height: 480,
             steps: 20,
@@ -2033,6 +2055,48 @@ mod tests {
         assert!(build_payload(&base(None, Some("BB"), vec![])).is_err());
     }
 
+    /// ref_image_args (RefMods Этап 1, host-задача 261104_0230-db2cb59c):
+    /// флаг ref_image_size_max + непустые референсы → строка "ref_image_size=max";
+    /// без флага ключ отсутствует (api.md описывает строку — лишний null не шлём);
+    /// флаг без референсов (t2va) — тоже без ключа.
+    #[test]
+    fn payload_ref_image_args_contract() {
+        let base = |refs: Vec<String>, max: bool| VideoRequest {
+            prompt: "сцена".into(),
+            negative_prompt: None,
+            init_b64: None,
+            end_b64: None,
+            ref_images_b64: refs,
+            ref_image_size_max: max,
+            width: 864,
+            height: 480,
+            steps: 20,
+            cfg_scale: 1.0,
+            seed: 7,
+            video_frames: 56,
+            fps: 24,
+            vae_tiling: true,
+            strength: 0.75,
+            sample_method: "euler".into(),
+            scheduler: "discrete".into(),
+            flow_shift: None,
+            lora: vec![],
+        };
+        let with_max = build_payload(&base(vec!["R".into()], true)).expect("ref2va+max");
+        assert_eq!(with_max["ref_image_args"], "ref_image_size=max");
+        let plain_refs = build_payload(&base(vec!["R".into()], false)).expect("ref2va");
+        assert!(
+            plain_refs.as_object().unwrap().get("ref_image_args").is_none(),
+            "без флага ключ ref_image_args отсутствует: {:?}",
+            plain_refs.get("ref_image_args")
+        );
+        let t2va_max = build_payload(&base(vec![], true)).expect("t2va");
+        assert!(
+            t2va_max.as_object().unwrap().get("ref_image_args").is_none(),
+            "флаг без референсов ключ не ставит"
+        );
+    }
+
     #[test]
     fn payload_rejects_broken_params() {
         let mut p = VideoRequest {
@@ -2041,6 +2105,7 @@ mod tests {
             init_b64: None,
             end_b64: None,
             ref_images_b64: vec![],
+            ref_image_size_max: false,
             width: 864,
             height: 480,
             steps: 6,
@@ -2171,6 +2236,7 @@ mod tests {
             false,
             Some(ghost.to_str().unwrap()),
             &[],
+            false,
             &out,
             None,
             &[],
@@ -2197,6 +2263,7 @@ mod tests {
             false,
             None,
             &refs,
+            false,
             &out,
             None,
             &[],
@@ -2217,6 +2284,7 @@ mod tests {
             false,
             Some(ghost.to_str().unwrap()),
             &refs,
+            false,
             &out,
             None,
             &[],

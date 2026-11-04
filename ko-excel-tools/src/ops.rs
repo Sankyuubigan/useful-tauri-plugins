@@ -135,20 +135,69 @@ pub fn apply_ops(
         ));
     }
     for (index, raw) in ops.iter().enumerate() {
+        let op_name = raw
+            .get("op")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<без поля op>")
+            .to_string();
         let op: Op = serde_json::from_value(raw.clone()).map_err(|e| {
-            let name = raw
-                .get("op")
-                .and_then(|v| v.as_str())
-                .unwrap_or("<без поля op>");
             ExcelError::Usage(format!(
-                "Операция #{index} ('{name}') не соответствует схеме: {e}. \
+                "Операция #{index} ('{op_name}') не соответствует схеме: {e}. \
                  Известные операции: add_sheet, delete_sheet, rename_sheet, set_cell, \
                  set_rows, format_range, add_table, set_column_width, autofit_columns, \
                  merge_cells, auto_filter, freeze_panes, add_chart"
             ))
         })?;
-        apply_one(book, op)
-            .map_err(|e| ExcelError::OpFailed { op: format!("#{index}"), msg: e.to_string() })?;
+        apply_one(book, op).map_err(|e| ExcelError::OpFailed {
+            op: format!("{op_name} (#{index})"),
+            msg: e.to_string(),
+        })?;
+    }
+    Ok(())
+}
+
+/// Пре-пасс НОВОЙ книги (§00.2 «отказ структурно невозможен»): создать листы,
+/// на которые ops ссылаются как на СУЩЕСТВУЮЩИЕ, чтобы отказ «Лист 'X' не
+/// найден» для создаваемой книги не возникал вовсе. Листы, создаваемые самими
+/// ops (`add_sheet.name`, `rename_sheet.to`), не дублируются; `delete_sheet` /
+/// `rename_sheet.from` авто-созданию не подлежат (удаление/переименование
+/// несуществующего — ошибка модели, остаётся честным отказом). Непарсируемая
+/// операция пропускается: валидную ошибку по ней позже выдаст `apply_ops`.
+pub fn ensure_new_book_sheets(
+    book: &mut umya_spreadsheet::Workbook,
+    ops: &[serde_json::Value],
+) -> Result<(), ExcelError> {
+    let mut required: Vec<String> = Vec::new();
+    let mut created: Vec<String> = Vec::new();
+    for raw in ops {
+        let Ok(op) = serde_json::from_value::<Op>(raw.clone()) else {
+            continue;
+        };
+        match op {
+            Op::AddSheet { name } | Op::RenameSheet { to: name, .. } => created.push(name),
+            Op::SetCell { sheet, .. }
+            | Op::SetRows { sheet, .. }
+            | Op::FormatRange { sheet, .. }
+            | Op::AddTable { sheet, .. }
+            | Op::SetColumnWidth { sheet, .. }
+            | Op::MergeCells { sheet, .. }
+            | Op::AutoFilter { sheet, .. }
+            | Op::FreezePanes { sheet, .. }
+            | Op::AddChart { sheet, .. } => required.push(sheet),
+            Op::AutofitColumns { sheet, .. } => {
+                if let Some(sheet) = sheet {
+                    required.push(sheet);
+                }
+            }
+            Op::DeleteSheet { .. } => {}
+        }
+    }
+    for name in required {
+        if book.sheet_by_name(&name).is_ok() || created.contains(&name) {
+            continue;
+        }
+        book.new_sheet(name.clone())
+            .map_err(|e| ExcelError::Usage(format!("создание листа '{name}': {e}")))?;
     }
     Ok(())
 }
@@ -585,6 +634,49 @@ mod tests {
         sheet.cell_mut("A3").set_value_string("Молоко");
         sheet.cell_mut("B3").set_value_number(89.9);
         book
+    }
+
+    #[test]
+    fn prepass_creates_sheets_for_new_book() {
+        let ops = serde_json::json!([
+            {"op": "set_rows", "sheet": "Продажи", "addr": "A1",
+             "rows": [["Дата"], ["2026-10-01"]]},
+            {"op": "set_cell", "sheet": "Аналитика", "addr": "B1", "value": "Итого"},
+            {"op": "add_sheet", "name": "Аналитика"}
+        ]);
+        let mut book = umya_spreadsheet::new_file();
+        ensure_new_book_sheets(&mut book, ops.as_array().unwrap()).unwrap();
+        // Требуемый лист создан пре-пассом…
+        assert!(book.sheet_by_name("Продажи").is_ok(), "лист из ops не создан");
+        // …а имя, которое создаст сам add_sheet, пре-пасс не дублирует.
+        assert!(book.sheet_by_name("Аналитика").is_err(), "дубль add_sheet-имени");
+        // Дефолтный лист новой книги на месте.
+        assert!(book.sheet_by_name("Sheet1").is_ok());
+    }
+
+    #[test]
+    fn prepass_respects_rename_targets() {
+        let ops = serde_json::json!([
+            {"op": "rename_sheet", "from": "Sheet1", "to": "Итоги"},
+            {"op": "set_cell", "sheet": "Итоги", "addr": "A1", "value": "x"}
+        ]);
+        let mut book = umya_spreadsheet::new_file();
+        ensure_new_book_sheets(&mut book, ops.as_array().unwrap()).unwrap();
+        // «Итоги» создаст сам rename_sheet — пре-пасс не создаёт дубль.
+        assert!(book.sheet_by_name("Итоги").is_err());
+        apply_ops(&mut book, ops.as_array().unwrap()).unwrap();
+        assert!(book.sheet_by_name("Итоги").is_ok());
+    }
+
+    #[test]
+    fn op_failed_carries_op_name() {
+        let mut book = book_with_data();
+        let ops = serde_json::json!([
+            {"op": "set_rows", "sheet": "Нет_такого", "addr": "A1", "rows": [["a"]]}
+        ]);
+        let err = apply_ops(&mut book, ops.as_array().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("Операция 'set_rows"), "{err}");
+        assert!(err.to_string().contains("Нет_такого"), "{err}");
     }
 
     #[test]

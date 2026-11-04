@@ -8,7 +8,11 @@
 //! явному `allow_issues: true` агента, после чтения списка проблем).
 
 use crate::qa::{self, Issue};
-use crate::{open_workbook, ops::apply_ops, save_workbook, ExcelError};
+use crate::{
+    open_workbook,
+    ops::{apply_ops, ensure_new_book_sheets},
+    save_workbook, ExcelError,
+};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -88,7 +92,15 @@ pub fn apply(
 
     let mut book = match request.source {
         Some(source) => open_workbook(source)?,
-        None => umya_spreadsheet::new_file(),
+        None => {
+            // Новая книга: листы из ops создаются пре-пассом (§00.2) — отказ
+            // «Лист 'X' не найден» для создаваемой книги невозможен. Для
+            // СУЩЕСТВУЮЩЕЙ книги режим строгий: опечатка в имени листа —
+            // честный отказ, модель видит причину и чинит ops.
+            let mut book = umya_spreadsheet::new_file();
+            ensure_new_book_sheets(&mut book, ops)?;
+            book
+        }
     };
     apply_ops(&mut book, ops)?;
 
@@ -260,6 +272,45 @@ mod tests {
         assert_eq!(sanitize_stem(".."), "workbook");
         assert_eq!(sanitize_stem("CON"), "CON_file");
         assert_eq!(sanitize_stem("  x.  "), "x");
+    }
+
+    #[test]
+    fn apply_new_book_creates_sheets_from_ops() {
+        let dir = tmp_dir("apply_new_sheets");
+        let ops = json!([
+            {"op": "set_rows", "sheet": "Продажи", "addr": "A1",
+             "rows": [["Дата", "Товар"], ["2026-10-01", "Ноутбук"]]}
+        ]);
+        let request = ApplyRequest {
+            source: None,
+            output_dir: &dir,
+            output_stem: Some("автолисты"),
+            ops: &ops,
+            allow_issues: false,
+        };
+        let result = apply(&request, None, std::time::Duration::from_secs(30)).unwrap();
+        assert_eq!(result["status"], "ok_without_recalc");
+        let book = umya_spreadsheet::reader::xlsx::read(result["output_path"].as_str().unwrap())
+            .unwrap();
+        assert!(book.sheet_by_name("Продажи").is_ok(), "лист не записан в файл");
+    }
+
+    #[test]
+    fn apply_existing_book_keeps_strict_missing_sheet() {
+        let dir = tmp_dir("apply_strict_sheet");
+        let source = create_source(&dir);
+        let ops = json!([
+            {"op": "set_rows", "sheet": "Нет_такого", "addr": "A1", "rows": [["a"]]}
+        ]);
+        let request = ApplyRequest {
+            source: Some(&source),
+            output_dir: &dir,
+            output_stem: Some("строгий"),
+            ops: &ops,
+            allow_issues: false,
+        };
+        let err = apply(&request, None, std::time::Duration::from_secs(30)).unwrap_err();
+        assert!(err.to_string().contains("Нет_такого"), "{err}");
     }
 
     #[test]

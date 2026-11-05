@@ -302,7 +302,31 @@ pub fn auto_think_budget_chars(
     reasoning_budget: usize,
     drafts: usize,
 ) -> Option<usize> {
-    let gen_budget = max_gen_tokens.saturating_sub(ENVELOPE_TOKENS.min(max_gen_tokens));
+    auto_think_budget_chars_with_envelope(
+        max_gen_tokens,
+        reasoning_budget,
+        drafts,
+        ENVELOPE_TOKENS,
+    )
+}
+
+/// То же, что [`auto_think_budget_chars`], но резерв под конверт задаёт
+/// ВЫЗЫВАЮЩИЙ, а не константа [`ENVELOPE_TOKENS`].
+///
+/// Зачем (контракт вердикт-текстов валидатора, 05.11.2026): 9 текстовых
+/// вердиктов по ≤200 симв + `target` — конверт весит порядка 1200 токенов;
+/// константа 256 резервировала бы под него лишь пятую часть, и в худшем
+/// случае (черновики забрали бюджет до границы) конверт обрезался бы по
+/// `n_predict` — «слой не ответил». Размер резерва вычисляется из КОНТРАКТА
+/// (максимальная форма выхода по схеме), а не подобран под кейс: бюджет
+/// зашит в формат, а не в константу (§00.2).
+pub fn auto_think_budget_chars_with_envelope(
+    max_gen_tokens: usize,
+    reasoning_budget: usize,
+    drafts: usize,
+    envelope_tokens: usize,
+) -> Option<usize> {
+    let gen_budget = max_gen_tokens.saturating_sub(envelope_tokens.min(max_gen_tokens));
     let think_tokens = if reasoning_budget == 0 {
         gen_budget
     } else {
@@ -659,6 +683,24 @@ mod tests {
         assert_eq!(auto_think_budget_chars(2048, 0, 1), Some((2048 - 256) * 2));
         // Нулевой бюджет → None (грамматика без границы, а не Some(0)).
         assert_eq!(auto_think_budget_chars(256, 0, 1), None);
+    }
+
+    #[test]
+    fn auto_think_budget_with_envelope_contract_sized_reserve() {
+        // Контракт вердикт-текстов (~1200 токенов конверта): резерв задаёт
+        // вызывающий, дума получает остаток — конверт не съедается в худшем
+        // случае (см. док with_envelope).
+        assert_eq!(
+            auto_think_budget_chars_with_envelope(2048, 0, 9, 1200),
+            Some(((2048 - 1200) * 2) / 9),
+        );
+        // Дефолтная константа — прежняя арифметика (2048-256)*2/9.
+        assert_eq!(
+            auto_think_budget_chars_with_envelope(2048, 0, 9, 256),
+            Some(398),
+        );
+        // Резерв ≥ бюджета генерации → None (нечего делить).
+        assert_eq!(auto_think_budget_chars_with_envelope(256, 0, 9, 300), None);
     }
 
     #[test]

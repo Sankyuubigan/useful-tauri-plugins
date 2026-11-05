@@ -1320,6 +1320,7 @@ ${missing.join("\n")}`;
       initPath: opts.initPath ?? null,
       endPath: opts.endPath ?? null,
       refPaths: opts.refPaths ?? [],
+      refAudioPaths: opts.refAudioPaths ?? null,
       seconds: opts.seconds ?? null,
       width: opts.width ?? null,
       height: opts.height ?? null,

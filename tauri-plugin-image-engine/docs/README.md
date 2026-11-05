@@ -59,7 +59,32 @@ video, из любого канала) структурно невозможно
 композиция выживает) и сохраняет площадь пресета; стороны кратны 32. Пресет
 1024x1024 у портретного референса тянул бы и сдвиг композиции, и лишние шаги.
 
+## RefMod-карточки (SSOT формата)
+
+Карточка персонажа: `<KingOrchData>/refmods/<slug>/` = `meta.json` +
+`frames/frame_NN.png` (≤8, длинная ≤1024px, обе стороны кратно 32, Lanczos3)
++ опциональный `voice.wav` (PCM16, исходные rate/channels; в meta —
+`voice_file`/`voice_desc`, serde default). `RefModBundle.voice: Option<PathBuf>`;
+meta-voice без файла → warn + None. Перезапись кадров (`save_refmod_card_images_in`
+с overwrite существующего slug) НАСЛЕДУЕТ голос: старая meta читается до wipe,
+wipe чистит только `frames/` — тембр не зависит от кадров.
+
+Голос (`refmod_voice.rs`): любые форматы юзера (mp3/wav/m4a/ogg-vorbis/flac)
+декодируются symphonia и канонизируются в PCM16 WAV (`normalize_voice`,
+`VoiceWav::to_wav_bytes`). Масштаб f32→i16 — строго **×32768** (степень двойки
+точна в f32: roundtrip decode→encode→decode идемпотентен; ×32767 давал ±1 сдвиг
+на каждом сэмпле). Webm/opus НЕ поддержан symphonia — вверх без C-зависимостей.
+
+API (все IN-PLACE, правка голоса не создаёт v2-дубль):
+`set_card_voice_in(root, slug, bytes, desc)` / `write_card_voice_in(.., &VoiceWav, ..)`
+/ `update_voice_desc_in(..)` / `copy_card_voice_in(root, from, to)` — при
+отсутствии исходника это no-op (возвращают Ok). Видео-ветка берёт голос карточки
+в `ref_audios` движка: `generate_video_simple(.., ref_audio_paths, ..)`, гейт
+`ref_audios_supported(caps)` (`features_by_mode.vid_gen.ref_audios === true`).
+
 ## LoRA-стек (PRP 29.10.26; F3 29.10.26 — папки по базам)
+
+
 
 - Каталог: ключ `image_lora_dir` в `app_config.json` хоста; дефолт
   `<KingOrchData>/image_loras` (`engine::image_lora_dir_early()`).

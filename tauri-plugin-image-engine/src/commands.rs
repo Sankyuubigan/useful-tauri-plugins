@@ -1104,6 +1104,9 @@ pub async fn generate_video(
     init_path: Option<String>,
     end_path: Option<String>,
     ref_paths: Vec<String>,
+    // Голос персонажа (Этап 3): пути к WAV-файлам (voice.wav RefMod-карточек).
+    // Движок декодирует ТОЛЬКО WAV-контейнер; пусто/None = без голоса.
+    ref_audio_paths: Option<Vec<String>>,
     // seconds: длительность клипа (кадры = seconds × fps; сетку держит сервер).
     seconds: Option<u32>,
     width: Option<u32>,
@@ -1217,6 +1220,10 @@ pub async fn generate_video(
     for p in &ref_paths {
         ref_b64.push(file_to_b64(p)?);
     }
+    let mut ref_audios_b64: Vec<String> = Vec::new();
+    for p in ref_audio_paths.unwrap_or_default().iter().filter(|p| !p.trim().is_empty()) {
+        ref_audios_b64.push(format!("data:audio/wav;base64,{}", file_to_b64(p)?));
+    }
 
     let req = engine::VideoRequest {
         prompt: prompt.clone(),
@@ -1227,6 +1234,7 @@ pub async fn generate_video(
         // Панель плагина: прежнее поведение (identity-режим max включает
         // только host-тул generate_video для кадров RefMod-карточек).
         ref_image_size_max: false,
+        ref_audios_b64,
         width: w,
         height: h,
         steps: st,

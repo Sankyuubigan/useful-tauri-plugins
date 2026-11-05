@@ -13,6 +13,13 @@
 //! DiT/VAE в OOM/своп. Файлы `*_refmod.safetensors` (латент) официальным
 //! бинарником не потребляются.
 //!
+//! Голос (Этап 3, 05.11.2026): карточка опционально несёт РОВНО ОДИН голос —
+//! файл `voice.wav` (PCM16, исходные rate/channels; конверт в stereo 32 kHz
+//! делает движок H3 сам) + человекочитаемое `voice_desc` в meta.json. Правки
+//! голоса — IN-PLACE в карточке (смена не плодит дубли персонажа в каталоге);
+//! транскод — `engine/refmod_voice.rs`. 2+ ref_audios H3 путает, поэтому
+//! второй голос в карточку не попадает конструктивно.
+//!
 //! Этот модуль — единственная реализация формата: его используют и тулы хоста
 //! (создание/редактирование карточек агентом), и команды плашки «Рефмодс»
 //! (список карточек + миниатюры). Дублировать обход папок в другом крейте
@@ -23,11 +30,15 @@
 //! ```text
 //! meta.json            {"_format_version":1,"name":...,"description":...}
 //! frames/frame_NN.png  ... кадры, ≤8, стороны кратны 32px, длинная ≤1024px
+//! voice.wav            голос (опционально, PCM16; ставится только voice-фн,
+//!                      правки IN-PLACE; desc — voice_desc в meta.json)
 //! ```
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
+
+use super::refmod_voice::{normalize_voice, VoiceWav, VOICE_WAV_FILE};
 
 /// Ошибка операций над RefMod-карточками. `Usage`/`NotFound` несут конкретную
 /// честную причину в тексте (downstream не маскирует их «внутренней ошибкой»).
@@ -83,6 +94,13 @@ pub struct RefModMeta {
     /// Короткое описание внешности для каталога графа.
     #[serde(default)]
     pub description: String,
+    /// Имя файла голоса внутри карточки (ровно один — `voice.wav`).
+    /// None = карточка без голоса (старые карточки читаются как есть).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_file: Option<String>,
+    /// Человекочитаемое описание тембра для промпта видео-агента.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice_desc: Option<String>,
 }
 
 fn default_meta_format_version() -> u32 {
@@ -97,6 +115,10 @@ pub struct RefModBundle {
     pub description: String,
     /// Абсолютные пути кадров (frames/frame_NN.png), отсортированы по номеру.
     pub frames: Vec<PathBuf>,
+    /// Голос карточки (voice.wav), если задан. Правки — IN-PLACE (voice-фн).
+    pub voice: Option<PathBuf>,
+    /// Описание тембра (из meta.json; для промпта видео-агента).
+    pub voice_desc: Option<String>,
 }
 
 /// Папка карточек по действующему конфигу: `<KingOrchData>/refmods`.
@@ -235,6 +257,16 @@ pub fn save_refmod_card_images_in(
 
     let card_dir = refmods_root.join(slug.trim());
     let frames_dir = card_dir.join(FRAMES_DIR);
+    // Наследование голоса при перезаписи (edit с ops + overwrite): перезапись
+    // меняет кадры, но НЕ тембр — тот же персонаж того же slug. Старый voice.wav
+    // не удаляется (wipe чистит только frames/) и остаётся объявленным в meta.
+    let inherited_voice = read_meta(&card_dir).ok().and_then(|old| {
+        let file = old.voice_file?;
+        if !card_dir.join(&file).is_file() {
+            return None;
+        }
+        Some((file, old.voice_desc))
+    });
     // Перезапись чистая: старые кадры с большим номером не должны переживать
     // сохранение меньшего набора (stale frame_05 при новом наборе из 3 — мусор).
     if frames_dir.exists() {
@@ -258,6 +290,11 @@ pub fn save_refmod_card_images_in(
         _format_version: META_FORMAT_VERSION,
         name: name.to_string(),
         description: description.trim().to_string(),
+        // Новая карточка — без голоса; перезапись существующей — голос
+        // наследуется (voice_file/voice_desc старой meta). Новый голос ставится
+        // ТОЛЬКО voice-фн (set_card_voice_in) — единая точка мутации.
+        voice_file: inherited_voice.as_ref().map(|(f, _)| f.clone()),
+        voice_desc: inherited_voice.as_ref().and_then(|(_, d)| d.clone()),
     };
     write_meta(&card_dir, &meta)?;
 
@@ -266,6 +303,12 @@ pub fn save_refmod_card_images_in(
         name: meta.name,
         description: meta.description,
         frames,
+        // Голос: унаследованный при перезаписи, иначе нет. Новый голос —
+        // только через voice-фн (set_card_voice_in и др.) — единая точка мутации.
+        voice: inherited_voice
+            .as_ref()
+            .map(|(f, _)| card_dir.join(f)),
+        voice_desc: inherited_voice.as_ref().and_then(|(_, d)| d.clone()),
     })
 }
 
@@ -276,6 +319,117 @@ fn write_meta(card_dir: &Path, meta: &RefModMeta) -> Result<(), RefModError> {
         .map_err(|e| RefModError::Io(format!("meta.json: {}", e)))?;
     std::fs::write(card_dir.join(META_FILE), text)
         .map_err(|e| RefModError::Io(format!("{}: {}", card_dir.display(), e)))
+}
+
+// ─── Голос карточки (Этап 3, tasks/261104_0230-db2cb59c) ───────────────────
+// Единая точка мутации голоса — voice-фн ниже. save-фн НОВЫЙ голос не ставят
+// (перезапись существующей карточки НАСЛЕДУЕТ старый голос — тембр не зависит
+// от кадров); ops-правка кадров в новую карточку наследует голос через
+// copy_card_voice_in. Правки голоса — IN-PLACE: смена голоса не создаёт
+// v2-дубль персонажа (дубли в каталоге = неоднозначность выбора версии —
+// эпистемический отказ, §00.2 AGENTS.md).
+
+/// Прочитать meta.json карточки (хелпер read-modify-write голосовых правок).
+fn read_meta(card_dir: &Path) -> Result<RefModMeta, RefModError> {
+    let meta_path = card_dir.join(META_FILE);
+    let text = std::fs::read_to_string(&meta_path)
+        .map_err(|e| RefModError::Io(format!("{}: {}", meta_path.display(), e)))?;
+    serde_json::from_str(&text).map_err(|e| {
+        RefModError::Usage(format!("{} повреждён: {}", meta_path.display(), e))
+    })
+}
+
+/// Записать голос в карточку (voice.wav + meta read-modify-write) —
+/// низкоуровневая точка записи. `desc = None` → описание сбрасывается
+/// (описание тембра привязано к текущему голосу: сменили голос — старое
+/// описание СТАРОГО тембра молча оставлять нельзя, это ложь в каталоге).
+pub fn write_card_voice_in(
+    refmods_root: &Path,
+    slug: &str,
+    voice: &VoiceWav,
+    desc: Option<String>,
+) -> Result<RefModBundle, RefModError> {
+    validate_slug(slug)?;
+    let slug = slug.trim();
+    let card_dir = refmods_root.join(slug);
+    if !card_dir.join(META_FILE).is_file() {
+        return Err(RefModError::NotFound(format!(
+            "RefMod-карточка '{}' не найдена — голос задавать некуда. Доступные \
+             карточки — в блоке «Доступные RefMod-карточки» контекста.",
+            slug
+        )));
+    }
+    let wav_path = card_dir.join(VOICE_WAV_FILE);
+    std::fs::write(&wav_path, voice.to_wav_bytes()).map_err(|e| {
+        RefModError::Io(format!("{}: {}", wav_path.display(), e))
+    })?;
+    let mut meta = read_meta(&card_dir)?;
+    meta.voice_file = Some(VOICE_WAV_FILE.to_string());
+    meta.voice_desc = desc;
+    write_meta(&card_dir, &meta)?;
+    load_refmod_card_in(refmods_root, slug)
+}
+
+/// Задать/сменить голос карточки: декод аудио-байтов юзера (ДО всякой записи
+/// на диск), затем запись. Промежуточная между `set_card_voice` и диском —
+/// для тестов и хоста с нестандартным корнем.
+pub fn set_card_voice_in(
+    refmods_root: &Path,
+    slug: &str,
+    audio: &[u8],
+    desc: Option<String>,
+) -> Result<RefModBundle, RefModError> {
+    let voice = normalize_voice(audio)?;
+    load_refmod_card_in(refmods_root, slug)?;
+    write_card_voice_in(refmods_root, slug, &voice, desc)
+}
+
+/// Задать/сменить голос карточки (корень по умолчанию).
+pub fn set_card_voice(
+    slug: &str,
+    audio: &[u8],
+    desc: Option<String>,
+) -> Result<RefModBundle, RefModError> {
+    set_card_voice_in(&refmods_dir(), slug, audio, desc)
+}
+
+/// Правка описания СУЩЕСТВУЮЩЕГО голоса (in-place). Голоса нет → Usage:
+/// «описывать нечего — сначала задай голос».
+pub fn update_voice_desc_in(
+    refmods_root: &Path,
+    slug: &str,
+    desc: String,
+) -> Result<RefModBundle, RefModError> {
+    let bundle = load_refmod_card_in(refmods_root, slug)?;
+    if bundle.voice.is_none() {
+        return Err(RefModError::Usage(format!(
+            "RefMod-карточка '{}': голоса нет — описывать нечего. Сначала задай \
+             голос (refmod_edit с аудио-вложением и voice_desc).",
+            slug
+        )));
+    }
+    let card_dir = refmods_root.join(slug.trim());
+    let mut meta = read_meta(&card_dir)?;
+    meta.voice_desc = Some(desc);
+    write_meta(&card_dir, &meta)?;
+    load_refmod_card_in(refmods_root, slug)
+}
+
+/// Наследовать голос при ops-правке кадров (исходник → новая карточка v2).
+/// Нет голоса — Ok(()) без действий (не голос → нечего копировать).
+pub fn copy_card_voice_in(
+    refmods_root: &Path,
+    src_slug: &str,
+    dst_slug: &str,
+) -> Result<(), RefModError> {
+    let src = load_refmod_card_in(refmods_root, src_slug)?;
+    let Some(voice_path) = src.voice else {
+        return Ok(());
+    };
+    let bytes = std::fs::read(&voice_path)
+        .map_err(|e| RefModError::Io(format!("{}: {}", voice_path.display(), e)))?;
+    let voice = normalize_voice(&bytes)?;
+    write_card_voice_in(refmods_root, dst_slug, &voice, src.voice_desc.clone()).map(|_| ())
 }
 
 /// Загрузить карточку по slug (с валидацией габаритов кадров — карта могла
@@ -352,11 +506,31 @@ pub fn load_refmod_card_in(refmods_root: &Path, slug: &str) -> Result<RefModBund
         }
     }
 
+    // Голос: meta объявляет voice_file — файл обязан существовать. Отсутствие
+    // файла (ручное удаление) НЕ бричит карточку: честный warn, голос None
+    // (каталог не будет обещать голоса, которого нет).
+    let voice = meta.voice_file.as_ref().map(|file| card_dir.join(file));
+    let voice = match voice {
+        Some(path) if path.is_file() => Some(path),
+        Some(path) => {
+            log::warn!(
+                "[REFMOD] карточка '{}': voice объявлен в meta ({}), но файла нет — \
+                 голос считается не заданным (можно вернуть через refmod_edit).",
+                slug,
+                path.display()
+            );
+            None
+        }
+        None => None,
+    };
+
     Ok(RefModBundle {
         slug: slug.to_string(),
         name: meta.name,
         description: meta.description,
         frames,
+        voice,
+        voice_desc: meta.voice_desc,
     })
 }
 
@@ -420,6 +594,13 @@ pub fn refmods_prompt_in(refmods_root: &Path) -> String {
             out.push_str(&format!(" — {}", card.description));
         }
         out.push_str(&format!(" (кадров: {})", card.frames.len()));
+        if card.voice.is_some() {
+            if let Some(desc) = &card.voice_desc {
+                out.push_str(&format!(" 🎤 голос: {}", desc));
+            } else {
+                out.push_str(" 🎤 голос задан");
+            }
+        }
         out.push('\n');
     }
     out
@@ -467,3 +648,7 @@ pub fn thumbnail_data_url_in(refmods_root: &Path, slug: &str) -> Result<String, 
 #[cfg(test)]
 #[path = "refmod_tests.rs"]
 mod refmod_tests;
+
+#[cfg(test)]
+#[path = "refmod_voice_tests.rs"]
+mod refmod_voice_tests;

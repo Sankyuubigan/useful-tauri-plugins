@@ -208,6 +208,8 @@ export interface GenerateVideoOptions {
     endPath?: string | null;
     /** Референсы (ref2va): локальные пути или data-URL. НЕ смешивать с init/end. */
     refPaths?: string[];
+    /** Голос персонажа (ref_audios, H3 voice cloning): пути к WAV (voice.wav карточек). */
+    refAudioPaths?: string[];
     /** Длительность клипа, сек (frames = seconds × fps; сервер нормализует сеткой). */
     seconds?: number | null;
     width?: number | null;

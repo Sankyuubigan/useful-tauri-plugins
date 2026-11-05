@@ -149,6 +149,11 @@ pub struct VideoRequest {
     /// (api.md:936,957 — строковое поле): режим max поднимает лимит референса
     /// до 2048px по короткой стороне. Хост-тул ставит для кадров RefMod-карточек.
     pub ref_image_size_max: bool,
+    /// Голосовые референсы (`ref_audios`, H3 voice cloning): строки
+    /// `data:audio/wav;base64,...` (сервер режет по первой запятой и декодирует
+    /// ТОЛЬКО WAV-контейнер; порядок массива = позиция C API). Источник —
+    /// `voice.wav` RefMod-карточки; пусто = без голоса.
+    pub ref_audios_b64: Vec<String>,
     pub width: u32,
     pub height: u32,
     /// Шаги (draft/final решает командный слой через sampling_plan_for_quality).
@@ -622,7 +627,39 @@ pub fn build_payload(params: &VideoRequest) -> Result<serde_json::Value, String>
     if params.ref_image_size_max && !params.ref_images_b64.is_empty() {
         payload["ref_image_args"] = serde_json::json!("ref_image_size=max");
     }
+
+    // ref_audios (H3 voice cloning, Этап 3): массив b64 WAV-строк. Ключ ставится
+    // ТОЛЬКО при непустом массиве — поле модельно-зависимое
+    // (common.cpp: generation_features.at("ref_audios")), а гейт старого движка —
+    // capabilities-проверка в generate() до submit (ref_audios_supported).
+    if !params.ref_audios_b64.is_empty() {
+        payload["ref_audios"] = serde_json::json!(params.ref_audios_b64);
+    }
     Ok(payload)
+}
+
+/// Гейт старого движка: ref_audios доступен ТОЛЬКО когда capabilities заявляет
+/// `features_by_mode.vid_gen.ref_audios == true` (routes_sdcpp.cpp рекламирует
+/// feature в vid_gen; common.cpp берёт значение из generation_features —
+/// модельно-зависимое). Отсутствие заявки → честный отказ «обнови движок»
+/// ДО submit, вместо тихой генерации немого клипа.
+pub fn ref_audios_supported(capabilities_json: &serde_json::Value) -> Result<(), String> {
+    let declared = capabilities_json
+        .get("features_by_mode")
+        .and_then(|m| m.get("vid_gen"))
+        .and_then(|m| m.get("ref_audios"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    if declared {
+        Ok(())
+    } else {
+        Err(
+            "Установленный движок не заявляет ref_audios (голос персонажа) в \
+             /sdcpp/v1/capabilities — релиз движка без voice cloning. Обновите \
+             движок через «Установить движок», чтобы озвучивать персонажей."
+                .to_string(),
+        )
+    }
 }
 
 /// Сумма size_bytes файлов, которых НЕТ в bundle_dir — сколько реально нужно
@@ -1056,6 +1093,25 @@ impl VideoEngine {
             params.ref_images_b64.len(),
             if params.init_b64.is_some() { ", init_image задан" } else { "" },
         ));
+        if !params.ref_audios_b64.is_empty() {
+            // Гейт ДО submit: отказ старого движка не должен тратить прогон
+            // (голос-референс при отсутствии feature молча дропнулся бы —
+            // сгенерировался бы немой клип).
+            let caps: serde_json::Value = self
+                .client
+                .get(format!("{}/sdcpp/v1/capabilities", self.base_url))
+                .send()
+                .map_err(|e| format!("capabilities недоступны: {}", e))?
+                .error_for_status()
+                .map_err(|e| format!("capabilities недоступны: {}", e))?
+                .json()
+                .map_err(|e| format!("capabilities не парсятся: {}", e))?;
+            ref_audios_supported(&caps)?;
+            log_cb(format!(
+                "🎤 голос-референс: {} шт (ref_audios, H3 voice cloning)",
+                params.ref_audios_b64.len()
+            ));
+        }
 
         let submit: JobSubmit = self
             .client
@@ -1294,6 +1350,7 @@ pub fn generate_video_simple<L>(
     init_path: Option<&str>,
     ref_paths: &[String],
     ref_image_size_max: bool,
+    ref_audio_paths: &[String],
     out_path: &Path,
     cancel_flag: Option<Arc<AtomicBool>>,
     user_loras: &[LoraSpec],
@@ -1383,6 +1440,24 @@ where
     if ref_image_size_max && !ref_images_b64.is_empty() {
         log_cb("🖼 ref_image_args=ref_image_size=max (identity-рефы)".to_string());
     }
+    // Голос персонажа (Этап 3): voice.wav RefMod-карточки → data-URL b64.
+    let mut ref_audios_b64: Vec<String> = Vec::new();
+    if !ref_audio_paths.is_empty() {
+        log_cb(format!(
+            "🎤 читаю {} голос-референс(ов) (H3 voice cloning)",
+            ref_audio_paths.len()
+        ));
+        for (i, path) in ref_audio_paths.iter().enumerate() {
+            let b64 = file_to_b64(path)
+                .map_err(|e| format!("голос-референс #{} ({}): {}", i + 1, path, e))?;
+            log_cb(format!(
+                "🎤 голос #{} закодирован: {} симв. b64",
+                i + 1,
+                b64.len()
+            ));
+            ref_audios_b64.push(format!("data:audio/wav;base64,{}", b64));
+        }
+    }
     // Режим для спавна (выбор diffusion-файла): ref2va / i2va / t2va.
     let mode = if !ref_images_b64.is_empty() {
         "ref2va"
@@ -1408,6 +1483,7 @@ where
         end_b64: None,
         ref_images_b64,
         ref_image_size_max,
+        ref_audios_b64,
         width: req_width,
         height: req_height,
         steps: plan.steps,
@@ -1900,6 +1976,7 @@ mod tests {
             end_b64: None,
             ref_images_b64: vec![],
             ref_image_size_max: false,
+            ref_audios_b64: vec![],
             width: 864,
             height: 480,
             steps: 6,
@@ -1951,6 +2028,7 @@ mod tests {
             end_b64: None,
             ref_images_b64: vec![],
             ref_image_size_max: false,
+            ref_audios_b64: vec![],
             width: 864,
             height: 480,
             steps: 4,
@@ -1995,6 +2073,7 @@ mod tests {
             end_b64: None,
             ref_images_b64: vec![],
             ref_image_size_max: false,
+            ref_audios_b64: vec![],
             width: 864,
             height: 480,
             steps: 20,
@@ -2027,6 +2106,7 @@ mod tests {
             end_b64: end.map(String::from),
             ref_images_b64: refs,
             ref_image_size_max: false,
+            ref_audios_b64: vec![],
             width: 864,
             height: 480,
             steps: 20,
@@ -2068,6 +2148,7 @@ mod tests {
             end_b64: None,
             ref_images_b64: refs,
             ref_image_size_max: max,
+            ref_audios_b64: vec![],
             width: 864,
             height: 480,
             steps: 20,
@@ -2097,6 +2178,68 @@ mod tests {
         );
     }
 
+    /// ref_audios (Этап 3, голос персонажа): непустой массив → ключ есть
+    /// (data-URL строки уходят как есть); пустой → ключа нет (поле
+    /// модельно-зависимое, старым движкам не шлём).
+    #[test]
+    fn payload_ref_audios_contract() {
+        let base = |audios: Vec<String>| VideoRequest {
+            prompt: "сцена".into(),
+            negative_prompt: None,
+            init_b64: None,
+            end_b64: None,
+            ref_images_b64: vec!["R".into()],
+            ref_image_size_max: false,
+            ref_audios_b64: audios,
+            width: 864,
+            height: 480,
+            steps: 20,
+            cfg_scale: 1.0,
+            seed: 7,
+            video_frames: 56,
+            fps: 24,
+            vae_tiling: true,
+            strength: 0.75,
+            sample_method: "euler".into(),
+            scheduler: "discrete".into(),
+            flow_shift: None,
+            lora: vec![],
+        };
+        let voiced = build_payload(&base(vec!["data:audio/wav;base64,QUJD".into()]))
+            .expect("ref2va с голосом");
+        assert_eq!(
+            voiced["ref_audios"],
+            serde_json::json!(["data:audio/wav;base64,QUJD"]),
+            "ref_audios уходит массивом строк как есть"
+        );
+        let mute = build_payload(&base(vec![])).expect("ref2va без голоса");
+        assert!(
+            mute.as_object().unwrap().get("ref_audios").is_none(),
+            "пустой массив — ключа нет: {:?}",
+            mute.get("ref_audios")
+        );
+    }
+
+    /// Гейт capabilities: заявленный feature → Ok; false/нет узла → честный
+    /// отказ «обнови движок» (routes_sdcpp.cpp: features_by_mode.vid_gen).
+    #[test]
+    fn ref_audios_gate_by_capabilities() {
+        assert!(ref_audios_supported(&serde_json::json!({
+            "supported_modes": ["img_gen", "vid_gen"],
+            "features_by_mode": { "vid_gen": { "ref_audios": true } }
+        }))
+        .is_ok());
+        for caps in [
+            serde_json::json!({ "supported_modes": ["vid_gen"] }),
+            serde_json::json!({ "features_by_mode": { "vid_gen": { "ref_audios": false } } }),
+            serde_json::json!({ "features_by_mode": { "img_gen": { "ref_audios": true } } }),
+        ] {
+            let err = ref_audios_supported(&caps).unwrap_err();
+            assert!(err.contains("ref_audios"), "{:?}", err);
+            assert!(err.contains("Установить движок"), "{:?}", err);
+        }
+    }
+
     #[test]
     fn payload_rejects_broken_params() {
         let mut p = VideoRequest {
@@ -2106,6 +2249,7 @@ mod tests {
             end_b64: None,
             ref_images_b64: vec![],
             ref_image_size_max: false,
+            ref_audios_b64: vec![],
             width: 864,
             height: 480,
             steps: 6,
@@ -2237,6 +2381,7 @@ mod tests {
             Some(ghost.to_str().unwrap()),
             &[],
             false,
+            &[],
             &out,
             None,
             &[],
@@ -2264,6 +2409,7 @@ mod tests {
             None,
             &refs,
             false,
+            &[],
             &out,
             None,
             &[],
@@ -2285,6 +2431,7 @@ mod tests {
             Some(ghost.to_str().unwrap()),
             &refs,
             false,
+            &[],
             &out,
             None,
             &[],

@@ -229,11 +229,11 @@ fn list_and_prompt_cover_cards_and_skip_broken() {
     let _ = std::fs::remove_dir_all(empty);
 }
 
-// ── Отбор кадров для прогона (владелец: 4–8 кадров НЕ ошибка, берём первые 3) ──
+// ── Отбор кадров для прогона (владелец 05.11.26: ВСЕ кадры карточки — референсы) ──
 
 #[test]
-fn engine_ref_paths_take_first_three() {
-    let root = temp_root("take3");
+fn engine_ref_paths_takes_all_frames() {
+    let root = temp_root("take_all");
     let src_dir = root.join("src");
     std::fs::create_dir_all(&src_dir).unwrap();
     let sources: Vec<PathBuf> = (0..5)
@@ -242,9 +242,16 @@ fn engine_ref_paths_take_first_three() {
     let card = save_refmod_card_in(&root, "test_char", "Пять", "", &sources).unwrap();
     assert_eq!(card.frames.len(), 5);
     let paths = engine_ref_paths(&card);
-    assert_eq!(paths.len(), FRAMES_PER_RUN, "берём первые 3 из 5");
-    assert_eq!(paths[0], card.frames[0].to_string_lossy());
-    assert_eq!(paths[2], card.frames[2].to_string_lossy());
+    assert_eq!(paths.len(), 5, "все 5 кадров идут в движок, не первые 3");
+    for (i, p) in paths.iter().enumerate() {
+        assert_eq!(p, &card.frames[i].to_string_lossy(), "порядок сохранён");
+    }
+    // Потолок формата: карточка на FRAMES_MAX кадров — тоже целиком.
+    let full: Vec<PathBuf> = (0..FRAMES_MAX)
+        .map(|i| write_source(&src_dir, &format!("f{}.png", i), 64, 64))
+        .collect();
+    let card8 = save_refmod_card_in(&root, "test_char8", "Восемь", "", &full).unwrap();
+    assert_eq!(engine_ref_paths(&card8).len(), FRAMES_MAX);
     let _ = std::fs::remove_dir_all(root);
 }
 

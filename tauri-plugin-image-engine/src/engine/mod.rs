@@ -24,6 +24,7 @@ pub mod ref_size;
 pub mod sdcpp_installer;
 pub mod sources;
 pub mod video_engine;
+pub mod video_refine;
 
 pub use ab_view::{build_ab_artifacts, collect_pairs, make_ab_collage, AbPair};
 pub use bench::{run_bench, BenchReport, BenchRun};
@@ -82,3 +83,5 @@ pub use video_engine::{
     sampling_plan_for_quality, seconds_to_frames, VideoEngine,
     VideoGenResult, VideoLoraRef, VideoMode, VideoRequest, VideoSamplingPlan,
 };
+pub use video_refine::{generate_video_refine, refine_engine_supported, ENGINE_LOG_REASON};
+pub use models_catalog::VideoRefinePreset;

@@ -5,14 +5,14 @@
 
 use std::path::Path;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// Одна LoRA тела `POST /sdcpp/v1/img_gen`. `path` — ИМЯ ФАЙЛА относительно
 /// каталога `--lora-model-dir` спавна: абсолютные пути и пути вне рута
 /// сервер отклоняет; тег `<lora:...>` в промпте сервер принципиально не
 /// парсит — только структурные поля (api.md sd.cpp, разделы «LoRA fields»
 /// и «LoRA Rules»). Формат разделяется с видео-веткой (`VideoLoraRef`).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LoraSpec {
     pub path: String,
     pub multiplier: f32,

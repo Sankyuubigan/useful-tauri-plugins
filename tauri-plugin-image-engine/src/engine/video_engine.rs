@@ -52,7 +52,7 @@ const VIDEO_PORT_RANGE: u16 = 1500;
 /// грузятся на SSD юзера за ~20–60 с.
 const VIDEO_HEALTH_TIMEOUT: Duration = Duration::from_secs(300);
 /// Таймаут видео-генерации (PRP: ≥ 3600 с): 15-сек final на 8 ГБ ≈ 25+ мин.
-const VIDEO_GEN_TIMEOUT: Duration = Duration::from_secs(3600);
+pub(crate) const VIDEO_GEN_TIMEOUT: Duration = Duration::from_secs(3600);
 /// Интервал опроса job-статуса.
 const VIDEO_POLL_INTERVAL: Duration = Duration::from_secs(3);
 
@@ -198,6 +198,9 @@ pub struct VideoGenResult {
     /// `video/webm` / `image/webp` / `video/x-msvideo`.
     pub mime_type: String,
     pub time_sec: f64,
+    /// Сид запроса (клиентский из VideoRequest.seed): основа replay-механики
+    /// рефайна — «тот же сид + тот же драфт → тот же драфт» (R0.4 seed-replay).
+    pub seed: i64,
 }
 
 /// Расширение файла по mime контейнера (api.md: webm→video/webm,
@@ -227,7 +230,7 @@ fn lora_draft_file(entry: &VideoBundleEntry) -> Option<&BundleFile> {
 /// легаси: bundle_dir при наличии lora_draft (прежнее поведение).
 /// `lora_root` передаётся явно (боевая точка — `config::video_lora_dir_early()`)
 /// — ядро остаётся чистой функцией файловой системы, герметичной для тестов.
-fn video_lora_spawn_dir(
+pub(crate) fn video_lora_spawn_dir(
     entry: &VideoBundleEntry,
     bundle_dir: &Path,
     lora_root: &Path,
@@ -825,8 +828,21 @@ fn pick_free_port() -> Option<u16> {
     None
 }
 
-fn pipe_log<R>(stream: Option<R>, tag: &str)
+pub(crate) fn pipe_log<R>(stream: Option<R>, tag: &str)
 where
+    R: Read + Send + 'static,
+{
+    pipe_log_with_tail(stream, tag, None);
+}
+
+/// pipe_log с накоплением хвоста строк (БАГ-3, 06.11.26): рефайн вкладывает
+/// последние строки stderr движка в Err-строку — агент и владелец видят
+/// настоящую причину краша, а не «внутреннюю ошибку media-движка».
+pub(crate) fn pipe_log_with_tail<R>(
+    stream: Option<R>,
+    tag: &str,
+    tail: Option<std::sync::Arc<std::sync::Mutex<Vec<String>>>>,
+) where
     R: Read + Send + 'static,
 {
     let Some(stream) = stream else { return };
@@ -847,6 +863,14 @@ where
                 continue;
             }
             for out in deduper.feed(text) {
+                if let Some(buf_arc) = &tail {
+                    if let Ok(mut buf) = buf_arc.lock() {
+                        buf.push(out.to_string());
+                        if buf.len() > 8 {
+                            buf.remove(0);
+                        }
+                    }
+                }
                 if out.contains("[ERROR]") || out.contains("error:") {
                     log::error!("[{}] {}", tag, out);
                 } else {
@@ -1163,6 +1187,7 @@ impl VideoEngine {
             frame_count: frames,
             mime_type: mime,
             time_sec,
+            seed: params.seed,
         })
     }
 
@@ -1351,6 +1376,7 @@ pub fn generate_video_simple<L>(
     ref_paths: &[String],
     ref_image_size_max: bool,
     ref_audio_paths: &[String],
+    seed: Option<i64>,
     out_path: &Path,
     cancel_flag: Option<Arc<AtomicBool>>,
     user_loras: &[LoraSpec],
@@ -1488,7 +1514,9 @@ where
         height: req_height,
         steps: plan.steps,
         cfg_scale: preset.cfg_scale,
-        seed: preset.seed,
+        // Клиентский сид хоста (основа replay-рефайна); None → сид каталога
+        // (легаси -1: сервер рандомит и сид НЕ сообщает — replay невозможен).
+        seed: seed.unwrap_or(preset.seed),
         video_frames: secs * preset.fps,
         fps: preset.fps,
         vae_tiling: true,
@@ -2382,6 +2410,7 @@ mod tests {
             &[],
             false,
             &[],
+            None,
             &out,
             None,
             &[],
@@ -2410,6 +2439,7 @@ mod tests {
             &refs,
             false,
             &[],
+            None,
             &out,
             None,
             &[],
@@ -2432,6 +2462,7 @@ mod tests {
             &refs,
             false,
             &[],
+            None,
             &out,
             None,
             &[],

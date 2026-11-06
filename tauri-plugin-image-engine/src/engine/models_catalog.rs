@@ -414,6 +414,29 @@ pub fn bundle_weights_files(
 
 // ─────────────────────────── ВИДЕО-КАТАЛОГ ───────────────────────────
 
+/// Параметры рефайна (нативный «Latent hires second pass» движка, PR #2249,
+/// движок ≥ master-1049): драфт пресета → латент-апскейл до (width×height) →
+/// короткий второй проход. SSOT каталога — код флагов цифр не знает.
+/// Замер-основание: бенч 05.11.26 (test/bench/video_hires/, кейс E):
+/// 1216×672, 4 шага, strength 0.4, learned-апскейлер — 412 с на 5-сек клип,
+/// идентичность персонажа сохранена, детали строго лучше драфта.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct VideoRefinePreset {
+    /// Ширина после латент-апскейла (кратна 32 — грид движка).
+    pub width: u32,
+    /// Высота после латент-апскейла (кратна 32).
+    pub height: u32,
+    /// Шаги второго прохода.
+    pub steps: u32,
+    /// Сила второго прохода (0.4 — бенч E: выше стирает драфт, ниже не чинит детали).
+    pub denoising_strength: f32,
+    /// Имя файла learned-апскейлера (стем без расширения для `--hires-upscaler`).
+    /// Файла нет в bundle_dir → встроенный апскейлер движка (бенч C14: работает,
+    /// текстуры чуть «рисованнее») — не отказ.
+    #[serde(default)]
+    pub upscaler_filename: Option<String>,
+}
+
 /// Дефолтный пресет генерации видео-бандла (SSOT — тот же принцип, что у image).
 ///
 /// steps_draft — шаги черновика при наличии Turbo-LoRA (операционная точка
@@ -460,6 +483,10 @@ pub struct VideoPreset {
     /// CUDA crash — запрещён валидатором всегда (бенч 26.10.26, diag_report).
     #[serde(default = "v_turbo_flow_shift")]
     pub turbo_flow_shift: f32,
+    /// Параметры рефайна («улучшить последнее видео»): латент-апскейл + второй
+    /// проход. None — семейство/бандл рефайн не умеет (тул честно откажет).
+    #[serde(default)]
+    pub refine: Option<VideoRefinePreset>,
 }
 
 fn v_steps_draft() -> u32 { 3 }
@@ -492,6 +519,7 @@ impl Default for VideoPreset {
             turbo_sampler: v_turbo_sampler(),
             turbo_scheduler: v_turbo_scheduler(),
             turbo_flow_shift: v_turbo_flow_shift(),
+            refine: None,
         }
     }
 }
@@ -664,6 +692,30 @@ pub fn validate_video_entry(entry: &VideoBundleEntry) -> Result<(), String> {
              операционная точка Turbo-LoRA обязана быть описана в каталоге (SSOT)"
                 .to_string(),
         );
+    }
+    // Рефайн-пресет: числа — только из замера (бенч E, 05.11.26); broken-запись
+    // не должна молча пройти (иначе тул построит невалидный CLI-вызов).
+    if let Some(refine) = &entry.preset.refine {
+        if refine.width == 0 || refine.height == 0 || refine.width % 32 != 0 || refine.height % 32 != 0 {
+            return Err(format!(
+                "preset.refine: размер {}x{} не кратен 32 (грид движка)",
+                refine.width, refine.height
+            ));
+        }
+        if refine.steps == 0 {
+            return Err("preset.refine: steps = 0".to_string());
+        }
+        if !(refine.denoising_strength.is_finite() && refine.denoising_strength > 0.0 && refine.denoising_strength <= 1.0) {
+            return Err(format!(
+                "preset.refine: denoising_strength = {} вне диапазона (0, 1]",
+                refine.denoising_strength
+            ));
+        }
+        if let Some(name) = &refine.upscaler_filename {
+            if name.trim().is_empty() {
+                return Err("preset.refine: upscaler_filename пуст при Some".to_string());
+            }
+        }
     }
     // placement-лестница: каждый вариант обязан быть исполним (флаги непусты,
     // порог RAM осмыслен, имена политик уникальны — иначе выбор неоднозначен).
@@ -1347,10 +1399,10 @@ mod video_tests {
             q4km.vram_min_gb.unwrap_or(0.0) > uni.vram_min_gb.unwrap_or(0.0),
             "Q4_K обязан требовать больше VRAM, чем Q3_K"
         );
-        // Оба бандла универсальны (30.10.26): 4 файла + lora_draft + ДВА
-        // diffusion (fl2va + ref2va).
-        assert_eq!(q4km.files.len(), 6);
-        assert_eq!(uni.files.len(), 6);
+        // Оба бандла универсальны (30.10.26): 2 diffusion (fl2va + ref2va) +
+        // llm + 2 VAE + lora_draft + hires_upscaler (05.11.26, рефайн).
+        assert_eq!(q4km.files.len(), 7);
+        assert_eq!(uni.files.len(), 7);
         let diff = |e: &VideoBundleEntry, role: &str| {
             e.files
                 .iter()
@@ -1371,10 +1423,87 @@ mod video_tests {
             assert_eq!(diff(e, "llm").size_bytes, Some(13102161024));
             assert_eq!(diff(e, "vae").size_bytes, Some(5207808496));
             assert_eq!(diff(e, "audio_vae").size_bytes, Some(605254808));
+            let up = diff(e, "hires_upscaler");
+            assert_eq!(
+                up.filename, "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors",
+                "learned-апскейлер рефайна в каталоге"
+            );
+            assert_eq!(up.size_bytes, Some(690592992));
         }
         // Суммарный размер на диск — по тем же точным байтам.
-        assert!(video_bundle_disk_bytes(&q4km) > 42_000_000_000, "uni-q4k ≈ 43.1 ГБ (два diffusion)");
-        assert!(video_bundle_disk_bytes(&uni) > 37_000_000_000, "uni ≈ 37.8 ГБ (два diffusion)");
+        assert!(video_bundle_disk_bytes(&q4km) > 42_000_000_000, "uni-q4k ≈ 43.8 ГБ (два diffusion + апскейлер)");
+        assert!(video_bundle_disk_bytes(&uni) > 37_000_000_000, "uni ≈ 38.5 ГБ (два diffusion + апскейлер)");
+    }
+
+    /// Рефайн-пресет (05.11.26): оба бандла объявляют `preset.refine`
+    /// (бенч-кейс E: 1216×672, 4 шага, s0.4, learned-апскейлер) и файл роли
+    /// hires_upscaler с URL обученного апскейлера. Все числа — SSOT каталога.
+    #[test]
+    fn video_refine_preset_declared_for_all_bundles() {
+        let catalog = load_video_catalog();
+        assert!(!catalog.is_empty());
+        for e in &catalog {
+            let refine = e
+                .preset
+                .refine
+                .as_ref()
+                .unwrap_or_else(|| panic!("{}: нет preset.refine", e.name));
+            assert_eq!(refine.width, 1216, "864×480 × 1.4 у {}", e.name);
+            assert_eq!(refine.height, 672, "864×480 × 1.4 у {}", e.name);
+            assert_eq!(refine.width % 32, 0, "грид движка у {}", e.name);
+            assert_eq!(refine.height % 32, 0, "грид движка у {}", e.name);
+            assert_eq!(refine.steps, 4, "второй проход на турбо-точке DMAD у {}", e.name);
+            assert!(
+                (refine.denoising_strength - 0.4).abs() < f32::EPSILON,
+                "s0.4 бенч-кейса E у {}",
+                e.name
+            );
+            let stem = refine
+                .upscaler_filename
+                .as_deref()
+                .expect("learned-апскейлер объявлен");
+            assert_eq!(stem, "minimax_h3_latent_upscaler_3d_conv_v1_bf16");
+            let up = e
+                .files
+                .iter()
+                .find(|f| f.role == "hires_upscaler")
+                .unwrap_or_else(|| panic!("{}: нет файла роли hires_upscaler", e.name));
+            assert!(
+                up.filename.starts_with(stem),
+                "стем пресета = имя файла каталога: {} vs {}",
+                stem,
+                up.filename
+            );
+            assert!(
+                up.download_url.contains("Minimax_h3_latent_Upscaler"),
+                "URL обученного апскейлера: {}",
+                up.download_url
+            );
+            assert_eq!(up.size_bytes, Some(690592992));
+        }
+    }
+
+    /// Валидатор отвергает битые refine-пресеты: размер не кратен 32, нулевые
+    /// шаги, strength вне (0, 1], пустое имя апскейлера при Some.
+    #[test]
+    fn video_refine_validator_rejects_bad_preset() {
+        let base = video_bundle_by_name("minimax_h3_uni-q4k").expect("бандл");
+        let mutate = |e: &VideoBundleEntry, f: &dyn Fn(&mut VideoRefinePreset)| {
+            let mut bad = e.clone();
+            let refine = bad.preset.refine.as_mut().expect("refine есть");
+            f(refine);
+            validate_video_entry(&bad).unwrap_err()
+        };
+        let msg = mutate(&base, &|r| r.width = 1215);
+        assert!(msg.contains("не кратен 32"), "{}", msg);
+        let msg = mutate(&base, &|r| r.steps = 0);
+        assert!(msg.contains("steps"), "{}", msg);
+        let msg = mutate(&base, &|r| r.denoising_strength = 1.5);
+        assert!(msg.contains("denoising_strength"), "{}", msg);
+        let msg = mutate(&base, &|r| r.denoising_strength = 0.0);
+        assert!(msg.contains("denoising_strength"), "{}", msg);
+        let msg = mutate(&base, &|r| r.upscaler_filename = Some("  ".to_string()));
+        assert!(msg.contains("upscaler_filename"), "{}", msg);
     }
 
     #[test]

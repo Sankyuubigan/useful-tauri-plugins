@@ -44,6 +44,12 @@
         "filename": "dmad_minimax_h3_4step_full_critic.safetensors",
         "download_url": "https://huggingface.co/ZhengmingYu/DMAD/resolve/main/minimax_h3/dmad_minimax_h3_4step_full_critic.safetensors?download=true",
         "size_bytes": 1383674320
+      },
+      {
+        "role": "hires_upscaler",
+        "filename": "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors",
+        "download_url": "https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/resolve/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors?download=true",
+        "size_bytes": 690592992
       }
     ],
     "preset": {
@@ -59,9 +65,16 @@
       "height": 480,
       "turbo_sampler": "lcm",
       "turbo_scheduler": "simple",
-      "turbo_flow_shift": 12.0
+      "turbo_flow_shift": 12.0,
+      "refine": {
+        "width": 1216,
+        "height": 672,
+        "steps": 4,
+        "denoising_strength": 0.4,
+        "upscaler_filename": "minimax_h3_latent_upscaler_3d_conv_v1_bf16"
+      }
     },
-    "size_gb": "43.1",
+    "size_gb": "43.8",
     "vram_fast_gb": 28.0,
     "vram_min_gb": 12.0,
     "placement": [
@@ -131,6 +144,12 @@
         "filename": "dmad_minimax_h3_4step_full_critic.safetensors",
         "download_url": "https://huggingface.co/ZhengmingYu/DMAD/resolve/main/minimax_h3/dmad_minimax_h3_4step_full_critic.safetensors?download=true",
         "size_bytes": 1383674320
+      },
+      {
+        "role": "hires_upscaler",
+        "filename": "minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors",
+        "download_url": "https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler/resolve/main/minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors?download=true",
+        "size_bytes": 690592992
       }
     ],
     "preset": {
@@ -146,9 +165,16 @@
       "height": 480,
       "turbo_sampler": "lcm",
       "turbo_scheduler": "simple",
-      "turbo_flow_shift": 12.0
+      "turbo_flow_shift": 12.0,
+      "refine": {
+        "width": 1216,
+        "height": 672,
+        "steps": 4,
+        "denoising_strength": 0.4,
+        "upscaler_filename": "minimax_h3_latent_upscaler_3d_conv_v1_bf16"
+      }
     },
-    "size_gb": "37.8",
+    "size_gb": "38.5",
     "vram_fast_gb": 27.0,
     "vram_min_gb": 8.5,
     "ram_min_gb": 28.0,

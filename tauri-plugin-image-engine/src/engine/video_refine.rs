@@ -659,8 +659,8 @@ mod tests {
         assert_eq!(value_after(&args, "--prompt-file"), Some("C:/out/refine_prompt.txt"));
         // Hires-цели — ТОЛЬКО из пресета каталога (гейт G5).
         assert!(args.iter().any(|a| a == "--hires"));
-        assert_eq!(value_after(&args, "--hires-width"), Some("1216"));
-        assert_eq!(value_after(&args, "--hires-height"), Some("672"));
+        assert_eq!(value_after(&args, "--hires-width"), Some("1152"));
+        assert_eq!(value_after(&args, "--hires-height"), Some("640"));
         assert_eq!(value_after(&args, "--hires-steps"), Some("4"));
         assert_eq!(value_after(&args, "--hires-denoising-strength"), Some("0.4"));
         // Learned-апскейлер: каталог + стем БЕЗ расширения.
@@ -723,7 +723,7 @@ mod tests {
         // Placement легаси-бандла разрезан по пробелам.
         assert!(args.iter().any(|a| a == "--offload-to-cpu"));
         // Hires-цели всё равно из пресета (не опциональны).
-        assert_eq!(value_after(&args, "--hires-width"), Some("1216"));
+        assert_eq!(value_after(&args, "--hires-width"), Some("1152"));
         assert_eq!(value_after(&args, "-s"), Some("42"));
     }
 

@@ -73,8 +73,9 @@ pub use refmod::{
     load_refmod_card, load_refmod_card_in, normalize_frame, refmods_dir, refmods_prompt,
     refmods_prompt_in, save_refmod_card, save_refmod_card_in, save_refmod_card_images_in,
     set_card_voice, set_card_voice_in, thumbnail_data_url, thumbnail_data_url_in, update_voice_desc_in,
-    validate_slug, write_card_voice_in, RefModBundle, RefModError, RefModMeta,
-    FRAME_LONG_SIDE_MAX, FRAME_SIZE_MULTIPLE, FRAMES_MAX, FRAMES_PER_RUN, THUMBNAIL_LONG_SIDE,
+    validate_slug, write_card_voice_in, FrameResize, NormalizeReport, RefModBundle, RefModError,
+    RefModMeta, FRAME_LONG_SIDE_MAX, FRAME_SIZE_MULTIPLE, FRAMES_MAX, FRAMES_PER_RUN,
+    THUMBNAIL_LONG_SIDE,
 };
 pub use refmod_voice::{normalize_voice, VoiceWav, VOICE_WAV_FILE};
 pub use video_engine::{

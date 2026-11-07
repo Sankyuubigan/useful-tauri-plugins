@@ -142,7 +142,8 @@ fn save_overwrite_inherits_voice() {
     // Перезапись кадров того же slug (edit с ops + overwrite): тембр не
     // зависит от кадров — голос НАСЛЕДУЕТСЯ, а не теряется.
     let card = save_refmod_card_in(&root, "test_char", "Второй", "", &[s2])
-        .expect("перезапись");
+        .expect("перезапись")
+        .0;
     assert!(card.voice.is_some(), "перезапись наследует голос");
     assert_eq!(card.voice_desc.as_deref(), Some("тенор"));
     let loaded = load_refmod_card_in(&root, "test_char").unwrap();

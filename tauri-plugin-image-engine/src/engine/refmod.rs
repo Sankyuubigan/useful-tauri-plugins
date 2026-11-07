@@ -123,6 +123,26 @@ pub struct RefModBundle {
     pub voice_desc: Option<String>,
 }
 
+/// Один кадр, чьи габариты изменились при СОХРАНЕНИИ карточки (было → стало).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameResize {
+    /// Имя файла кадра (frame_NN.png) — уже сохранённого на диске.
+    pub frame_file: String,
+    pub src_w: u32,
+    pub src_h: u32,
+    pub dst_w: u32,
+    pub dst_h: u32,
+}
+
+/// Отчёт о нормализации кадров при сохранении (SSOT — точка `normalize_frame`,
+/// где известны оба размера). Пустой отчёт = ни один кадр не менял габариты
+/// (ни сжатия до ≤1024 по длинной стороне, ни выравнивания к сетке 32).
+/// Загружаемые карточки (load/list) отчёта не имеют по определению.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NormalizeReport {
+    pub resized: Vec<FrameResize>,
+}
+
 /// Папка карточек по действующему конфигу: `<KingOrchData>/refmods`.
 pub fn refmods_dir() -> PathBuf {
     super::data_root().join(REFMODS_DIR_NAME)
@@ -194,14 +214,16 @@ fn frame_size_valid(w: u32, h: u32) -> bool {
 
 /// Сохранить RefMod-карточку из файлов-источников (перезаписывает существующую).
 /// Каждый источник декодируется, нормируется (`normalize_frame`) и кладётся в
-/// `frames/frame_NN.png`. Конвенция порядка кадров (владелец 04.11.26):
-/// 1 — лицо крупно, 2 — ракурс 3/4 или профиль, 3 — фигура/одежда.
+/// `frames/frame_NN.png`. Порядок кадров = лексикографический порядок имён
+/// файлов в `frames/` (движок видео получает их как Picture 1..N). Смысловая
+/// расстановка («первым — лицо крупно») — мягкая рекомендация агенту через
+/// описание тула, движок её не проверяет.
 pub fn save_refmod_card(
     slug: &str,
     name: &str,
     description: &str,
     sources: &[PathBuf],
-) -> Result<RefModBundle, RefModError> {
+) -> Result<(RefModBundle, NormalizeReport), RefModError> {
     save_refmod_card_in(&refmods_dir(), slug, name, description, sources)
 }
 
@@ -211,7 +233,7 @@ pub fn save_refmod_card_in(
     name: &str,
     description: &str,
     sources: &[PathBuf],
-) -> Result<RefModBundle, RefModError> {
+) -> Result<(RefModBundle, NormalizeReport), RefModError> {
     // Кадры декодируются ДО всякой записи: битый источник — честный Io-отказ,
     // при котором существующая карточка не тронута.
     let mut images = Vec::with_capacity(sources.len());
@@ -236,7 +258,7 @@ pub fn save_refmod_card_images_in(
     name: &str,
     description: &str,
     images: &[image::DynamicImage],
-) -> Result<RefModBundle, RefModError> {
+) -> Result<(RefModBundle, NormalizeReport), RefModError> {
     validate_slug(slug)?;
     let name = name.trim();
     if name.is_empty() {
@@ -279,12 +301,31 @@ pub fn save_refmod_card_images_in(
         .map_err(|e| RefModError::Io(format!("{}: {}", frames_dir.display(), e)))?;
 
     let mut frames = Vec::with_capacity(images.len());
+    let mut report = NormalizeReport::default();
     for (index, img) in images.iter().enumerate() {
+        let (src_w, src_h) = (img.width(), img.height());
         let normalized = normalize_frame(img.clone());
         let dst = frames_dir.join(format!("frame_{:02}.png", index + 1));
         normalized.save_with_format(&dst, image::ImageFormat::Png).map_err(|e| {
             RefModError::Io(format!("refmod: не удалось сохранить кадр {}: {}", dst.display(), e))
         })?;
+        if (normalized.width(), normalized.height()) != (src_w, src_h) {
+            report.resized.push(FrameResize {
+                frame_file: dst.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                src_w,
+                src_h,
+                dst_w: normalized.width(),
+                dst_h: normalized.height(),
+            });
+            log::info!(
+                "[REFMOD] кадр {} изменён нормализацией: {}x{} → {}x{}",
+                dst.file_name().unwrap_or_default().to_string_lossy(),
+                src_w,
+                src_h,
+                normalized.width(),
+                normalized.height()
+            );
+        }
         frames.push(dst);
     }
 
@@ -300,18 +341,21 @@ pub fn save_refmod_card_images_in(
     };
     write_meta(&card_dir, &meta)?;
 
-    Ok(RefModBundle {
-        slug: slug.trim().to_string(),
-        name: meta.name,
-        description: meta.description,
-        frames,
-        // Голос: унаследованный при перезаписи, иначе нет. Новый голос —
-        // только через voice-фн (set_card_voice_in и др.) — единая точка мутации.
-        voice: inherited_voice
-            .as_ref()
-            .map(|(f, _)| card_dir.join(f)),
-        voice_desc: inherited_voice.as_ref().and_then(|(_, d)| d.clone()),
-    })
+    Ok((
+        RefModBundle {
+            slug: slug.trim().to_string(),
+            name: meta.name,
+            description: meta.description,
+            frames,
+            // Голос: унаследованный при перезаписи, иначе нет. Новый голос —
+            // только через voice-фн (set_card_voice_in и др.) — единая точка мутации.
+            voice: inherited_voice
+                .as_ref()
+                .map(|(f, _)| card_dir.join(f)),
+            voice_desc: inherited_voice.as_ref().and_then(|(_, d)| d.clone()),
+        },
+        report,
+    ))
 }
 
 fn write_meta(card_dir: &Path, meta: &RefModMeta) -> Result<(), RefModError> {

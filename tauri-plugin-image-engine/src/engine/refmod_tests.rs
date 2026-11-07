@@ -86,7 +86,7 @@ fn save_load_roundtrip_normalizes_frames() {
     let s1 = write_source(&src_dir, "a.png", 100, 64); // → 96x64 (кратно 32)
     let s2 = write_source(&src_dir, "b.png", 4096, 2160); // → 1024x544
 
-    let card = save_refmod_card_in(&root, "test_char", "Тест Чар", "тестовое описание", &[
+    let (card, report) = save_refmod_card_in(&root, "test_char", "Тест Чар", "тестовое описание", &[
         s1.clone(),
         s2.clone(),
     ])
@@ -169,7 +169,7 @@ fn load_rejects_off_grid_and_oversized_cards() {
     let root = temp_root("corrupt");
     let src = write_source(&root, "s.png", 64, 64);
     // Карточка с кадром, стороны которого НЕ кратны 32 (подмена вручную).
-    let card = save_refmod_card_in(&root, "test_char", "N", "", &[src]).unwrap();
+    let card = save_refmod_card_in(&root, "test_char", "N", "", &[src]).unwrap().0;
     let frame = &card.frames[0];
     image::DynamicImage::new_rgb8(50, 50)
         .save_with_format(frame, image::ImageFormat::Png)
@@ -239,7 +239,7 @@ fn engine_ref_paths_takes_all_frames() {
     let sources: Vec<PathBuf> = (0..5)
         .map(|i| write_source(&src_dir, &format!("s{}.png", i), 64, 64))
         .collect();
-    let card = save_refmod_card_in(&root, "test_char", "Пять", "", &sources).unwrap();
+    let (card, _) = save_refmod_card_in(&root, "test_char", "Пять", "", &sources).unwrap();
     assert_eq!(card.frames.len(), 5);
     let paths = engine_ref_paths(&card);
     assert_eq!(paths.len(), 5, "все 5 кадров идут в движок, не первые 3");
@@ -250,8 +250,46 @@ fn engine_ref_paths_takes_all_frames() {
     let full: Vec<PathBuf> = (0..FRAMES_MAX)
         .map(|i| write_source(&src_dir, &format!("f{}.png", i), 64, 64))
         .collect();
-    let card8 = save_refmod_card_in(&root, "test_char8", "Восемь", "", &full).unwrap();
+    let card8 = save_refmod_card_in(&root, "test_char8", "Восемь", "", &full).unwrap().0;
     assert_eq!(engine_ref_paths(&card8).len(), FRAMES_MAX);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+// ── Отчёт нормализации (PRP 07.11.26: сжатие кадров карточки — видимым) ──
+
+#[test]
+fn normalize_report_tracks_resized_frames() {
+    let root = temp_root("report");
+    let src_dir = root.join("src");
+    std::fs::create_dir_all(&src_dir).unwrap();
+    // Оверсайз: длинная сторона >1024 → сжатие.
+    let s1 = write_source(&src_dir, "big.png", 1024, 2048); // → 512x1024
+    // Уже в сетке: в отчёт не попадает.
+    let s2 = write_source(&src_dir, "grid.png", 320, 288); // → 320x288
+    // Мелкий невыровненный: растяжение к сетке 32 (площадь растёт).
+    let s3 = write_source(&src_dir, "off_grid.png", 305, 528); // → 320x544
+    let (_, report) = save_refmod_card_in(&root, "test_char", "Отчёт", "", &[s1, s2, s3])
+        .expect("карточка сохраняется");
+    assert_eq!(
+        report.resized,
+        vec![
+            FrameResize {
+                frame_file: "frame_01.png".into(),
+                src_w: 1024,
+                src_h: 2048,
+                dst_w: 512,
+                dst_h: 1024,
+            },
+            FrameResize {
+                frame_file: "frame_03.png".into(),
+                src_w: 305,
+                src_h: 528,
+                dst_w: 320,
+                dst_h: 544,
+            },
+        ],
+        "сеточный кадр в отчёт не попадает, oversize → сжатие, невыровненный → растяжение"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 

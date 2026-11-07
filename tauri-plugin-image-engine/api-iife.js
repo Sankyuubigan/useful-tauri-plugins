@@ -1327,7 +1327,6 @@ ${missing.join("\n")}`;
       steps: opts.steps ?? null,
       cfgScale: opts.cfgScale ?? null,
       seed: opts.seed ?? null,
-      finalQuality: opts.finalQuality ?? null,
       strength: opts.strength ?? null,
       vaeTiling: opts.vaeTiling ?? null,
       outPath: opts.outPath ?? null,

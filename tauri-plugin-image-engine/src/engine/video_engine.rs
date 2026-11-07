@@ -20,7 +20,8 @@
 //!   `init_image`/`end_image`; `control_frames` H3 не поддерживает — пусто.
 //! - `lora[]` подтверждён бенчем 26.10.26 (600/600 тензоров DMAD applied,
 //!   dmad4 130.8 с против ctrl20f 505.6 с): поле шлётся из сэмплинг-плана
-//!   `sampling_plan_for_quality` (draft с файлом роли lora_draft); путь
+//!   `sampling_plan_for_quality` (draft с файлом роли lora_draft, вес
+//!   turbo_lora_multiplier каталога — 0.8 с 06.11.26, X8b); путь
 //!   относительно `--lora-model-dir` (спавн, папка бандла).
 //!
 //! Жизнь — per-request spawn: создал → сгенерировал → Drop убил дерево.
@@ -110,8 +111,10 @@ pub fn resolve_mode(init: Option<&str>, end: Option<&str>, refs: &[String]) -> R
 }
 
 /// Одна LoRA vid_gen-запроса. `path` — ОТНОСИТЕЛЬНО каталога LoRA сервера
-/// (`--lora-model-dir`; контракт temp/api.md:1201-1207).
-#[derive(Clone, Debug)]
+/// (`--lora-model-dir`; контракт temp/api.md:1201-1207). Сериализуемость —
+/// для честного реплея: план драфта хранится в памяти последнего запроса
+/// (LastVideoReq хоста, 2.3 Euler-PRP).
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VideoLoraRef {
     pub path: String,
     pub multiplier: f32,
@@ -119,13 +122,14 @@ pub struct VideoLoraRef {
 
 /// Сэмплинг-план vid_gen: что именно уйдёт в `sample_params` и `lora[]`
 /// payload'а. Единственный источник шагов/сэмплера/шедулера/shift —
-/// `sampling_plan_for_quality` (каталог, SSOT).
-#[derive(Clone, Debug)]
+/// `sampling_plan_for_quality` (каталог, SSOT). Сериализуемость — см.
+/// VideoLoraRef (реплей драфт-плана из памяти рефайна).
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct VideoSamplingPlan {
     pub steps: u32,
-    /// "euler" (final / draft-без-LoRA) | "lcm" (турбо-точка DMAD).
+    /// "euler" (везде с 06.11.26: точка каталога X8b и draft-без-LoRA).
     pub sample_method: String,
-    /// "discrete" (euler-путь) | "simple" (турбо-точка DMAD).
+    /// "beta" (точка каталога, X8b) | "discrete" (draft-без-LoRA).
     pub scheduler: String,
     /// None = НЕ слать ключ (модельный дефолт). 0.0 у H3 вырождает сигма-сетку
     /// → CUDA crash — неположительный shift сюда не попадает (валидатор каталога).
@@ -156,7 +160,7 @@ pub struct VideoRequest {
     pub ref_audios_b64: Vec<String>,
     pub width: u32,
     pub height: u32,
-    /// Шаги (draft/final решает командный слой через sampling_plan_for_quality).
+    /// Шаги драфта (решает sampling_plan_for_quality — каталог, SSOT).
     pub steps: u32,
     pub cfg_scale: f32,
     pub seed: i64,
@@ -274,33 +278,30 @@ pub(crate) fn video_lora_spawn_dir(
     }
 }
 
-/// Сэмплинг-план по качеству (SSOT шагов/сэмплера/шедулера/shift/LoRA — каталог):
-/// - final → {steps_final, сэмплер каталога (euler), discrete, shift не шлётся, без LoRA};
-/// - draft + файл роли `lora_draft` есть в bundle_dir → турбо-точка каталога
-///   {steps_draft, turbo_sampler, turbo_scheduler, Some(turbo_flow_shift), lora_draft ×1.0};
-/// - draft без LoRA (файла нет / роль не в каталоге) → {steps_draft_nolora,
+/// Сэмплинг-план драфта (SSOT шагов/сэмплера/шедулера/shift/LoRA — каталог):
+/// - файл роли `lora_draft` есть в bundle_dir → точка каталога
+///   {steps_draft, turbo_sampler, turbo_scheduler, Some(turbo_flow_shift),
+///   lora_draft × turbo_lora_multiplier (0.8 — X8b 06.11.26)};
+/// - файла нет (или роль не в каталоге) → {steps_draft_nolora,
 ///   сэмплер каталога, discrete, shift не шлётся, без LoRA}.
+/// (Качество-режим final (euler 20) удалён 07.11.26 — блок 2.5 Euler-PRP:
+/// качественный путь = драфт + рефайн, третьего режима нет.)
 pub fn sampling_plan_for_quality(
     entry: &VideoBundleEntry,
     bundle_dir: &Path,
-    final_quality: bool,
 ) -> VideoSamplingPlan {
     let p = &entry.preset;
-    let base = VideoSamplingPlan {
-        steps: if final_quality { p.steps_final } else { p.steps_draft_nolora },
-        sample_method: p.sampler.clone(),
-        scheduler: "discrete".to_string(),
-        flow_shift: None,
-        lora: Vec::new(),
-    };
-    if final_quality {
-        return base;
-    }
     let lora_ready = lora_draft_file(entry)
         .map(|f| bundle_dir.join(&f.filename).exists())
         .unwrap_or(false);
     if !lora_ready {
-        return base;
+        return VideoSamplingPlan {
+            steps: p.steps_draft_nolora,
+            sample_method: p.sampler.clone(),
+            scheduler: "discrete".to_string(),
+            flow_shift: None,
+            lora: Vec::new(),
+        };
     }
     let lora_path = lora_draft_file(entry)
         .map(|f| f.filename.clone())
@@ -310,7 +311,10 @@ pub fn sampling_plan_for_quality(
         sample_method: p.turbo_sampler.clone(),
         scheduler: p.turbo_scheduler.clone(),
         flow_shift: Some(p.turbo_flow_shift),
-        lora: vec![VideoLoraRef { path: lora_path, multiplier: 1.0 }],
+        lora: vec![VideoLoraRef {
+            path: lora_path,
+            multiplier: p.turbo_lora_multiplier,
+        }],
     }
 }
 
@@ -1371,7 +1375,6 @@ pub fn generate_video_simple<L>(
     entry: &VideoBundleEntry,
     prompt: &str,
     seconds: u32,
-    final_quality: bool,
     init_path: Option<&str>,
     ref_paths: &[String],
     ref_image_size_max: bool,
@@ -1401,7 +1404,7 @@ where
         ));
         secs = preset.max_seconds;
     }
-    let plan = sampling_plan_for_quality(entry, bundle_dir, final_quality);
+    let plan = sampling_plan_for_quality(entry, bundle_dir);
     let mut lora: Vec<VideoLoraRef> = plan.lora;
     lora.extend(user_loras.iter().map(|s| VideoLoraRef {
         path: s.path.clone(),
@@ -1958,23 +1961,16 @@ mod tests {
         // Роль lora_draft в каталоге есть, но файла в bundle_dir нет (хелпер
         // lora-файлы не создаёт) → draft уходит в fallback: nolora-шаги,
         // euler/discrete, shift не шлётся, без LoRA.
-        let draft = sampling_plan_for_quality(&entry, &dir, false);
+        let draft = sampling_plan_for_quality(&entry, &dir);
         assert_eq!(draft.steps, entry.preset.steps_draft_nolora);
         assert_eq!(draft.sample_method, "euler");
         assert_eq!(draft.scheduler, "discrete");
         assert!(draft.flow_shift.is_none());
         assert!(draft.lora.is_empty());
-        // final — лестница качества: steps_final, euler/discrete, без LoRA.
-        let fin = sampling_plan_for_quality(&entry, &dir, true);
-        assert_eq!(fin.steps, entry.preset.steps_final);
-        assert_eq!(fin.sample_method, "euler");
-        assert_eq!(fin.scheduler, "discrete");
-        assert!(fin.flow_shift.is_none());
-        assert!(fin.lora.is_empty());
-        // Синтетика с файлом lora_draft на диске → турбо-точка каталога:
-        // steps_draft, lcm/simple/shift 12, одна LoRA ×1.0. Роль в каталоге уже
-        // есть (DMAD) — переименовываем её файл на заглушку, а не дублируем роль
-        // (find берёт первую lora_draft).
+        // Синтетика с файлом lora_draft на диске → точка каталога:
+        // steps_draft, euler/beta/shift 12, одна LoRA ×0.8 (X8b 06.11.26).
+        // Роль в каталоге уже есть (DMAD) — переименовываем её файл на заглушку,
+        // а не дублируем роль (find берёт первую lora_draft).
         let mut with_lora = entry.clone();
         let lora_ref = with_lora
             .files
@@ -1984,14 +1980,14 @@ mod tests {
         lora_ref.filename = "fake_turbo_lora.safetensors".to_string();
         let p = dir.join("fake_turbo_lora.safetensors");
         std::fs::write(&p, b"lora-stub").expect("lora stub создан");
-        let turbo = sampling_plan_for_quality(&with_lora, &dir, false);
+        let turbo = sampling_plan_for_quality(&with_lora, &dir);
         assert_eq!(turbo.steps, entry.preset.steps_draft);
-        assert_eq!(turbo.sample_method, "lcm");
-        assert_eq!(turbo.scheduler, "simple");
+        assert_eq!(turbo.sample_method, "euler");
+        assert_eq!(turbo.scheduler, "beta");
         assert_eq!(turbo.flow_shift, Some(12.0));
         assert_eq!(turbo.lora.len(), 1);
         assert_eq!(turbo.lora[0].path, "fake_turbo_lora.safetensors");
-        assert!((turbo.lora[0].multiplier - 1.0).abs() < f32::EPSILON);
+        assert!((turbo.lora[0].multiplier - 0.8).abs() < f32::EPSILON);
         let _ = std::fs::remove_file(&p);
     }
 
@@ -2044,9 +2040,9 @@ mod tests {
         assert_eq!(body["ref_images"], serde_json::json!([]));
     }
 
-    /// Контракт турбо-ветки (DMAD): lcm/simple/shift 12 уходят в payload,
-    /// lora[] содержит путь + множитель + is_high_noise:false (формат бенча
-    /// 26.10.26, подтверждён логом 600/600 applied).
+    /// Контракт драфт-точки с Turbo-LoRA: euler/beta/shift 12 уходят в payload,
+    /// lora[] содержит путь + множитель 0.8 (X8b 06.11.26) + is_high_noise:false
+    /// (формат бенча 26.10.26, подтверждён логом 600/600 applied).
     #[test]
     fn payload_lora_turbo_contract() {
         let p = VideoRequest {
@@ -2059,33 +2055,41 @@ mod tests {
             ref_audios_b64: vec![],
             width: 864,
             height: 480,
-            steps: 4,
+            steps: 6,
             cfg_scale: 1.0,
             seed: 42,
             video_frames: seconds_to_frames(5, 24),
             fps: 24,
             vae_tiling: true,
             strength: 0.75,
-            sample_method: "lcm".into(),
-            scheduler: "simple".into(),
+            sample_method: "euler".into(),
+            scheduler: "beta".into(),
             flow_shift: Some(12.0),
             lora: vec![VideoLoraRef {
                 path: "dmad_minimax_h3_4step_full_critic.safetensors".into(),
-                multiplier: 1.0,
+                multiplier: 0.8,
             }],
         };
         let body = build_payload(&p).expect("turbo payload собран");
         assert_eq!(body["sample_params"]["flow_shift"], 12.0);
-        assert_eq!(body["sample_params"]["sample_method"], "lcm");
-        assert_eq!(body["sample_params"]["scheduler"], "simple");
-        assert_eq!(body["sample_params"]["sample_steps"], 4);
+        assert_eq!(body["sample_params"]["sample_method"], "euler");
+        assert_eq!(body["sample_params"]["scheduler"], "beta");
+        assert_eq!(body["sample_params"]["sample_steps"], 6);
+        // multiplier — f32: сравнение по значению с допуском (0.8f32 ≠ 0.8f64).
+        let lora_arr = body["lora"].as_array().expect("lora массив");
+        assert_eq!(lora_arr.len(), 1, "одна turbo-лора");
+        let lora0 = &lora_arr[0];
         assert_eq!(
-            body["lora"],
-            serde_json::json!([{
-                "path": "dmad_minimax_h3_4step_full_critic.safetensors",
-                "multiplier": 1.0,
-                "is_high_noise": false
-            }])
+            lora0["path"],
+            "dmad_minimax_h3_4step_full_critic.safetensors",
+            "путь turbo-лоры каталога"
+        );
+        assert_eq!(lora0["is_high_noise"], false);
+        let mult = lora0["multiplier"].as_f64().expect("multiplier число");
+        assert!(
+            (mult - 0.8).abs() < 1e-3,
+            "вес turbo-лоры 0.8 (X8b), получено {}",
+            mult
         );
     }
 
@@ -2405,7 +2409,6 @@ mod tests {
             &entry,
             "тестовый промпт",
             5,
-            false,
             Some(ghost.to_str().unwrap()),
             &[],
             false,
@@ -2434,7 +2437,6 @@ mod tests {
             &entry,
             "тестовый промпт",
             5,
-            false,
             None,
             &refs,
             false,
@@ -2457,7 +2459,6 @@ mod tests {
             &entry,
             "тестовый промпт",
             5,
-            false,
             Some(ghost.to_str().unwrap()),
             &refs,
             false,

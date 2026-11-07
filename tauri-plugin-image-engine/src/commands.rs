@@ -1094,8 +1094,8 @@ fn default_video_out_path(bundle_dir: &Path) -> PathBuf {
 
 /// vid_gen-запрос из GUI: промпт + опциональные кадры (локальные пути или
 /// data-URL') + параметры. Дефолты размеров/качества/seed/fps — ИЗ ПРЕСЕТА
-/// каталога; draft/final решает sampling_plan_for_quality по наличию файла
-/// lora_draft (турбо-точка lcm/simple/shift из каталога).
+/// каталога; сэмплинг решает sampling_plan_for_quality по наличию файла
+/// lora_draft (точка euler/beta/shift/×0.8 из каталога — X8b 06.11.26).
 #[tauri::command]
 pub async fn generate_video(
     app: AppHandle,
@@ -1111,12 +1111,10 @@ pub async fn generate_video(
     seconds: Option<u32>,
     width: Option<u32>,
     height: Option<u32>,
-    // steps: явные шаги — приоритетнее final_quality.
+    // steps: явные шаги — приоритетнее плана каталога.
     steps: Option<u32>,
     cfg_scale: Option<f32>,
     seed: Option<i64>,
-    // final_quality: false/None = draft (steps_draft/_nolora), true = steps_final.
-    final_quality: Option<bool>,
     // strength: image-to-video сила (init/end кадры); дефолт 0.75.
     strength: Option<f32>,
     vae_tiling: Option<bool>,
@@ -1169,7 +1167,7 @@ pub async fn generate_video(
     let sd = seed.unwrap_or(preset.seed);
     // Сэмплинг-план (шаги/сэмплер/шедулер/shift/LoRA) — из каталога; явные
     // шаги переопределяют ТОЛЬКО шаги, остальная турбо-точка не трогается.
-    let mut plan = engine::sampling_plan_for_quality(&entry, &bdir, final_quality.unwrap_or(false));
+    let mut plan = engine::sampling_plan_for_quality(&entry, &bdir);
     if let Some(s) = steps {
         plan.steps = s;
     }
@@ -1253,14 +1251,13 @@ pub async fn generate_video(
     let out = out_path.map(PathBuf::from).unwrap_or_else(|| default_video_out_path(&bdir));
     let log_cb = |msg: String| log::info!("[VID] {}", msg);
     log::info!(
-        "[VID] generate_video «{}»: {}x{}, steps {}, {} сек @ {} fps (final={})",
+        "[VID] generate_video «{}»: {}x{}, steps {}, {} сек @ {} fps",
         prompt.chars().take(60).collect::<String>(),
         w,
         h,
         st,
         secs,
-        fps,
-        final_quality.unwrap_or(false)
+        fps
     );
     tokio::task::spawn_blocking(move || {
         // Единовременность media-генерации (gen_guard.rs): панель плагина не

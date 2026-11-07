@@ -14,9 +14,10 @@
 //!
 //! Конфиг-паритет с победителем бенча E (test/bench/video_hires/):
 //! драфт-план каталога (turbo: 4 шага lcm/simple/shift12 + DMAD) →
-//! `--hires --hires-width 1216 --hires-height 672 --hires-steps 4
+//! `--hires --hires-width 1152 --hires-height 640 --hires-steps 4
 //! --hires-denoising-strength 0.4` + learned-апскейлер (если файл есть в
-//! bundle_dir; иначе встроенный — бенч C14: работает, чуть «рисованнее»).
+//! bundle_dir; иначе ЯВНЫЙ «Latent (bicubic)» — фикс 07.11.26 против
+//! дефолтной билинейки движка, бывший «встроенный» — бенч C14).
 //! 412 с на 5-сек клип, идентичность персонажа сохранена.
 
 use std::path::{Path, PathBuf};
@@ -36,7 +37,7 @@ use crate::engine::process_util::{
 use crate::engine::sdcpp_installer;
 use crate::engine::video_engine::{
     free_ram_gb, pipe_log, pipe_log_with_tail, preflight_video, sampling_plan_for_quality,
-    video_lora_spawn_dir, VideoGenResult, VIDEO_GEN_TIMEOUT,
+    video_lora_spawn_dir, VideoGenResult, VideoSamplingPlan, VIDEO_GEN_TIMEOUT,
 };
 
 /// Маркер Err-строки рефайна: после него идут последние строки stderr движка.
@@ -46,6 +47,14 @@ pub const ENGINE_LOG_REASON: &str = "Причина по логу движка:"
 
 /// Размер хвоста stderr, хранимого для Err-строки (строк движка).
 const ENGINE_LOG_TAIL_LINES: usize = 8;
+
+/// Явный fallback-апскейлер, когда learned не используется (голос выключает его —
+/// voice_forces_builtin_upscaler — или файла нет). Без флага движок берёт дефолт
+/// «Latent» = Bilinear (upstream common.cpp:1187, video.cpp:1357) — латент
+/// растягивается низкочастотно, после рефайна «мыло» (владелец 07.11.26: «как
+/// 140p растянули до фуллашди»). «Latent (bicubic)» — из примеров доки движка
+/// (minimax_h3.md:121); для H3 разрешён (video.cpp:1327, интерполирующий класс).
+pub const HIRES_FALLBACK_UPSCALER: &str = "Latent (bicubic)";
 
 /// Ресолв sd-cli.exe: зеркало VideoEngine::new — вариант-каталог инсталлера
 /// (backends/<source>/<variant>/sd-cli.exe), фоллбэк — легаси рядом с
@@ -275,6 +284,11 @@ pub(crate) fn build_refine_args(
                 .map(|s| s.to_string_lossy().into_owned())
                 .unwrap_or_else(|| up.to_string_lossy().into_owned()),
         );
+    } else {
+        // Без learned — явный interpolating-апскейлер: дефолт движка «Latent» =
+        // Bilinear (см. HIRES_FALLBACK_UPSCALER) — причина «мыла» после рефайна.
+        args.push("--hires-upscaler".into());
+        args.push(HIRES_FALLBACK_UPSCALER.into());
     }
     args.push("-o".into());
     args.push(out_path.to_string_lossy().into_owned());
@@ -294,6 +308,11 @@ pub fn generate_video_refine<L>(
     bundle_dir: &Path,
     entry: &VideoBundleEntry,
     refine: &VideoRefinePreset,
+    // Честный реплей (2.3 Euler-PRP): план драфта, зафиксированный в памяти
+    // последнего запроса на момент генерации. None = память старого формата
+    // (до поля draft_plan) — фолбэк на текущий каталог: драфт до смены каталога
+    // реплеится новым планом (поведение задокументировано, Euler-PRP §2.3).
+    draft_plan: Option<VideoSamplingPlan>,
     prompt: &str,
     seconds: u32,
     seed: i64,
@@ -380,11 +399,20 @@ where
         .get("audio_vae")
         .ok_or("в бандле нет роли audio_vae")?;
 
-    // Драфт-план каталога (турбо-точка или euler-фоллбэк): replay боевого
-    // драфта, не бенч-константа.
-    let plan = sampling_plan_for_quality(entry, bundle_dir, false);
+    // Драфт-план: из памяти последнего запроса (честный реплей, 2.3 Euler-PRP —
+    // план зафиксирован на момент драфта; смена каталога не переписывает прошлые
+    // видео). Фолбэк — текущий каталог: памяти старого формата (без draft_plan)
+    // реплеятся новым планом каталога.
+    let (plan, plan_source) = match draft_plan {
+        Some(p) => (p, "память запроса"),
+        None => (
+            sampling_plan_for_quality(entry, bundle_dir),
+            "текущий каталог (старая память без плана)",
+        ),
+    };
     log_cb(format!(
-        "🎬 драфт-план рефайна: steps={}, {} / {}, shift={:?}, turbo-LoRA {}",
+        "🎬 драфт-план рефайна ({}): steps={}, {} / {}, shift={:?}, turbo-LoRA {}",
+        plan_source,
         plan.steps,
         plan.sample_method,
         plan.scheduler,
@@ -575,9 +603,9 @@ mod tests {
 
     fn refine_preset() -> VideoRefinePreset {
         VideoRefinePreset {
-            width: 1216,
-            height: 672,
-            steps: 4,
+            width: 1152,
+            height: 640,
+            steps: 6,
             denoising_strength: 0.4,
             upscaler_filename: Some("minimax_h3_latent_upscaler_3d_conv_v1_bf16".to_string()),
         }
@@ -617,9 +645,9 @@ mod tests {
             864, // width (драфт)
             480, // height (драфт)
             1.0, // cfg
-            4,   // steps (турбо)
-            "lcm",
-            "simple",
+            6,   // steps (точка каталога X8b)
+            "euler",
+            "beta",
             Some(12.0),
             777, // seed
             &["C:/refs/f1.png".to_string(), "C:/refs/f2.png".to_string()],
@@ -642,10 +670,10 @@ mod tests {
         assert_eq!(value_after(&args, "--video-frames"), Some("120"));
         assert_eq!(value_after(&args, "-W"), Some("864"));
         assert_eq!(value_after(&args, "-H"), Some("480"));
-        // Турбо-план драфта + сид.
-        assert_eq!(value_after(&args, "--steps"), Some("4"));
-        assert_eq!(value_after(&args, "--sampling-method"), Some("lcm"));
-        assert_eq!(value_after(&args, "--scheduler"), Some("simple"));
+        // Точка каталога X8b (euler/beta/6) + сид.
+        assert_eq!(value_after(&args, "--steps"), Some("6"));
+        assert_eq!(value_after(&args, "--sampling-method"), Some("euler"));
+        assert_eq!(value_after(&args, "--scheduler"), Some("beta"));
         assert_eq!(value_after(&args, "--flow-shift"), Some("12"));
         assert_eq!(value_after(&args, "-s"), Some("777"));
         // Референсы: по -r на каждый + ref_image_size=max.
@@ -661,7 +689,7 @@ mod tests {
         assert!(args.iter().any(|a| a == "--hires"));
         assert_eq!(value_after(&args, "--hires-width"), Some("1152"));
         assert_eq!(value_after(&args, "--hires-height"), Some("640"));
-        assert_eq!(value_after(&args, "--hires-steps"), Some("4"));
+        assert_eq!(value_after(&args, "--hires-steps"), Some("6"));
         assert_eq!(value_after(&args, "--hires-denoising-strength"), Some("0.4"));
         // Learned-апскейлер: каталог + стем БЕЗ расширения.
         assert_eq!(
@@ -676,15 +704,15 @@ mod tests {
         assert_eq!(value_after(&args, "-o"), Some("C:/out/clip.webm"));
     }
 
-    /// Опциональные части не подставляются пустыми: без learned-апскейлера нет
-    /// --hires-upscaler*; без shift нет --flow-shift; без рефов нет -r и
-    /// ref-image-args; без lora-dir нет --lora-model-dir.
+    /// Опциональные части не подставляются пустыми: без learned-апскейлера —
+    /// явный bicubic БЕЗ --hires-upscalers-dir; без shift нет --flow-shift; без
+    /// рефов нет -r и ref-image-args; без lora-dir нет --lora-model-dir.
     #[test]
     fn refine_args_omit_absent_optionals() {
         let refine = VideoRefinePreset {
-            width: 1216,
-            height: 672,
-            steps: 4,
+            width: 1152,
+            height: 640,
+            steps: 6,
             denoising_strength: 0.4,
             upscaler_filename: None,
         };
@@ -713,7 +741,11 @@ mod tests {
             &refine,
             None,
         );
-        assert!(positions(&args, "--hires-upscaler").is_empty());
+        assert_eq!(
+            value_after(&args, "--hires-upscaler"),
+            Some(HIRES_FALLBACK_UPSCALER),
+            "без learned — явный bicubic (фикс дефолтной билинейки 07.11.26)"
+        );
         assert!(positions(&args, "--hires-upscalers-dir").is_empty());
         assert!(positions(&args, "--flow-shift").is_empty());
         assert!(positions(&args, "-r").is_empty());

@@ -278,7 +278,6 @@ export interface VideoFileEntry {
 export interface VideoPreset {
   steps_draft: number
   steps_draft_nolora: number
-  steps_final: number
   fps: number
   max_seconds: number
   cfg_scale: number
@@ -356,12 +355,10 @@ export interface GenerateVideoOptions {
   seconds?: number | null
   width?: number | null
   height?: number | null
-  /** Явные шаги — приоритетнее finalQuality. */
+  /** Явные шаги — приоритетнее плана каталога. */
   steps?: number | null
   cfgScale?: number | null
   seed?: number | null
-  /** false/по умолчанию = draft; true = steps_final. */
-  finalQuality?: boolean | null
   /** image-to-video сила; по умолчанию 0.75. */
   strength?: number | null
   vaeTiling?: boolean | null
@@ -383,7 +380,6 @@ export function generateVideo(opts: GenerateVideoOptions): Promise<VideoGenResul
     steps: opts.steps ?? null,
     cfgScale: opts.cfgScale ?? null,
     seed: opts.seed ?? null,
-    finalQuality: opts.finalQuality ?? null,
     strength: opts.strength ?? null,
     vaeTiling: opts.vaeTiling ?? null,
     outPath: opts.outPath ?? null,

@@ -417,9 +417,11 @@ pub fn bundle_weights_files(
 /// Параметры рефайна (нативный «Latent hires second pass» движка, PR #2249,
 /// движок ≥ master-1049): драфт пресета → латент-апскейл до (width×height) →
 /// короткий второй проход. SSOT каталога — код флагов цифр не знает.
-/// Замер-основание: бенч 05.11.26 (test/bench/video_hires/, кейс E):
-/// 1216×672, 4 шага, strength 0.4, learned-апскейлер — 412 с на 5-сек клип,
-/// идентичность персонажа сохранена, детали строго лучше драфта.
+/// Замер-основание: бенч 05.11.26 (test/bench/video_hires/, кейс E:
+/// 4 шага, strength 0.4, learned-апскейлер — 412 с на 5-сек клип на тогдашнем
+/// холсте 1216×672, идентичность персонажа сохранена, детали строго лучше драфта).
+/// Холст 1152×640 с 06.11.26 (коммит 424405a): изотропный ×4/3 к драфту 864×480,
+/// обе стороны кратны 64 — прежний 1216×672 анизотропен и давал мыло 2-го прохода.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct VideoRefinePreset {
     /// Ширина после латент-апскейла (кратна 32 — грид движка).
@@ -439,13 +441,14 @@ pub struct VideoRefinePreset {
 
 /// Дефолтный пресет генерации видео-бандла (SSOT — тот же принцип, что у image).
 ///
-/// steps_draft — шаги черновика при наличии Turbo-LoRA (операционная точка
-/// DMAD 4-step, подтверждена бенчем 26.10.26: 130.8 с против 505.6 с у final,
-/// 3.87×); если `lora_draft`-файл отсутствует в бандле — движок берёт
-/// steps_draft_nolora (6) и логирует факт. steps_final — качество-режим
-/// (20 шагов, замер ролика Ngc6vmyGOyU). Турбо-точка сэмплинга —
-/// turbo_sampler/turbo_scheduler/turbo_flow_shift (lcm/simple/12.0); euler
-/// остаётся путём final и draft-без-LoRA.
+/// steps_draft — шаги черновика при наличии Turbo-LoRA (точка каталога:
+/// euler/beta/shift 12/лора 0.8 — X8b 06.11.26, замена LCM-мыла; исторический
+/// бенч DMAD 26.10.26: 130.8 с против 505.6 с у 20-шагового final, 3.87×);
+/// если `lora_draft`-файл отсутствует в бандле — движок берёт
+/// steps_draft_nolora (euler/discrete, без shift) и логирует факт.
+/// Качество-режим final (euler 20) удалён 07.11.26 (блок 2.5 Euler-PRP):
+/// качественный путь = драфт + рефайн, третьего режима нет. Турбо-точка
+/// сэмплинга — turbo_sampler/turbo_scheduler/turbo_flow_shift.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct VideoPreset {
     /// Шаги черновика при наличии Turbo-LoRA (из каталога, не из кода).
@@ -454,9 +457,6 @@ pub struct VideoPreset {
     /// Шаги черновика БЕЗ Turbo-LoRA (fallback), тоже из каталога.
     #[serde(default = "v_steps_draft_nolora")]
     pub steps_draft_nolora: u32,
-    /// Шаги финала (качество-режим).
-    #[serde(default = "v_steps_final")]
-    pub steps_final: u32,
     /// fps потока.
     #[serde(default = "v_fps")]
     pub fps: u32,
@@ -473,16 +473,21 @@ pub struct VideoPreset {
     pub width: u32,
     #[serde(default = "v_height")]
     pub height: u32,
-    /// Сэмплер турбо-точки (DMAD: lcm; euler — НЕ операционная точка DMAD).
+    /// Сэмплер драфт-точки с Turbo-LoRA (каталог: euler — X8b 06.11.26).
     #[serde(default = "v_turbo_sampler")]
     pub turbo_sampler: String,
-    /// Шедулер турбо-точки (DMAD: simple).
+    /// Шедулер драфт-точки с Turbo-LoRA (каталог: beta — X8b 06.11.26).
     #[serde(default = "v_turbo_scheduler")]
     pub turbo_scheduler: String,
     /// flow_shift турбо-точки (DMAD: 12.0). 0.0 у H3 вырождает сигма-сетку →
     /// CUDA crash — запрещён валидатором всегда (бенч 26.10.26, diag_report).
     #[serde(default = "v_turbo_flow_shift")]
     pub turbo_flow_shift: f32,
+    /// Вес turbo-LoRA в драфт-плане (каталог: 0.8 — X8b 06.11.26, вес только
+    /// turbo-лоры; пользовательские лоры идут со своим весом поверх). serde
+    /// default 1.0 — старые файлы каталога совместимы.
+    #[serde(default = "v_turbo_lora_multiplier")]
+    pub turbo_lora_multiplier: f32,
     /// Параметры рефайна («улучшить последнее видео»): латент-апскейл + второй
     /// проход. None — семейство/бандл рефайн не умеет (тул честно откажет).
     #[serde(default)]
@@ -491,7 +496,6 @@ pub struct VideoPreset {
 
 fn v_steps_draft() -> u32 { 3 }
 fn v_steps_draft_nolora() -> u32 { 6 }
-fn v_steps_final() -> u32 { 20 }
 fn v_fps() -> u32 { 24 }
 fn v_max_seconds() -> u32 { 15 }
 fn v_cfg_scale() -> f32 { 1.0 }
@@ -502,13 +506,13 @@ fn v_height() -> u32 { 480 }
 fn v_turbo_sampler() -> String { "lcm".to_string() }
 fn v_turbo_scheduler() -> String { "simple".to_string() }
 fn v_turbo_flow_shift() -> f32 { 12.0 }
+fn v_turbo_lora_multiplier() -> f32 { 1.0 }
 
 impl Default for VideoPreset {
     fn default() -> Self {
         Self {
             steps_draft: v_steps_draft(),
             steps_draft_nolora: v_steps_draft_nolora(),
-            steps_final: v_steps_final(),
             fps: v_fps(),
             max_seconds: v_max_seconds(),
             cfg_scale: v_cfg_scale(),
@@ -519,6 +523,7 @@ impl Default for VideoPreset {
             turbo_sampler: v_turbo_sampler(),
             turbo_scheduler: v_turbo_scheduler(),
             turbo_flow_shift: v_turbo_flow_shift(),
+            turbo_lora_multiplier: v_turbo_lora_multiplier(),
             refine: None,
         }
     }
@@ -652,9 +657,6 @@ pub fn validate_video_entry(entry: &VideoBundleEntry) -> Result<(), String> {
     if entry.preset.steps_draft_nolora < entry.preset.steps_draft {
         return Err("steps_draft_nolora меньше steps_draft (fallback обязан быть не быстрее)".to_string());
     }
-    if entry.preset.steps_final < entry.preset.steps_draft_nolora {
-        return Err("steps_final меньше steps_draft_nolora".to_string());
-    }
     if entry.preset.fps == 0 {
         return Err("fps = 0".to_string());
     }
@@ -679,6 +681,14 @@ pub fn validate_video_entry(entry: &VideoBundleEntry) -> Result<(), String> {
             "turbo_flow_shift = {} — 0.0 у H3 вырождает сигма-сетку → CUDA crash (бенч 26.10.26); \
              положительный shift обязателен всегда",
             entry.preset.turbo_flow_shift
+        ));
+    }
+    // Вес turbo-лоры вне разумного диапазона — тихо изменил бы силу DMAD в
+    // драфт-плане; диапазон тот же, что у пользовательских лор (0; 2].
+    if entry.preset.turbo_lora_multiplier <= 0.0 || entry.preset.turbo_lora_multiplier > 2.0 {
+        return Err(format!(
+            "turbo_lora_multiplier = {} вне диапазона (0; 2]",
+            entry.preset.turbo_lora_multiplier
         ));
     }
     // Бандл с ролью lora_draft обязан описать турбо-точку целиком: сэмплер и
@@ -1323,9 +1333,8 @@ mod video_tests {
     fn video_buttons_follow_prp_numbers() {
         let catalog = load_video_catalog();
         for e in &catalog {
-            assert_eq!(e.preset.steps_draft, 4, "draft с Turbo-LoRA = 4 шага (операционная точка DMAD, бенч 26.10.26) у {}", e.name);
+            assert_eq!(e.preset.steps_draft, 6, "draft с Turbo-LoRA = 6 шагов euler (X8b 06.11.26) у {}", e.name);
             assert_eq!(e.preset.steps_draft_nolora, 6, "fallback без LoRA = 6 шагов у {}", e.name);
-            assert_eq!(e.preset.steps_final, 20, "final = 20 шагов у {}", e.name);
             assert_eq!(e.preset.fps, 24);
             assert_eq!(e.preset.max_seconds, 15, "ролики рекомендуют ≤15 сек у {}", e.name);
             assert!((e.preset.cfg_scale - 1.0).abs() < f32::EPSILON, "H3 дефолт cfg 1.0 у {}", e.name);
@@ -1337,8 +1346,8 @@ mod video_tests {
         }
     }
 
-    /// Turbo-точка DMAD во всех записях каталога: роль lora_draft +
-    /// lcm/simple/shift12, записи проходят валидацию (бенч 26.10.26).
+    /// Драфт-точка с Turbo-LoRA во всех записях каталога: роль lora_draft +
+    /// euler/beta/shift 12/лора 0.8 (X8b 06.11.26), записи проходят валидацию.
     #[test]
     fn turbo_fields_valid_for_all_video_entries() {
         let catalog = load_video_catalog();
@@ -1346,9 +1355,10 @@ mod video_tests {
         for e in &catalog {
             let roles: Vec<&str> = e.files.iter().map(|f| f.role.as_str()).collect();
             assert!(roles.contains(&"lora_draft"), "нет роли lora_draft у {}", e.name);
-            assert_eq!(e.preset.turbo_sampler, "lcm", "операционная точка DMAD: lcm у {}", e.name);
-            assert_eq!(e.preset.turbo_scheduler, "simple", "операционная точка DMAD: simple у {}", e.name);
+            assert_eq!(e.preset.turbo_sampler, "euler", "драфт-точка: euler (X8b) у {}", e.name);
+            assert_eq!(e.preset.turbo_scheduler, "beta", "драфт-точка: beta (X8b) у {}", e.name);
             assert!((e.preset.turbo_flow_shift - 12.0).abs() < f32::EPSILON, "турбо shift 12.0 у {}", e.name);
+            assert!((e.preset.turbo_lora_multiplier - 0.8).abs() < f32::EPSILON, "вес turbo-лоры 0.8 (X8b) у {}", e.name);
             // Полный прогон валидатора — запись с lora_draft обязана проходить.
             validate_video_entry(e).unwrap_or_else(|err| panic!("{}: {}", e.name, err));
         }
@@ -1436,8 +1446,9 @@ mod video_tests {
     }
 
     /// Рефайн-пресет (05.11.26): оба бандла объявляют `preset.refine`
-    /// (бенч-кейс E: 1216×672, 4 шага, s0.4, learned-апскейлер) и файл роли
-    /// hires_upscaler с URL обученного апскейлера. Все числа — SSOT каталога.
+    /// (холст 1152×640 — изотропный ×4/3 к драфту 864×480, обе стороны кратны 64,
+    /// 06.11.26 по X3a/X3c/X9; шаги 6, s0.4 — точка X10b 06.11.26, learned-апскейлер)
+    /// и файл роли hires_upscaler с URL обученного апскейлера. Все числа — SSOT каталога.
     #[test]
     fn video_refine_preset_declared_for_all_bundles() {
         let catalog = load_video_catalog();
@@ -1448,11 +1459,17 @@ mod video_tests {
                 .refine
                 .as_ref()
                 .unwrap_or_else(|| panic!("{}: нет preset.refine", e.name));
-            assert_eq!(refine.width, 1216, "864×480 × 1.4 у {}", e.name);
-            assert_eq!(refine.height, 672, "864×480 × 1.4 у {}", e.name);
-            assert_eq!(refine.width % 32, 0, "грид движка у {}", e.name);
-            assert_eq!(refine.height % 32, 0, "грид движка у {}", e.name);
-            assert_eq!(refine.steps, 4, "второй проход на турбо-точке DMAD у {}", e.name);
+            assert_eq!(
+                refine.width, e.preset.width * 4 / 3,
+                "изотропный ×4/3 к драфту у {}", e.name
+            );
+            assert_eq!(
+                refine.height, e.preset.height * 4 / 3,
+                "изотропный ×4/3 к драфту у {}", e.name
+            );
+            assert_eq!(refine.width % 64, 0, "обе стороны кратны 64 у {}", e.name);
+            assert_eq!(refine.height % 64, 0, "обе стороны кратны 64 у {}", e.name);
+            assert_eq!(refine.steps, 6, "второй проход euler 6 s0.4 на 1152×640 (X10b) у {}", e.name);
             assert!(
                 (refine.denoising_strength - 0.4).abs() < f32::EPSILON,
                 "s0.4 бенч-кейса E у {}",

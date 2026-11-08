@@ -7,10 +7,12 @@
 //! сам кодирует их H3 Video VAE; при рефах из карточки в payload добавляется
 //! `ref_image_args="ref_image_size=max"` (рекомендация специалиста для identity).
 //!
-//! Габариты кадров жёстко нормируются ПРИ СОХРАНЕНИИ: длинная сторона ≤1024px,
-//! обе стороны кратны 32px (сетка латентов H3). Без даунскейла 4K-фото с
-//! `ref_image_size=max` (лимит движка до 2048px по короткой стороне) кладёт
-//! DiT/VAE в OOM/своп. Файлы `*_refmod.safetensors` (латент) официальным
+//! Габариты кадров нормируются ПРИ СОХРАНЕНИИ по бюджету площади (08.11.26,
+//! решение владельца — форма подачи как у блоггера): суммарно ≤4.0 Мпикс на
+//! карточку (CARD_PX_BUDGET_TOTAL), главный кадр ≤2 Мпикс (CARD_PX_BUDGET_MAIN),
+//! обе стороны кратны 32px (сетка латентов H3). Без бюджетной нормализации
+//! 4K-фото с `ref_image_size=max` (лимит движка до 2048px по короткой стороне)
+//! кладёт DiT/VAE в OOM/своп. Файлы `*_refmod.safetensors` (латент) официальным
 //! бинарником не потребляются.
 //!
 //! Голос (Этап 3, 05.11.2026): карточка опционально несёт РОВНО ОДИН голос —
@@ -29,7 +31,7 @@
 //! `<KingOrchData>/refmods/<slug>/`:
 //! ```text
 //! meta.json            {"_format_version":1,"name":...,"description":...}
-//! frames/frame_NN.png  ... кадры, ≤8, стороны кратны 32px, длинная ≤1024px
+//! frames/frame_NN.png  ... кадры, ≤8, стороны кратны 32px, Σ ≤4 Мпикс
 //! voice.wav            голос (опционально, PCM16; ставится только voice-фн,
 //!                      правки IN-PLACE; desc — voice_desc в meta.json)
 //! ```
@@ -66,14 +68,20 @@ impl std::error::Error for RefModError {}
 
 /// Кратность сторон кадра — сетка латентов H3 Video VAE.
 pub const FRAME_SIZE_MULTIPLE: u32 = 32;
-/// Максимум длинной стороны кадра при сохранении в карточку.
-pub const FRAME_LONG_SIDE_MAX: u32 = 1024;
+/// Бюджет формы подачи карточки (08.11.26, решение владельца: «бюджет должен
+/// быть такой же» как у блога с двумя листами): суммарные пиксели всех кадров
+/// = 4.0 Мпикс — потолок композера чужого пайплайна (2 листа × 2 Мпикс).
+/// Прежнее равномерное ужатие каждого кадра до длинной ≤1024 снято: оно
+/// одинаково резало все кадры, теряя детальность главного.
+pub const CARD_PX_BUDGET_TOTAL: u64 = 4_000_000;
+/// Потолок главного кадра (frame_01) — как главный лист блоггера (2 Мпикс).
+pub const CARD_PX_BUDGET_MAIN: u64 = 2_000_000;
 /// Максимум кадров в карточке (хранение).
 pub const FRAMES_MAX: usize = 8;
 /// Сколько кадров уходит в движок за один прогон. Равен потолку формата
 /// карточки (05.11.26, решение владельца: ВСЕ кадры карточки — референсы,
-/// «мёртвых» кадров не существует; раньше брали первые 3). Потолок задаёт
-/// формат (≤8, бюджет контекста ref2va ~8192 токенов ≈ 8 кадров 1024×1024).
+/// «мёртвых» кадров не существует; раньше брали первые 3). Бюджет формы
+/// подачи задаёт CARD_PX_BUDGET_TOTAL (08.11.26, решение владельца).
 pub const FRAMES_PER_RUN: usize = FRAMES_MAX;
 /// Длинная сторона миниатюры карточки для плашки «Рефмодс» (ограничена кодом,
 /// чтобы не тянуть мегабайтные кадры в webview).
@@ -134,9 +142,10 @@ pub struct FrameResize {
     pub dst_h: u32,
 }
 
-/// Отчёт о нормализации кадров при сохранении (SSOT — точка `normalize_frame`,
-/// где известны оба размера). Пустой отчёт = ни один кадр не менял габариты
-/// (ни сжатия до ≤1024 по длинной стороне, ни выравнивания к сетке 32).
+/// Отчёт о нормализации кадров при сохранении (SSOT — точки
+/// `normalize_frames_budget`/`normalize_frame`, где известны оба размера).
+/// Пустой отчёт = ни один кадр не менял габариты (ни ужатия по бюджету
+/// площади, ни выравнивания к сетке 32).
 /// Загружаемые карточки (load/list) отчёта не имеют по определению.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct NormalizeReport {
@@ -182,21 +191,28 @@ fn round_to_multiple(value: f32, multiple: u32) -> u32 {
     ((value / multiple as f32).round().max(1.0) as u32) * multiple
 }
 
-/// Нормировать кадр под габариты карточки: длинная сторона ≤1024px,
-/// обе стороны кратны 32px. Изображение меньше лимита не растягивается
-/// по длинной стороне (scale = 1), но выравнивается кратно 32px.
-/// Публичный SSOT нормализации: используется и при сохранении, и операциями
-/// редактирования хоста (warp/splice возвращают кадр на сетку этим же кодом).
-pub fn normalize_frame(img: image::DynamicImage) -> image::DynamicImage {
+/// Привести кадр к сетке 32px с потолком площади `max_area` (форма подачи —
+/// бюджет площади, не длинной стороны). Две ветки:
+/// 1) площадь сверх потолка — ужатие scale = sqrt(max_area/area) с сеткой
+///    ЧЕРЕЗ FLOOR: обе стороны не превышают масштабных, поэтому итоговая
+///    площадь гарантированно ≤ max_area (апскейла нет);
+/// 2) кадр в бюджете — выравнивание к БЛИЖАЙШЕЙ кратности 32 (round, прежнее
+///    поведение: невыровненный кадр может растянуться на шаг сетки).
+fn normalize_to_area_cap(img: image::DynamicImage, max_area: u64) -> image::DynamicImage {
     let (w, h) = (img.width(), img.height());
-    let long = w.max(h);
-    let scale = if long > FRAME_LONG_SIDE_MAX {
-        FRAME_LONG_SIDE_MAX as f32 / long as f32
+    let area = w as u64 * h as u64;
+    let (target_w, target_h) = if area > max_area {
+        let s = (max_area as f64 / area as f64).sqrt();
+        let floor_grid = |v: f64| -> u32 {
+            ((v / FRAME_SIZE_MULTIPLE as f64).floor().max(1.0) as u32) * FRAME_SIZE_MULTIPLE
+        };
+        (floor_grid(w as f64 * s), floor_grid(h as f64 * s))
     } else {
-        1.0
+        (
+            round_to_multiple(w as f32, FRAME_SIZE_MULTIPLE),
+            round_to_multiple(h as f32, FRAME_SIZE_MULTIPLE),
+        )
     };
-    let target_w = round_to_multiple(w as f32 * scale, FRAME_SIZE_MULTIPLE);
-    let target_h = round_to_multiple(h as f32 * scale, FRAME_SIZE_MULTIPLE);
     if target_w == w && target_h == h {
         return img;
     }
@@ -205,6 +221,55 @@ pub fn normalize_frame(img: image::DynamicImage) -> image::DynamicImage {
         target_h,
         image::imageops::FilterType::Lanczos3,
     )
+}
+
+/// Нормировать одиночный кадр под форму карточки: потолок площади — кап
+/// главного кадра (CARD_PX_BUDGET_MAIN), сетка 32px. Публичный SSOT
+/// нормализации: используется и при сохранении, и операциями редактирования
+/// хоста (warp/splice возвращают кадр на сетку этим же кодом).
+pub fn normalize_frame(img: image::DynamicImage) -> image::DynamicImage {
+    normalize_to_area_cap(img, CARD_PX_BUDGET_MAIN)
+}
+
+/// Бюджетная форма подачи при сохранении карточки (08.11.26, решение
+/// владельца: «сжимать не каждый кадр до 1024, а по бюджету методом
+/// блоггера»). Главный кадр — первый (агент кладёт якорь-лицо первым,
+/// конвенция карточки):
+/// 1) суммарная площадь источников ≤ CARD_PX_BUDGET_TOTAL — никто не ужат
+///    (только сетка 32);
+/// 2) иначе главный сохраняет максимум детальности: кап CARD_PX_BUDGET_MAIN
+///    (как главный лист блоггера), часто без ужатия вовсе;
+/// 3) остальные делят остаток бюджета (CARD_PX_BUDGET_TOTAL − главный)
+///    пропорционально исходным площадям; floor-сетка ветки ужатия даёт
+///    гарантию «не больше своей доли».
+/// Погрешность бюджета — до одного шага сетки 32px на кадр в меньшую сторону
+/// (floor только вниз; перелив суммарного бюджета невозможен).
+pub fn normalize_frames_budget(images: &[image::DynamicImage]) -> Vec<image::DynamicImage> {
+    let areas: Vec<u64> = images
+        .iter()
+        .map(|i| i.width() as u64 * i.height() as u64)
+        .collect();
+    let total: u64 = areas.iter().sum();
+    if total <= CARD_PX_BUDGET_TOTAL {
+        return images
+            .iter()
+            .map(|i| normalize_to_area_cap(i.clone(), CARD_PX_BUDGET_MAIN))
+            .collect();
+    }
+    let rest_budget = CARD_PX_BUDGET_TOTAL - areas[0].min(CARD_PX_BUDGET_MAIN);
+    let rest_src: u64 = areas[1..].iter().sum();
+    images
+        .iter()
+        .enumerate()
+        .map(|(k, img)| {
+            let cap = if k == 0 || rest_src == 0 {
+                CARD_PX_BUDGET_MAIN
+            } else {
+                rest_budget * areas[k] / rest_src
+            };
+            normalize_to_area_cap(img.clone(), cap)
+        })
+        .collect()
 }
 
 /// Габариты кадра валидны для карточки: обе стороны кратны 32px.
@@ -302,9 +367,9 @@ pub fn save_refmod_card_images_in(
 
     let mut frames = Vec::with_capacity(images.len());
     let mut report = NormalizeReport::default();
-    for (index, img) in images.iter().enumerate() {
+    let budgeted = normalize_frames_budget(images);
+    for (index, (img, normalized)) in images.iter().zip(budgeted.iter()).enumerate() {
         let (src_w, src_h) = (img.width(), img.height());
-        let normalized = normalize_frame(img.clone());
         let dst = frames_dir.join(format!("frame_{:02}.png", index + 1));
         normalized.save_with_format(&dst, image::ImageFormat::Png).map_err(|e| {
             RefModError::Io(format!("refmod: не удалось сохранить кадр {}: {}", dst.display(), e))

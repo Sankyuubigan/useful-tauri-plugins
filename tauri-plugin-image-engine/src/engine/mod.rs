@@ -70,12 +70,12 @@ pub use preflight::{
 pub use process_util::kill_active_engines;
 pub use refmod::{
     copy_card_voice_in, engine_ref_paths, list_refmod_cards, list_refmod_cards_in,
-    load_refmod_card, load_refmod_card_in, normalize_frame, refmods_dir, refmods_prompt,
-    refmods_prompt_in, save_refmod_card, save_refmod_card_in, save_refmod_card_images_in,
-    set_card_voice, set_card_voice_in, thumbnail_data_url, thumbnail_data_url_in, update_voice_desc_in,
-    validate_slug, write_card_voice_in, FrameResize, NormalizeReport, RefModBundle, RefModError,
-    RefModMeta, FRAME_LONG_SIDE_MAX, FRAME_SIZE_MULTIPLE, FRAMES_MAX, FRAMES_PER_RUN,
-    THUMBNAIL_LONG_SIDE,
+    load_refmod_card, load_refmod_card_in, normalize_frame, normalize_frames_budget, refmods_dir,
+    refmods_prompt, refmods_prompt_in, save_refmod_card, save_refmod_card_in,
+    save_refmod_card_images_in, set_card_voice, set_card_voice_in, thumbnail_data_url,
+    thumbnail_data_url_in, update_voice_desc_in, validate_slug, write_card_voice_in, FrameResize,
+    NormalizeReport, RefModBundle, RefModError, RefModMeta, CARD_PX_BUDGET_MAIN,
+    CARD_PX_BUDGET_TOTAL, FRAME_SIZE_MULTIPLE, FRAMES_MAX, FRAMES_PER_RUN, THUMBNAIL_LONG_SIDE,
 };
 pub use refmod_voice::{normalize_voice, VoiceWav, VOICE_WAV_FILE};
 pub use video_engine::{

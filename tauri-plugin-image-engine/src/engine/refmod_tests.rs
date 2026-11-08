@@ -29,14 +29,17 @@ fn write_source(dir: &Path, name: &str, w: u32, h: u32) -> PathBuf {
     path
 }
 
-// ── Нормирование габаритов (владелец: ≤1024px по длинной стороне, кратно 32px) ──
+// ── Нормирование габаритов (владелец 08.11.26: бюджет площади как у блоггера —
+//    главный кадр ≤2 Мпикс, кратно 32px; прежнее «длинная ≤1024» снято) ──
 
 #[test]
-fn resize_caps_long_side_and_snaps_to_grid() {
+fn resize_caps_area_and_snaps_to_grid() {
     let cases: &[(u32, u32, u32, u32)] = &[
-        // 4K-кадр: длинная сторона ровно 1024, обе стороны кратны 32.
-        (4096, 2160, 1024, 544),
-        // Меньше лимита, но не кратно сетке — выравнивание без роста длинной.
+        // 4K-кадр: ужатие по площади до капа главного (2 Мпикс), floor-сетка.
+        (4096, 2160, 1920, 1024),
+        // Чуть сверх капа: лёгкое ужатие по площади, гарантия ≤ капа.
+        (1024, 2048, 992, 1984),
+        // В бюджете, но не кратно сетке — выравнивание к ближайшей кратности.
         (830, 1000, 832, 992),
         // Уже в сетке — без изменений.
         (768, 1024, 768, 1024),
@@ -53,8 +56,70 @@ fn resize_caps_long_side_and_snaps_to_grid() {
             h
         );
         assert!(frame_size_valid(resized.width(), resized.height()));
-        assert!(resized.width().max(resized.height()) <= FRAME_LONG_SIDE_MAX);
+        assert!(
+            resized.width() as u64 * resized.height() as u64 <= CARD_PX_BUDGET_MAIN,
+            "кап главного кадра нарушен на {}x{}",
+            w,
+            h
+        );
     }
+}
+
+// ── Бюджетная форма подачи (владелец 08.11.26: главный — максимум
+//    детальности, остальные по остатку; Σ ≤ 4 Мпикс) ──
+
+#[test]
+fn budget_form_main_priority_and_total_cap() {
+    // Суммарно в бюджете (8 × 512² = 2.1 Мпикс ≤ 4 Мпикс) — никто не ужат.
+    let small: Vec<_> = (0..8)
+        .map(|_| image::DynamicImage::new_rgb8(512, 512))
+        .collect();
+    let out = normalize_frames_budget(&small);
+    assert!(
+        out.iter().all(|i| (i.width(), i.height()) == (512, 512)),
+        "внутри бюджета кадры не трогаются"
+    );
+
+    // Превышение: главный (первый) полными пикселями — 1280×768 = 0.98 Мпикс
+    // ≤ капа главного 2 Мпикс; остальные делят остаток пропорционально
+    // (одинаковые источники → одинаковый share 736×544), Σ ≤ 4 Мпикс.
+    let big: Vec<_> = (0..8)
+        .map(|_| image::DynamicImage::new_rgb8(1152, 864))
+        .collect();
+    let mut big = vec![image::DynamicImage::new_rgb8(1280, 768)];
+    big.extend((0..7).map(|_| image::DynamicImage::new_rgb8(1152, 864)));
+    let out = normalize_frames_budget(&big);
+    assert_eq!(
+        (out[0].width(), out[0].height()),
+        (1280, 768),
+        "главный кадр не ужат (влезает в кап 2 Мпикс)"
+    );
+    for f in &out[1..] {
+        assert_eq!(
+            (f.width(), f.height()),
+            (736, 544),
+            "равный share по остатку бюджета"
+        );
+    }
+    let total: u64 = out.iter().map(|i| i.width() as u64 * i.height() as u64).sum();
+    assert!(total <= CARD_PX_BUDGET_TOTAL, "бюджет карточки нарушен: {}", total);
+
+    // Главный-гигант: кап главного 2 Мпикс (1632×1216), мелкие не апскейлятся.
+    let mut giant = vec![image::DynamicImage::new_rgb8(4000, 3000)];
+    giant.extend((0..7).map(|_| image::DynamicImage::new_rgb8(64, 64)));
+    let out = normalize_frames_budget(&giant);
+    assert_eq!(
+        (out[0].width(), out[0].height()),
+        (1632, 1216),
+        "кап главного 2 Мпикс"
+    );
+    assert_eq!(
+        (out[1].width(), out[1].height()),
+        (64, 64),
+        "мелкие кадры не апскейлятся"
+    );
+    let total: u64 = out.iter().map(|i| i.width() as u64 * i.height() as u64).sum();
+    assert!(total <= CARD_PX_BUDGET_TOTAL, "бюджет карточки нарушен: {}", total);
 }
 
 // ── Slug ──
@@ -84,7 +149,9 @@ fn save_load_roundtrip_normalizes_frames() {
     let src_dir = root.join("src");
     std::fs::create_dir_all(&src_dir).unwrap();
     let s1 = write_source(&src_dir, "a.png", 100, 64); // → 96x64 (кратно 32)
-    let s2 = write_source(&src_dir, "b.png", 4096, 2160); // → 1024x544
+    // Σ > бюджета: главный-якорь (a) полными пикселями, b получает остаток
+    // (3 993 600 px) → 2720x1440 (floor-сетка, площадь ≤ доли).
+    let s2 = write_source(&src_dir, "b.png", 4096, 2160); // → 2720x1440
 
     let (card, report) = save_refmod_card_in(&root, "test_char", "Тест Чар", "тестовое описание", &[
         s1.clone(),
@@ -100,11 +167,15 @@ fn save_load_roundtrip_normalizes_frames() {
     let loaded = load_refmod_card_in(&root, "test_char").expect("карточка читается");
     assert_eq!(loaded, card);
 
-    // Кадры физически нормированы: 96x64 и 1024x544.
+    // Кадры физически нормированы: 96x64 и 2720x1440.
     let d1 = image::image_dimensions(&loaded.frames[0]).unwrap();
     let d2 = image::image_dimensions(&loaded.frames[1]).unwrap();
     assert_eq!((d1.0, d1.1), (96, 64), "меньше лимита — выравнивание кратно 32");
-    assert_eq!((d2.0, d2.1), (1024, 544), "4K — даунскейл с кратностью 32");
+    assert_eq!(
+        (d2.0, d2.1),
+        (2720, 1440),
+        "4K — остаток бюджета (главный-якорь полными пикселями)"
+    );
     let _ = std::fs::remove_dir_all(root);
 }
 
@@ -262,8 +333,8 @@ fn normalize_report_tracks_resized_frames() {
     let root = temp_root("report");
     let src_dir = root.join("src");
     std::fs::create_dir_all(&src_dir).unwrap();
-    // Оверсайз: длинная сторона >1024 → сжатие.
-    let s1 = write_source(&src_dir, "big.png", 1024, 2048); // → 512x1024
+    // Оверсайз: площадь > капа главного → ужатие по бюджету площади.
+    let s1 = write_source(&src_dir, "big.png", 1024, 2048); // → 992x1984
     // Уже в сетке: в отчёт не попадает.
     let s2 = write_source(&src_dir, "grid.png", 320, 288); // → 320x288
     // Мелкий невыровненный: растяжение к сетке 32 (площадь растёт).
@@ -277,8 +348,8 @@ fn normalize_report_tracks_resized_frames() {
                 frame_file: "frame_01.png".into(),
                 src_w: 1024,
                 src_h: 2048,
-                dst_w: 512,
-                dst_h: 1024,
+                dst_w: 992,
+                dst_h: 1984,
             },
             FrameResize {
                 frame_file: "frame_03.png".into(),

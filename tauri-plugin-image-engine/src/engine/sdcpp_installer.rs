@@ -641,19 +641,42 @@ pub fn child_path_with_cudart(dir: &Path) -> Option<String> {
 /// Установка (или обновление) варианта бекенда из указанного источника.
 /// Ставится в `backends/<source>/<variant>/`, остальные не трогаются.
 /// Прогресс — через единый tauri-plugin-downloader (`downloader:progress`).
+///
+/// Установленная версия НЕ удаляется до полного успеха: скачивание и распаковка
+/// идут в staging-папку `<variant>.staging`, подмена — только после готовности
+/// новой версии (инцидент 08.11.26: клиринг до скачивания при сетевой ошибке
+/// оставлял пользователя без движка).
 pub async fn install<L: Fn(String) + Send + Sync>(
     dir: &Path,
     source: &str,
     variant: &str,
     on_log: L,
 ) -> Result<EngineMeta, String> {
+    let staging = staging_dir(dir, source, variant);
+    let result = install_inner(dir, source, variant, &staging, &on_log).await;
+    if result.is_err() {
+        // Мусор неудавшейся установки не копим — старая версия остаётся рабочей.
+        let _ = fs::remove_dir_all(&staging);
+    }
+    result
+}
+
+async fn install_inner<L: Fn(String) + Send + Sync>(
+    dir: &Path,
+    source: &str,
+    variant: &str,
+    staging: &Path,
+    on_log: &L,
+) -> Result<EngineMeta, String> {
     let spec = sources::source_spec(source)
         .ok_or_else(|| format!("Неизвестный источник движка: {}", source))?;
     let target = variant_dir(dir, source, variant);
-    fs::create_dir_all(&target).map_err(|e| format!("Не удалось создать папку {}: {}", target.display(), e))?;
 
-    // Удаляем старые файлы варианта ДО скачивания.
-    clear_dir(&target);
+    // Staging-папка РЯДОМ с целевой (внутри backends/<source>/): без meta-файла,
+    // поэтому перечисление установленных вариантов её не видит.
+    let _ = fs::remove_dir_all(staging);
+    fs::create_dir_all(staging)
+        .map_err(|e| format!("Не удалось создать папку {}: {}", staging.display(), e))?;
 
     on_log(format!(
         "🔄 Источник «{}», вариант «{}»: поиск актуального релиза с готовым движком…",
@@ -676,7 +699,7 @@ pub async fn install<L: Fn(String) + Send + Sync>(
         ));
     }
 
-    let zip_path = target.join("engine.zip");
+    let zip_path = staging.join("engine.zip");
     tauri_plugin_downloader::download(
         &asset.0.browser_download_url,
         &zip_path,
@@ -703,14 +726,15 @@ pub async fn install<L: Fn(String) + Send + Sync>(
         on_log("✅ Контрольная сумма SHA-256 подтверждена".to_string());
     }
 
-    let file_count = extract_all(&zip_path, &target, &on_log)?;
+    // Всё собирается в staging: целевая папка не трогается до полного успеха.
+    let file_count = extract_all(&zip_path, &staging, &on_log)?;
     let _ = fs::remove_file(&zip_path);
 
     // Архивы с вложенной структурой — поднимаем бинарь наверх
-    lift_server_files(&target, &on_log)?;
+    lift_server_files(&staging, &on_log)?;
 
     // Рантайм VC++ рядом с движком
-    ensure_vc_redist(&target, &on_log);
+    ensure_vc_redist(&staging, &on_log);
 
     // ── CUDA-рантайм (дополнение) ──
     // В релизах leejet CUDA-библиотеки вынесены в отдельный архив (cudart-sd-bin).
@@ -770,16 +794,15 @@ pub async fn install<L: Fn(String) + Send + Sync>(
             ));
         }
         // ── Guard: cublas DLL ОБЯЗАН быть после установки CUDA-варианта ──
-        // (общая папка / папка варианта у legacy-установок / System32).
-        // Без него GPU-режим не работает. Ошибка установки, а не warning:
-        // юзер не должен получить «неготовый» бекенд.
-        if let Err(msg) = cudart_ready(dir, &target) {
-            let _ = clear_dir(&target);
-            let _ = fs::remove_dir_all(&target);
+        // Проверяется на staging ДО подмены: отказ не трогает старую версию
+        // (staging подчистит wrapper install), юзер не получает «неготовый» бекенд.
+        if let Err(msg) = cudart_ready(dir, staging) {
             return Err(msg);
         }
     }
 
+    // Метаданные пишутся в staging ДО подмены: подменяется вся папка целиком,
+    // после свопа новая версия сразу считается «установленной».
     let meta = EngineMeta {
         tag: release.tag_name.clone(),
         variant: actual_variant.clone(),
@@ -787,14 +810,73 @@ pub async fn install<L: Fn(String) + Send + Sync>(
         installed_at: chrono_now(),
     };
     let data = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
-    fs::write(meta_path(dir, source, variant), data)
+    fs::write(staging.join(METADATA_FILE), data)
         .map_err(|e| format!("Ошибка записи метаданных: {}", e))?;
+
+    // Подмена целевой папки — только после полного успеха новой версии.
+    swap_staging_into_target(staging, &target, on_log)?;
 
     on_log(format!(
         "✅ Бекенд установлен: {} (источник {}, вариант {}). Распаковано файлов: {}.",
         release.tag_name, source, actual_variant, file_count
     ));
     Ok(meta)
+}
+
+/// Путь staging-папки установки: `<sdcpp_dir>/backends/<source>/<variant>.staging`.
+/// Сосед целевой папки; без meta-файла не видна `list_installed_variants`/
+/// `is_installed`, поэтому сборка новой версии в ней не выглядит «установленной».
+pub fn staging_dir(dir: &Path, source: &str, variant: &str) -> PathBuf {
+    source_dir(dir, source).join(format!("{}.staging", variant))
+}
+
+/// Подмена целевой папки содержимым staging — ТОЛЬКО когда новая версия
+/// полностью готова (архив распакован, VC++ рантайм, guard, meta).
+///
+/// Порядок защищает старую версию: сначала старая → `<variant>.staging_old`
+/// (rename падает, если движок запущен — файлы заняты, но старая версия ещё
+/// цела), затем staging → target; при падении второго — откат старой на место.
+/// Успех: backup удаляется. Первая установка (target нет) — просто rename.
+fn swap_staging_into_target(
+    staging: &Path,
+    target: &Path,
+    on_log: &dyn Fn(String),
+) -> Result<(), String> {
+    let backup = match target.file_name() {
+        Some(name) => target.with_file_name(format!("{}.staging_old", name.to_string_lossy())),
+        None => return Err(format!("Не удалось определить имя папки движка: {}", target.display())),
+    };
+
+    // Хвост прошлой неудачной установки не должен блокировать rename.
+    let _ = fs::remove_dir_all(&backup);
+
+    let had_old = target.exists();
+    if had_old {
+        fs::rename(target, &backup).map_err(|e| {
+            format!(
+                "Файлы движка заняты (движок запущен?) — обновление не выполнено, старая версия осталась рабочей. {}: {}",
+                target.display(),
+                e
+            )
+        })?;
+    }
+
+    if let Err(e) = fs::rename(staging, target) {
+        // Откат: старая версия возвращается на место, staging подчистит wrapper.
+        let _ = fs::rename(&backup, target);
+        return Err(format!(
+            "Не удалось подставить новую версию движка ({} → {}): {}",
+            staging.display(),
+            target.display(),
+            e
+        ));
+    }
+
+    let _ = fs::remove_dir_all(&backup);
+    if had_old {
+        on_log("🔁 Старая версия заменена новой без удаления заранее (обновление атомарно)".to_string());
+    }
+    Ok(())
 }
 
 /// Проверка наличия обновления конкретного варианта (только проверка, не установка)
@@ -992,6 +1074,84 @@ mod tests {
         assert!(p.starts_with(&shared.to_string_lossy().to_string()), "{p}");
         // Остальной PATH сохранён (иначе движок не найдёт системные библиотеки)
         assert!(p.contains(';'), "{p}");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn swap_replaces_target_and_cleans_backup() {
+        let tmp = std::env::temp_dir().join(format!("sdcpp_swap_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let target = tmp.join("backends/leejet/cuda12");
+        let staging = tmp.join("backends/leejet/cuda12.staging");
+
+        // Первая установка: target нет → staging становится target
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("sd-cli.exe"), "new").unwrap();
+        swap_staging_into_target(&staging, &target, &|_| {}).unwrap();
+        assert_eq!(fs::read_to_string(target.join("sd-cli.exe")).unwrap(), "new");
+        assert!(!staging.exists(), "staging переименован в target");
+        assert!(!target.with_file_name("cuda12.staging_old").exists());
+
+        // Обновление: старая версия подменяется, backup чистится
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("sd-cli.exe"), "newer").unwrap();
+        swap_staging_into_target(&staging, &target, &|_| {}).unwrap();
+        assert_eq!(fs::read_to_string(target.join("sd-cli.exe")).unwrap(), "newer");
+        assert!(!staging.exists());
+        assert!(!target.with_file_name("cuda12.staging_old").exists());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn failed_second_rename_rolls_back_old_version() {
+        let tmp = std::env::temp_dir().join(format!("sdcpp_swap_rollback_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let target = tmp.join("backends/leejet/cuda12");
+        let staging = tmp.join("backends/leejet/cuda12.staging");
+
+        // Старая версия установлена
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("sd-cli.exe"), "old").unwrap();
+        // Отказ второго rename: staging не существует → rename падает,
+        // rollback обязан вернуть старую версию на место.
+        swap_staging_into_target(&staging, &target, &|_| {}).unwrap_err();
+        assert_eq!(
+            fs::read_to_string(target.join("sd-cli.exe")).unwrap(),
+            "old",
+            "старая версия не тронута"
+        );
+        assert!(!target.with_file_name("cuda12.staging_old").exists());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn staging_dir_is_invisible_for_installed_listing() {
+        let tmp = std::env::temp_dir().join(format!("sdcpp_staging_vis_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let source_root = tmp.join("backends/leejet");
+        let target = source_root.join("cuda12");
+        let staging = staging_dir(&tmp, "leejet", "cuda12");
+
+        // Установленная версия: бинарь + meta
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("sd-server.exe"), "exe").unwrap();
+        fs::write(
+            meta_path(&tmp, "leejet", "cuda12"),
+            r#"{"tag":"master-1","variant":"cuda12","source":"leejet","installed_at":"0"}"#,
+        )
+        .unwrap();
+
+        // В staging сборка с бинарём, но БЕЗ meta → перечисление её не видит
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("sd-server.exe"), "exe").unwrap();
+        fs::write(staging.join("sd-cli.exe"), "exe").unwrap();
+
+        let listed = list_installed_variants(&tmp, "leejet");
+        assert_eq!(listed, vec!["cuda12".to_string()], "{listed:?}");
+        assert!(!is_installed(&tmp, "leejet", "cuda12.staging"));
+
         let _ = fs::remove_dir_all(&tmp);
     }
 }

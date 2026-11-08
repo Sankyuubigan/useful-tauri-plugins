@@ -28,7 +28,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use cloud_routers_core::config::{GatewayConfig, ProviderConfig};
 use cloud_routers_core::config::DiscoveredModel;
 
-use crate::upstream::{Route, resolve_route};
+use crate::upstream::{Route, resolve_route, CHAT_COMPLETIONS_PATH, MODELS_PATH};
 
 /// Запрос к апстриму, готовый к отправке через `reqwest`.
 ///
@@ -98,7 +98,7 @@ impl VendorProtocol for OpenAiProtocol {
         config: &GatewayConfig,
         credential: &str,
     ) -> Result<UpstreamRequest, String> {
-        let route = resolve_route(provider, config, "/models")?;
+        let route = resolve_route(provider, config, MODELS_PATH)?;
         let mut headers = HeaderMap::new();
         headers.insert(
             HeaderName::from_static("authorization"),
@@ -141,7 +141,7 @@ impl VendorProtocol for OpenAiProtocol {
         let bytes = serde_json::to_vec(&body)
             .map_err(|e| format!("Не удалось сериализовать тело запроса: {}", e))?;
 
-        let route = resolve_route(provider, config, "/v1/chat/completions")?;
+        let route = resolve_route(provider, config, CHAT_COMPLETIONS_PATH)?;
         let mut headers = crate::upstream::forward_headers(client_headers);
         headers.insert(
             HeaderName::from_static("authorization"),
@@ -251,7 +251,9 @@ mod tests {
     }
 
     #[test]
-    fn openai_chat_request_matches_legacy_behavior() {
+    fn openai_chat_request_joins_version_inclusive_base() {
+        // Конвенция (08.11.2026): base_url включает версионный сегмент,
+        // путь ресурса — без `/v1`. Итог: ровно один `/v1` в URL.
         let p = OpenAiProtocol;
         let cfg = GatewayConfig::default();
         let payload = serde_json::json!({"model": "groq/llama", "messages": []});
@@ -261,13 +263,37 @@ mod tests {
         assert_eq!(req.method, reqwest::Method::POST);
         assert_eq!(
             req.route.request_url(),
-            "https://api.groq.com/openai/v1/v1/chat/completions"
+            "https://api.groq.com/openai/v1/chat/completions"
         );
         let body: serde_json::Value = serde_json::from_slice(&req.body).expect("json");
         assert_eq!(body["model"], "llama", "модель подставлена апстримная");
         assert_eq!(
             req.headers.get("content-type").expect("ct").to_str().expect("str"),
             "application/json"
+        );
+    }
+
+    #[test]
+    fn openai_chat_request_does_not_double_version_segment() {
+        // Регресс 08.11.2026 (сессия 1794158295623): chat-путь
+        // `/v1/chat/completions` на версионной базе openrouter
+        // (`https://openrouter.ai/api/v1`) склеивался в
+        // `.../api/v1/v1/chat/completions` → 404 «Not Found» на каждый чат.
+        // Google-база `.../v1beta/openai` лишний сегмент прощала, поэтому баг
+        // проявлялся только на строгих провайдерах.
+        let p = OpenAiProtocol;
+        let cfg = GatewayConfig::default();
+        let mut or = provider();
+        or.id = "openrouter".into();
+        or.base_url = "https://openrouter.ai/api/v1".into();
+        let payload = serde_json::json!({"model": "openrouter/free", "messages": []});
+        let req = p
+            .chat_request(&or, &cfg, "sk-or", &HeaderMap::new(), &payload, "openrouter/free")
+            .expect("req");
+        assert_eq!(
+            req.route.request_url(),
+            "https://openrouter.ai/api/v1/chat/completions",
+            "один `/v1`: версия из базы, без дубля в пути"
         );
     }
 

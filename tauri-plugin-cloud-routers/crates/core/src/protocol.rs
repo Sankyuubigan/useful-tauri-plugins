@@ -26,8 +26,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum VendorProtocol {
-    /// OpenAI-совместимый: `GET {base}/models`, `POST {base}/v1/chat/completions`,
-    /// Bearer-авторизация, SSE-поток.
+    /// OpenAI-совместимый: `GET {base}/models`, `POST {base}/chat/completions`,
+    /// Bearer-авторизация, SSE-поток. `base_url` включает версионный сегмент
+    /// (`https://openrouter.ai/api/v1`), поэтому путь ресурса — без `/v1`.
     #[default]
     Openai,
     /// Kiro / Amazon Q: `ListAvailableModels`, `GenerateAssistantResponse`,

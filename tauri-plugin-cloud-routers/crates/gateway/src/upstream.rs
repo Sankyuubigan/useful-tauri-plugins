@@ -19,12 +19,14 @@
 //!
 //! ### 3. Релей получает **абсолютный** URL в заголовке
 //!
-//! В исходном ТЗ было `x-target-host: {base_url}` + путь запроса. Это даёт
-//! `https://api.groq.com/openai/v1` + `/v1/chat/completions` =
-//! `.../openai/v1/v1/chat/completions` — двойной `/v1`, и провайдер отвечает 404.
-//! Чтобы воркер не занимался склейкой путей (и не ломался при следующем
-//! переименовании), шлюз сам считает полный URL апстрима и кладёт его в
-//! `x-target-url`. Воркер делает ровно один `fetch` по этому URL.
+//! В исходном ТЗ было `x-target-host: {base_url}` + путь запроса. Склейка базы
+//! с версионным сегментом (`https://openrouter.ai/api/v1`,
+//! `https://api.groq.com/openai/v1`) с путём вида `/v1/chat/completions`
+//! давала `.../v1/v1/chat/completions` — двойной `/v1` и `404` от провайдера
+//! (кейс OpenRouter 08.11.2026: Google-база `.../v1beta/openai` лишний сегмент
+//! прощала, OpenRouter — строг). Шлюз считает **полный** URL апстрима сам и
+//! кладёт его в `x-target-url`; воркер делает ровно один `fetch` без склейки
+//! путей.
 //!
 //! ## Тело
 //!
@@ -40,6 +42,16 @@ use cloud_routers_core::config::{GatewayConfig, ProviderConfig, RelaySlot};
 
 /// Префикс пути релея, под которым живёт Edge-воркер.
 pub const RELAY_PATH_PREFIX: &str = "/api/gateway";
+
+/// Конвенция путей апстрима (SSOT, кейс 08.11.2026): `base_url` провайдера
+/// **всегда** включает версионный сегмент (`https://openrouter.ai/api/v1`,
+/// `https://api.groq.com/openai/v1`), поэтому путь ресурса НЕ содержит `/v1` —
+/// версия уже в базе. Раньше chat-запрос дописывал `/v1/chat/completions`, и
+/// склейка давала `.../api/v1/v1/chat/completions` → 404 OpenRouter
+/// (`direct_route_appends_path_without_double_slash` — регресс-тест).
+pub const MODELS_PATH: &str = "/models";
+/// Путь chat-completions относительно `base_url` (см. конвенцию выше).
+pub const CHAT_COMPLETIONS_PATH: &str = "/chat/completions";
 
 /// Заголовок с абсолютным URL апстрима (для воркера релея).
 pub const HDR_TARGET_URL: &str = "x-target-url";
@@ -151,7 +163,12 @@ pub fn relay_route_base(provider: &ProviderConfig, config: &GatewayConfig) -> Re
     }
 }
 
-/// Собрать маршрут для апстрим-пути (например `/v1/chat/completions`).
+/// Собрать маршрут для апстрим-пути — ресурс **относительно** `base_url`.
+///
+/// `base_url` включает версионный сегмент (конвенция модуля), путь ресурса —
+/// без версии: `MODELS_PATH`, `CHAT_COMPLETIONS_PATH`. Релей получает
+/// `{relay}{RELAY_PATH_PREFIX}{path}`, а цель — абсолютным URL в
+/// `x-target-url`.
 pub fn resolve_route(
     provider: &ProviderConfig,
     config: &GatewayConfig,
@@ -288,25 +305,26 @@ mod tests {
     #[test]
     fn direct_route_appends_path_without_double_slash() {
         let p = provider("https://api.groq.com/openai/v1/", None);
-        let r = resolve_route(&p, &config_with_slots(&[]), "/v1/chat/completions").expect("route");
+        let r = resolve_route(&p, &config_with_slots(&[]), CHAT_COMPLETIONS_PATH).expect("route");
         assert_eq!(
             r,
-            Route::Direct { url: "https://api.groq.com/openai/v1/v1/chat/completions".into() }
+            Route::Direct { url: "https://api.groq.com/openai/v1/chat/completions".into() }
         );
         assert!(!r.is_relay());
     }
 
     #[test]
     fn relay_route_targets_absolute_upstream_url() {
-        // Регрессия против схемы «x-target-host + pathname»: склейка дала бы
-        // ".../openai/v1/v1/chat/completions" с двойным /v1.
+        // Регрессия против схемы «x-target-host + pathname»: склейка host+path
+        // без конвенции версионных баз снова дала бы двойной /v1; target_url —
+        // полный URL, собранный здесь, а не в воркере.
         let p = provider("https://api.groq.com/openai/v1", Some("vercel"));
         let cfg = config_with_slots(&[slot("vercel", Some("https://relay.vercel.app/"), Some("secret"))]);
-        let r = resolve_route(&p, &cfg, "/v1/chat/completions").expect("route");
+        let r = resolve_route(&p, &cfg, CHAT_COMPLETIONS_PATH).expect("route");
         match &r {
             Route::Relay { url, target_url, token } => {
-                assert_eq!(url, "https://relay.vercel.app/api/gateway/v1/chat/completions");
-                assert_eq!(target_url, "https://api.groq.com/openai/v1/v1/chat/completions");
+                assert_eq!(url, "https://relay.vercel.app/api/gateway/chat/completions");
+                assert_eq!(target_url, "https://api.groq.com/openai/v1/chat/completions");
                 assert_eq!(token.as_deref(), Some("secret"));
             }
             other => panic!("ожидался Relay, получен {:?}", other),
@@ -319,7 +337,7 @@ mod tests {
         // Пользователь привязал релей из-за блокировки. Молчаливый прямой запрос
         // выглядел бы как «релей сломался».
         let p = provider("https://api.groq.com/openai/v1", Some("vercel"));
-        let err = resolve_route(&p, &config_with_slots(&[slot("vercel", None, None)]), "/v1/chat/completions")
+        let err = resolve_route(&p, &config_with_slots(&[slot("vercel", None, None)]), CHAT_COMPLETIONS_PATH)
             .expect_err("must fail");
         assert!(err.contains("URL релея не задан"), "{err}");
     }
@@ -328,7 +346,7 @@ mod tests {
     fn relay_blank_url_counts_as_missing() {
         let p = provider("https://api.groq.com/openai/v1", Some("vercel"));
         assert!(
-            resolve_route(&p, &config_with_slots(&[slot("vercel", Some("   "), None)]), "/v1/chat/completions").is_err()
+            resolve_route(&p, &config_with_slots(&[slot("vercel", Some("   "), None)]), CHAT_COMPLETIONS_PATH).is_err()
         );
     }
 
@@ -340,7 +358,7 @@ mod tests {
         let err = resolve_route(
             &p,
             &config_with_slots(&[slot("vercel", Some("my-relay.vercel.app"), Some("tok"))]),
-            "/v1/chat/completions",
+            CHAT_COMPLETIONS_PATH,
         )
         .expect_err("must fail");
         assert!(err.contains("my-relay.vercel.app"), "{err}");
@@ -353,7 +371,7 @@ mod tests {
         // 27.10.2026: привязка провайдера к удалённому слоту — конфигурационная
         // ошибка с именем слота, а не тихий прямой запрос.
         let p = provider("https://api.groq.com/openai/v1", Some("ghost"));
-        let err = resolve_route(&p, &config_with_slots(&[]), "/v1/chat/completions")
+        let err = resolve_route(&p, &config_with_slots(&[]), CHAT_COMPLETIONS_PATH)
             .expect_err("must fail");
         assert!(err.contains("ghost"), "{err}");
     }
@@ -367,7 +385,7 @@ mod tests {
             slot("cf-main", Some("https://b.workers.dev"), Some("tok-b")),
         ]);
         let p = provider("https://api.groq.com/openai/v1", Some("cf-main"));
-        let r = resolve_route(&p, &cfg, "/v1/chat/completions").expect("route");
+        let r = resolve_route(&p, &cfg, CHAT_COMPLETIONS_PATH).expect("route");
         match &r {
             Route::Relay { token, .. } => assert_eq!(token.as_deref(), Some("tok-b")),
             other => panic!("ожидался Relay, получен {:?}", other),
@@ -378,18 +396,18 @@ mod tests {
     fn relay_route_headers_carry_target_and_token() {
         let p = provider("https://api.groq.com/openai/v1", Some("vercel"));
         let cfg = config_with_slots(&[slot("vercel", Some("https://relay.vercel.app"), Some("s3cret"))]);
-        let route = resolve_route(&p, &cfg, "/v1/chat/completions").expect("route");
+        let route = resolve_route(&p, &cfg, CHAT_COMPLETIONS_PATH).expect("route");
         let mut h = HeaderMap::new();
         apply_route_headers(&route, &mut h);
         assert_eq!(h.get(HDR_TARGET_URL).expect("target").to_str().expect("str"),
-            "https://api.groq.com/openai/v1/v1/chat/completions");
+            "https://api.groq.com/openai/v1/chat/completions");
         assert_eq!(h.get(HDR_RELAY_TOKEN).expect("token").to_str().expect("str"), "s3cret");
     }
 
     #[test]
     fn direct_route_adds_no_relay_headers() {
         let p = provider("https://api.groq.com/openai/v1", None);
-        let route = resolve_route(&p, &config_with_slots(&[]), "/v1/chat/completions").expect("route");
+        let route = resolve_route(&p, &config_with_slots(&[]), CHAT_COMPLETIONS_PATH).expect("route");
         let mut h = HeaderMap::new();
         apply_route_headers(&route, &mut h);
         assert!(h.get(HDR_TARGET_URL).is_none());

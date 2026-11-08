@@ -930,14 +930,33 @@ pub async fn install<L: Fn(String) + Send + Sync>(
     variant: &str,
     on_log: L,
 ) -> Result<EngineMeta, String> {
+    let staging = staging_dir(dir, source, variant);
+    let result = install_inner(dir, source, variant, &staging, &on_log).await;
+    if result.is_err() {
+        // Мусор неудавшейся установки не копим — старая версия остаётся рабочей.
+        let _ = fs::remove_dir_all(&staging);
+    }
+    result
+}
+
+async fn install_inner<L: Fn(String) + Send + Sync>(
+    dir: &Path,
+    source: &str,
+    variant: &str,
+    staging: &Path,
+    on_log: &L,
+) -> Result<EngineMeta, String> {
     let spec = sources::source_spec(source)
         .ok_or_else(|| format!("Неизвестный источник движка: {}", source))?;
     let target = variant_dir(dir, source, variant);
-    fs::create_dir_all(&target).map_err(|e| format!("Не удалось создать папку {}: {}", target.display(), e))?;
 
-    // Удаляем старые файлы варианта ДО скачивания (в середине нельзя: clear_dir
-    // удалил бы сам скачанный engine.zip, лежащий внутри target).
-    clear_dir(&target);
+    // Staging-папка РЯДОМ с целевой (внутри backends/<source>/): без meta-файла,
+    // поэтому перечисление установленных вариантов её не видит. Установленная
+    // версия НЕ удаляется до полного успеха (инцидент 08.11.26: клиринг до
+    // скачивания при сетевой ошибке оставлял пользователя без движка).
+    let _ = fs::remove_dir_all(staging);
+    fs::create_dir_all(staging)
+        .map_err(|e| format!("Не удалось создать папку {}: {}", staging.display(), e))?;
 
     on_log(format!(
         "🔄 Источник «{}», вариант «{}»: поиск актуального релиза с готовым движком…",
@@ -960,7 +979,7 @@ pub async fn install<L: Fn(String) + Send + Sync>(
         ));
     }
 
-    let zip_path = target.join("engine.zip");
+    let zip_path = staging.join("engine.zip");
     tauri_plugin_downloader::download(
         &asset.0.browser_download_url,
         &zip_path,
@@ -979,15 +998,16 @@ pub async fn install<L: Fn(String) + Send + Sync>(
         on_log("✅ Контрольная сумма SHA-256 подтверждена".to_string());
     }
 
-    let file_count = extract_all(&zip_path, &target, &on_log)?;
+    // Всё собирается в staging: целевая папка не трогается до полного успеха.
+    let file_count = extract_all(&zip_path, &staging, &on_log)?;
     let _ = fs::remove_file(&zip_path);
 
     // Архивы с вложенной структурой (Jan-формат, cudart и др.) — поднимаем бинарь наверх
-    lift_server_files(&target, &on_log)?;
+    lift_server_files(&staging, &on_log)?;
 
     // Рантайм VC++ рядом с движком (чтобы работало без ручной установки
     // Visual C++ Redistributable — иначе llama-server падает с 0xC0000135).
-    ensure_vc_redist(&target, &on_log);
+    ensure_vc_redist(&staging, &on_log);
 
     // ── CUDA-рантайм (дополнение) ──
     // В релизах ggml-org b10275+ CUDA-библиотеки вынесены в отдельный архив
@@ -1044,16 +1064,15 @@ pub async fn install<L: Fn(String) + Send + Sync>(
         }
 
         // ── Guard: cublas*_*.dll ОБЯЗАН быть после установки CUDA-варианта ──
-        // Без него ggml-cuda.dll не грузится → llama-server тихо уходит в CPU
-        // или LlamaEngine::new падает предлётной проверкой. Ошибка установки,
-        // а не warning: юзер не должен получить «неготовый» бекенд.
-        if let Err(msg) = cudart_ready(&dir, family, &target) {
-            let _ = clear_dir(&target);
-            let _ = fs::remove_dir_all(&target);
+        // Проверяется на staging ДО подмены: отказ не трогает старую версию
+        // (staging подчистит wrapper install), юзер не получает «неготовый» бекенд.
+        if let Err(msg) = cudart_ready(&dir, family, staging) {
             return Err(format!("{}\nИсточник: «{}».", msg, source));
         }
     }
 
+    // Метаданные пишутся в staging ДО подмены: подменяется вся папка целиком,
+    // после свопа новая версия сразу считается «установленной».
     let meta = EngineMeta {
         tag: release.tag_name.clone(),
         variant: actual_variant.clone(),
@@ -1061,14 +1080,74 @@ pub async fn install<L: Fn(String) + Send + Sync>(
         installed_at: chrono_now(),
     };
     let data = serde_json::to_string_pretty(&meta).map_err(|e| e.to_string())?;
-    fs::write(meta_path(dir, source, variant), data)
+    fs::write(staging.join(METADATA_FILE), data)
         .map_err(|e| format!("Ошибка записи метаданных: {}", e))?;
+
+    // Подмена целевой папки — только после полного успеха новой версии.
+    swap_staging_into_target(staging, &target, on_log)?;
 
     on_log(format!(
         "✅ Бекенд установлен: {} (источник {}, вариант {}). Распаковано файлов: {}.",
         release.tag_name, source, actual_variant, file_count
     ));
     Ok(meta)
+}
+
+/// Путь staging-папки установки: `<llama_dir>/backends/<source>/<variant>.staging`.
+/// Сосед целевой папки; без meta-файла не видна `list_installed_variants`
+/// (тот фильтрует по METADATA_FILE), поэтому сборка новой версии в ней
+/// не выглядит «установленной».
+pub fn staging_dir(dir: &Path, source: &str, variant: &str) -> PathBuf {
+    source_dir(dir, source).join(format!("{}.staging", variant))
+}
+
+/// Подмена целевой папки содержимым staging — ТОЛЬКО когда новая версия
+/// полностью готова (архив распакован, VC++ рантайм, guard, meta).
+///
+/// Порядок защищает старую версию: сначала старая → `<variant>.staging_old`
+/// (rename падает, если движок запущен — файлы заняты, но старая версия ещё
+/// цела), затем staging → target; при падении второго — откат старой на место.
+/// Успех: backup удаляется. Первая установка (target нет) — просто rename.
+fn swap_staging_into_target(
+    staging: &Path,
+    target: &Path,
+    on_log: &dyn Fn(String),
+) -> Result<(), String> {
+    let backup = match target.file_name() {
+        Some(name) => target.with_file_name(format!("{}.staging_old", name.to_string_lossy())),
+        None => return Err(format!("Не удалось определить имя папки движка: {}", target.display())),
+    };
+
+    // Хвост прошлой неудачной установки не должен блокировать rename.
+    let _ = fs::remove_dir_all(&backup);
+
+    let had_old = target.exists();
+    if had_old {
+        fs::rename(target, &backup).map_err(|e| {
+            format!(
+                "Файлы движка заняты (движок запущен?) — обновление не выполнено, старая версия осталась рабочей. {}: {}",
+                target.display(),
+                e
+            )
+        })?;
+    }
+
+    if let Err(e) = fs::rename(staging, target) {
+        // Откат: старая версия возвращается на место, staging подчистит wrapper.
+        let _ = fs::rename(&backup, target);
+        return Err(format!(
+            "Не удалось подставить новую версию движка ({} → {}): {}",
+            staging.display(),
+            target.display(),
+            e
+        ));
+    }
+
+    let _ = fs::remove_dir_all(&backup);
+    if had_old {
+        on_log("🔁 Старая версия заменена новой без удаления заранее (обновление атомарно)".to_string());
+    }
+    Ok(())
 }
 
 /// Проверка наличия обновления конкретного варианта (только проверка, не установка)
@@ -1129,6 +1208,85 @@ mod tests {
 
     fn ggml() -> SourceSpec {
         source_spec("ggml-org").expect("ggml-org")
+    }
+
+    #[test]
+    fn swap_replaces_target_and_cleans_backup() {
+        let tmp = std::env::temp_dir().join(format!("llama_swap_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let target = tmp.join("backends/ggml-org/b5857");
+        let staging = tmp.join("backends/ggml-org/b5857.staging");
+
+        // Первая установка: target нет → staging становится target
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("llama-server.exe"), "new").unwrap();
+        swap_staging_into_target(&staging, &target, &|_| {}).unwrap();
+        assert_eq!(fs::read_to_string(target.join("llama-server.exe")).unwrap(), "new");
+        assert!(!staging.exists(), "staging переименован в target");
+        assert!(!target.with_file_name("b5857.staging_old").exists());
+
+        // Обновление: старая версия подменяется, backup чистится
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("llama-server.exe"), "newer").unwrap();
+        swap_staging_into_target(&staging, &target, &|_| {}).unwrap();
+        assert_eq!(fs::read_to_string(target.join("llama-server.exe")).unwrap(), "newer");
+        assert!(!staging.exists());
+        assert!(!target.with_file_name("b5857.staging_old").exists());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn failed_second_rename_rolls_back_old_version() {
+        let tmp = std::env::temp_dir().join(format!("llama_swap_rollback_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let target = tmp.join("backends/ggml-org/b5857");
+        let staging = tmp.join("backends/ggml-org/b5857.staging");
+
+        // Старая версия установлена; staging не существует → второй rename падает,
+        // rollback обязан вернуть старую версию на место.
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("llama-server.exe"), "old").unwrap();
+        swap_staging_into_target(&staging, &target, &|_| {}).unwrap_err();
+        assert_eq!(
+            fs::read_to_string(target.join("llama-server.exe")).unwrap(),
+            "old",
+            "старая версия не тронута"
+        );
+        assert!(!target.with_file_name("b5857.staging_old").exists());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn staging_dir_is_invisible_for_installed_listing() {
+        let tmp = std::env::temp_dir().join(format!("llama_staging_vis_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        let target = tmp.join("backends/ggml-org/b5857");
+        let staging = staging_dir(&tmp, "ggml-org", "b5857");
+
+        // Установленная версия: бинарь + meta
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("llama-server.exe"), "exe").unwrap();
+        fs::write(
+            meta_path(&tmp, "ggml-org", "b5857"),
+            r#"{"tag":"b5857","variant":"b5857","source":"ggml-org","installed_at":"0"}"#,
+        )
+        .unwrap();
+
+        // В staging сборка с бинарём, но БЕЗ meta → перечисление её не видит
+        // (фильтр list_installed_variants — по METADATA_FILE)
+        fs::create_dir_all(&staging).unwrap();
+        fs::write(staging.join("llama-server.exe"), "exe").unwrap();
+
+        assert_eq!(
+            list_installed_variants(&tmp, "ggml-org"),
+            vec!["b5857".to_string()]
+        );
+        // installed_meta без meta → None даже при живом бинаре
+        assert!(installed_meta(&tmp, "ggml-org", "b5857.staging").is_none());
+
+        let _ = fs::remove_dir_all(&tmp);
     }
 
     fn beellama() -> SourceSpec {

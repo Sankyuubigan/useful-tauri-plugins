@@ -52,6 +52,8 @@ const DASHBOARD_PROVIDERS_JS: &str = include_str!("../assets/dashboard/providers
 const DASHBOARD_UTILS_JS: &str = include_str!("../assets/dashboard/utils.js");
 /// ES-модуль домена комбо-связок (вкладка «Комбо»): импортируется app.js.
 const DASHBOARD_COMBOS_JS: &str = include_str!("../assets/dashboard/combos.js");
+/// ES-модуль вкладки «Модели» (отбор моделей, видимых в чате): импортируется app.js.
+const DASHBOARD_MODELS_JS: &str = include_str!("../assets/dashboard/models.js");
 
 fn asset(content_type: &'static str, body: &'static str) -> Response {
     (
@@ -89,6 +91,10 @@ async fn dashboard_utils_js() -> Response {
 
 async fn dashboard_combos_js() -> Response {
     asset("text/javascript; charset=utf-8", DASHBOARD_COMBOS_JS)
+}
+
+async fn dashboard_models_js() -> Response {
+    asset("text/javascript; charset=utf-8", DASHBOARD_MODELS_JS)
 }
 
 /// `GET /health` — лёгкая проверка без чтения конфига.
@@ -149,6 +155,7 @@ pub fn build(state: AppState) -> Router {
         .route("/dashboard/app.js", get(dashboard_js))
         .route("/dashboard/providers.js", get(dashboard_providers_js))
         .route("/dashboard/combos.js", get(dashboard_combos_js))
+        .route("/dashboard/models.js", get(dashboard_models_js))
         .route("/dashboard/utils.js", get(dashboard_utils_js))
         .route("/style.css", get(dashboard_css))
         .route("/app.js", get(dashboard_js))
@@ -298,10 +305,11 @@ mod tests {
         );
 
         // Шаблонные классы сканируются по ВСЕМ JS-модулям: карточки рендерит
-        // providers.js, связки — combos.js, а не app.js — гвард обязан читать
-        // источники, а не «где удобно». Прямые `assert`-строки для каждого файла ниже.
+        // providers.js, связки — combos.js, отбор моделей — models.js, а не
+        // app.js — гвард обязан читать источники, а не «где удобно».
+        // Прямые `assert`-строки для каждого файла ниже.
         let js_all = format!(
-            "{DASHBOARD_JS}\n{DASHBOARD_PROVIDERS_JS}\n{DASHBOARD_COMBOS_JS}\n{DASHBOARD_UTILS_JS}\n"
+            "{DASHBOARD_JS}\n{DASHBOARD_PROVIDERS_JS}\n{DASHBOARD_COMBOS_JS}\n{DASHBOARD_MODELS_JS}\n{DASHBOARD_UTILS_JS}\n"
         );
         let (js_n, js_bad) = dotted_tokens(&js_all);
         assert!(

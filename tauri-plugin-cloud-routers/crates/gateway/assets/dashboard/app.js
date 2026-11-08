@@ -1,8 +1,9 @@
-// Логика встроенного дашборда шлюза: вкладки, модели, релей, журнал,
+// Логика встроенного дашборда шлюза: вкладки, релей, журнал,
 // каталог пресетов и общий init.
 //
 // Домен провайдеров (карточки, ключи, OAuth, модалки) живёт в providers.js,
-// общие хелперы — в utils.js: файлы разделены по домену, а не по размеру.
+// домен моделей (отбор моделей, видимых в чате) — в models.js, общие хелперы —
+// в utils.js: файлы разделены по домену, а не по размеру.
 // Один источник правды — REST API шлюза (см. src/admin.rs). Страница ничего
 // не запоминает между перезагрузками: после перезапуска порта/состава
 // провайдеров она показывает ровно то, что реально настроено.
@@ -18,6 +19,7 @@ import {
 // к моменту любого вызова модуль с ними уже вычислен.
 import { renderProviders, bindProviderExtras } from './providers.js';
 import { renderCombos, bindComboExtras } from './combos.js';
+import { renderModels, bindModelExtras } from './models.js';
 
 // ────────────────────────────── загрузка ──────────────────────────────
 
@@ -84,25 +86,10 @@ function renderPresetsHint() {
   $('#modal-presets-hint').textContent = `${p.providers.length} провайдеров (${p.source})`;
 }
 
-// ─────────────────────────────── модели ───────────────────────────────
-
-function renderModels() {
-  const list = $('#models-list');
-  const ready = state.config.providers.filter(p => p.models_count > 0);
-  if (!ready.length) {
-    list.innerHTML = `<div class="gw-empty">Моделей пока нет.<br>` +
-      `Добавьте провайдера и нажмите «Обновить модели» — список опрашивается у провайдера, а не берётся из каталога.</div>`;
-    return;
-  }
-  list.innerHTML = ready.map(p =>
-    `<div class="gw-card">` +
-    `<div class="gw-card-head"><span class="gw-name">${esc(p.name)}</span>` +
-    `<span class="gw-id">${esc(p.id)}</span>` +
-    `<span class="gw-badge">${p.models_count} ${plural(p.models_count, 'модель', 'модели', 'моделей')}</span></div>` +
-    `<div class="gw-kv"><span>В чате как</span><b class="gw-mono">${esc(p.id)}/&lt;модель&gt;</b></div>` +
-    `<div class="gw-models-list">${p.models.map(m => `<span>${esc(m)}</span>`).join('')}</div>` +
-    `</div>`).join('');
-}
+// ──────────────────────────────── модели ───────────────────────────────
+//
+// Домен вкладки «Модели» (renderModels/bindModelExtras) живёт в models.js:
+// карточки с чекбоксами видимости, поиск, сохранение hidden_models.
 
 // ──────────────────────────────── релей ────────────────────────────────
 
@@ -291,17 +278,24 @@ async function showRelayToken() {
 
 /**
  * Поиск по каталогу: каталог после sync — сотни провайдеров, листать
- * `<select>` вручную непригодно. Фильтр ищет подстроку без учёта регистра по
- * имени, id и base_url.
+ * `<select>` вручную непригодно. Запрос бьётся на слова, каждое слово —
+ * независимое требование (AND): цельный поиск по подстроке сломан по
+ * построению для составных запросов — «flash llama» как подстрока не
+ * встретится в «llama-3.3-flash» (тот же дефект, что у вкладки «Модели»,
+ * репорт юзера 08.11.26). Ищет по имени, id и base_url без учёта регистра.
  *
  * Выбранное значение принудительно остаётся в списке, даже если под фильтр
  * не попадает: иначе `<select>` молча терял бы выбор пользователя при каждом
  * вводе символа.
  */
 export function presetMatches(p, q) {
-  if (!q) return true;
+  // q из fillPresetSelect приходит уже trim().toLowerCase(); split здесь —
+  // защита от других будущих вызовов: пустые токены отфильтровываются, и
+  // пустой запрос честно возвращает true (токенов нет — требований нет).
+  const tokens = String(q || '').toLowerCase().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return true;
   const hay = `${p.name || ''} ${p.id || ''} ${p.default_base_url || ''}`.toLowerCase();
-  return hay.includes(q);
+  return tokens.every(t => hay.includes(t));
 }
 
 export function fillPresetSelect() {
@@ -427,6 +421,7 @@ function initTabs() {
 function init() {
   initTabs();
   bindProviderExtras();
+  bindModelExtras();
   bindComboExtras();
   $('#btn-sync-presets').addEventListener('click', (e) => void syncPresets(e.currentTarget));
   $('#btn-modal-sync').addEventListener('click', (e) => void syncPresets(e.currentTarget));

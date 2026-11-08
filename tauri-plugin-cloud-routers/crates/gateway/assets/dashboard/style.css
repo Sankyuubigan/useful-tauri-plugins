@@ -241,6 +241,33 @@ textarea { font-family: var(--mono); resize: vertical; }
 }
 .gw-check-model-title:first-child { margin-top: 0; }
 
+/* ── Отбор моделей чата (вкладка «Модели», models.js) ─────────────────── */
+
+/* Поиск в строке с hint: глобальный input — width:100% и margin-top:4px,
+   что в .gw-row ломает раскладку строки. */
+#models-search { width: auto; flex: 0 1 340px; margin-top: 0; }
+
+/* Сетка чекбоксов моделей: узкие auto-fill колонки — сотни моделей
+   провайдера не растягиваются в вертикальную простыню. */
+.gw-model-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 4px 16px;
+  margin-top: 8px;
+}
+.gw-model-item input { width: auto; margin: 0; }
+.gw-model-item {
+  font-family: var(--mono);
+  font-size: 12px;
+  min-width: 0;
+}
+.gw-model-item > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.gw-model-item.gw-filter-hidden { display: none; }
+
 /* ── Комбо-связки (gw-combo) ─────────────────────────────────────────── */
 
 /* Цепочка участников в карточке: шаги вертикально, стрелка перед каждым,

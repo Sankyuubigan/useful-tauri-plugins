@@ -188,6 +188,17 @@ pub struct ProviderConfig {
     pub keys: Vec<AccountKey>,
     /// Модели, обнаруженные реальным `GET /models` (не захардкожены).
     pub models: Vec<DiscoveredModel>,
+    /// Модели, скрытые из списков моделей (`/v1/models`, `/api/combos`) выбором
+    /// пользователя в дашборде (вкладка «Модели»). Хранятся id моделей
+    /// апстрима; пусто = показывать все обнаруженные. Скрытие — кураторство
+    /// СПИСКА, не маршрутизации: `resolve_combo` этот список не читает, и
+    /// запрос с прямым id скрытой модели по-прежнему проходит (старые сессии
+    /// не ломаются ложным 404).
+    ///
+    /// Отдельное поле, а не флаг на [`DiscoveredModel`]: `refresh_models`
+    /// заменяет `models` целиком, и флаги стирались бы при каждом обновлении.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_models: Vec<String>,
 }
 
 impl Default for ProviderConfig {
@@ -203,6 +214,7 @@ impl Default for ProviderConfig {
             relay_id: None,
             keys: Vec::new(),
             models: Vec::new(),
+            hidden_models: Vec::new(),
         }
     }
 }

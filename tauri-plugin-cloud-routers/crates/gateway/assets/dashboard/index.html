@@ -51,11 +51,18 @@
 </section>
 
 <!-- ───────────────────────────── Модели ───────────────────────────── -->
+<!-- Отбор моделей, видимых в чате/IDE: чекбокс = модель в списке моделей
+     (list_combos); сохранение — PATCH /api/providers/:id (models.js). -->
 <section class="gw-page" id="page-models" hidden>
   <div class="gw-note">
-    Модели ниже получены <b>реальным запросом</b> <code>GET /models</code> к провайдеру.
-    Они и есть список, который видят IDE: пустой список означает, что провайдер
-    не будет использоваться в чате.
+    Модели получены <b>реальным запросом</b> <code>GET /models</code> к провайдеру.
+    Галочка = модель видна в списке моделей чата и IDE (<code>/v1/models</code>).
+    Скрытая модель исчезает только из списка — старые сессии и IDE с прямым id
+    продолжают работать. Связки (вкладка «Комбо») от этой выборки не зависят.
+  </div>
+  <div class="gw-row">
+    <input id="models-search" type="search" placeholder="Поиск: имя модели или провайдера…" autocomplete="off">
+    <span class="gw-hint" id="models-hint"></span>
   </div>
   <div id="models-list" class="gw-cards"></div>
 </section>

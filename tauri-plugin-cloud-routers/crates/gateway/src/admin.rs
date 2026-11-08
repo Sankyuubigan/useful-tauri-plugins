@@ -138,6 +138,9 @@ struct ProviderDto {
     keys: Vec<KeyDto>,
     models: Vec<String>,
     models_count: usize,
+    /// Модели, скрытые из списков чата (`ProviderConfig::hidden_models`):
+    /// дашборд рисует по ним состояние галочек на вкладке «Модели».
+    hidden_models: Vec<String>,
     /// Готов к маршрутизации (есть ключ и модели).
     routable: bool,
     /// Проверка ключей, применимая к провайдеру: `"gemini"` | `"openrouter"`,
@@ -244,6 +247,7 @@ fn provider_dto(state: &AppState, p: &ProviderConfig) -> ProviderDto {
             .collect(),
         models: p.models.iter().map(|m| m.id.clone()).collect(),
         models_count: p.models.len(),
+        hidden_models: p.hidden_models.clone(),
         routable: p.is_routable(),
         key_check: key_check::key_check_kind(p).map(|k| k.as_str().to_string()),
         cooldowns: p
@@ -569,6 +573,7 @@ async fn add_provider(State(state): State<AppState>, Json(body): Json<NewProvide
         relay_id: config.active_relay.clone(),
         keys,
         models: Vec::new(),
+        hidden_models: Vec::new(),
     };
 
     let key_count = provider.keys.len();
@@ -615,6 +620,12 @@ struct ProviderPatch {
     /// не трогать, `null` — снять привязку (напрямую), значение — id слота из `relays`.
     #[serde(default, deserialize_with = "double_option::deserialize")]
     relay_id: Option<Option<String>>,
+    /// Чёрный список моделей (`ProviderConfig::hidden_models`). `None` — не
+    /// трогать; `Some` — ЗАМЕНИТЬ список целиком: дашборд всегда шлёт
+    /// актуальное состояние галочек провайдера. Существование в `models` не
+    /// проверяется — выбор должен переживать временный провал refresh_models
+    /// (модель вернётся при следующем обновлении списка).
+    hidden_models: Option<Vec<String>>,
 }
 
 /// Достать провайдера или отдать `404`.
@@ -681,6 +692,9 @@ async fn patch_provider(
                 // по старому. Молча оставить их значило бы слать несуществующие
                 // модели новому апстриму.
                 p.models.clear();
+                // Выбор «что показывать в чате» — про модели того же прежнего
+                // апстрима: тот же корень обесценивания, чистим вместе.
+                p.hidden_models.clear();
             }
             if let Some(v) = patch.is_enabled {
                 p.is_enabled = v;
@@ -688,11 +702,31 @@ async fn patch_provider(
             if let Some(v) = patch.relay_id {
                 p.relay_id = v;
             }
+            if let Some(list) = &patch.hidden_models {
+                // Нормализация как у keys/presets_sources: trim, пустые
+                // отброшены, дубликаты схлопнуты. Порядок сохранения не важен,
+                // но детерминизм дёшев и полезен для diff'а конфига.
+                let mut cleaned: Vec<String> = Vec::with_capacity(list.len());
+                for raw in list {
+                    let v = raw.trim();
+                    if !v.is_empty() && !cleaned.iter().any(|x| x == v) {
+                        cleaned.push(v.to_string());
+                    }
+                }
+                p.hidden_models = cleaned;
+            }
             Ok(p.clone())
         })
         .map_err(internal)?;
 
-    state.events().info(format!("обновлён провайдер «{}»", id));
+    if patch.hidden_models.is_some() {
+        state.events().info(format!(
+            "провайдер «{}»: обновлён список моделей, скрытых из чата",
+            id
+        ));
+    } else {
+        state.events().info(format!("обновлён провайдер «{}»", id));
+    }
     notify_host(&state, "provider-updated");
     Ok(Json(provider_dto(&state, &updated)))
 }
@@ -2872,6 +2906,94 @@ mod tests {
         assert_eq!(v["name"], "Groq (мой)");
         assert_eq!(v["keys"].as_array().expect("keys").len(), 1);
         assert_eq!(core_store::load(&dir).providers[0].keys[0].key, "gsk-secret");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn patch_provider_hidden_models_roundtrip() {
+        // Отбор моделей чата: PATCH сохраняет нормализованный список, DTO
+        // отдаёт его дашборду, PATCH без поля скрытие не затирает.
+        let dir = tmp("hidden");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let mut cfg = GatewayConfig::default();
+        cfg.providers.push(ProviderConfig {
+            id: "groq".into(),
+            name: "Groq".into(),
+            base_url: "https://api.groq.com/openai/v1".into(),
+            keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true, name: None }],
+            models: vec![
+                cloud_routers_core::DiscoveredModel { id: "m1".into(), ..Default::default() },
+                cloud_routers_core::DiscoveredModel { id: "m2".into(), ..Default::default() },
+            ],
+            ..Default::default()
+        });
+        core_store::save(&dir, &cfg).expect("save");
+        let state = AppState::new(&dir).expect("state");
+
+        let r = patch_provider(
+            State(state),
+            Path("groq".to_string()),
+            Json(ProviderPatch {
+                hidden_models: Some(vec![" m1 ".into(), String::new(), "m1".into()]),
+                ..Default::default()
+            }),
+        )
+        .await
+        .expect("patch");
+        let bytes = axum::body::to_bytes(r.into_response().into_body(), usize::MAX).await.expect("body");
+        let v: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(
+            v["hidden_models"],
+            serde_json::json!(["m1"]),
+            "trim, пустые отброшены, дубликаты схлопнуты"
+        );
+        assert_eq!(core_store::load(&dir).providers[0].hidden_models, vec!["m1".to_string()]);
+
+        // PATCH без поля hidden_models — «не трогать»: скрытие сохраняется.
+        let state2 = AppState::new(&dir).expect("state2");
+        let r2 = patch_provider(
+            State(state2),
+            Path("groq".to_string()),
+            Json(ProviderPatch { name: Some("Groq (мой)".into()), ..Default::default() }),
+        )
+        .await
+        .expect("patch2");
+        let bytes2 = axum::body::to_bytes(r2.into_response().into_body(), usize::MAX).await.expect("body2");
+        let v2: serde_json::Value = serde_json::from_slice(&bytes2).expect("json2");
+        assert_eq!(v2["hidden_models"], serde_json::json!(["m1"]), "без поля список не меняется");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn patch_provider_clears_hidden_models_on_base_url_change() {
+        // Тот же корень, что у очистки models при смене апстрима: выбор «что
+        // показывать в чате» относился к прежнему базовому URL.
+        let dir = tmp("hiddenurl");
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let mut cfg = GatewayConfig::default();
+        cfg.providers.push(ProviderConfig {
+            id: "groq".into(),
+            name: "Groq".into(),
+            base_url: "https://api.groq.com/openai/v1".into(),
+            keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true, name: None }],
+            models: vec![cloud_routers_core::DiscoveredModel { id: "old-model".into(), ..Default::default() }],
+            hidden_models: vec!["old-model".into()],
+            ..Default::default()
+        });
+        core_store::save(&dir, &cfg).expect("save");
+        let state = AppState::new(&dir).expect("state");
+
+        let r = patch_provider(
+            State(state),
+            Path("groq".to_string()),
+            Json(ProviderPatch { base_url: Some("https://other.dev/v1".into()), ..Default::default() }),
+        )
+        .await
+        .expect("patch");
+        let bytes = axum::body::to_bytes(r.into_response().into_body(), usize::MAX).await.expect("body");
+        let v: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        assert_eq!(v["hidden_models"].as_array().expect("hidden").len(), 0, "смена апстрима стирает выбор");
+        assert!(core_store::load(&dir).providers[0].hidden_models.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

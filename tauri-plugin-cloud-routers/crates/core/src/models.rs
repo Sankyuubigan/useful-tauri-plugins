@@ -109,6 +109,13 @@ pub fn list_combos(providers: &[ProviderConfig]) -> Vec<ComboInfo> {
             if m.id.is_empty() {
                 continue;
             }
+            // Скрытое в дашборде (ProviderConfig::hidden_models) уходит из
+            // списка: клиент видит только то, что пользователь оставил.
+            // Маршрутизация (resolve_combo) скрытие не читает — прямой id
+            // работает как раньше.
+            if p.hidden_models.iter().any(|h| h == &m.id) {
+                continue;
+            }
             out.push(ComboInfo {
                 name: combo_id(&p.id, &m.id),
                 kind: "llm".to_string(),
@@ -316,6 +323,42 @@ mod tests {
         assert_eq!(combos[0].models, vec!["m1".to_string()], "только своя модель, не каталог");
         assert_eq!(combos[1].name, "groq/m2");
         assert_eq!(combos[1].models, vec!["m2".to_string()]);
+    }
+
+    #[test]
+    fn list_combos_skips_hidden_models() {
+        // Отбор в дашборде: скрытое из списка уходит, остальное — в порядке
+        // конфига. Пустой hidden_models = все видны (дефолт старых конфигов).
+        let mut p = provider("groq", &["m1", "m2", "m3"]);
+        p.hidden_models = vec!["m2".into()];
+        let ps = vec![p];
+        let combos = list_combos(&ps);
+        assert_eq!(
+            combos.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["groq/m1", "groq/m3"],
+            "скрытая модель уходит из списка, порядок сохраняется"
+        );
+    }
+
+    #[test]
+    fn list_all_combos_keeps_user_combo_with_hidden_member() {
+        // Связка — явное намерение пользователя; участник, скрытый из общего
+        // списка, из связки не выпадает (иначе «куда делась моя связка»).
+        let mut p = provider("groq", &["m1"]);
+        p.hidden_models = vec!["m1".into()];
+        let mut cfg = GatewayConfig::default();
+        cfg.providers = vec![p];
+        cfg.combos.push(crate::config::ComboConfig {
+            name: "fast".into(),
+            members: vec![crate::config::ComboMember {
+                provider_id: "groq".into(),
+                model_id: "m1".into(),
+                key_ids: None,
+            }],
+        });
+        let combos = list_all_combos(&cfg);
+        assert_eq!(combos.len(), 1, "per-provider комбо скрыто, связка осталась");
+        assert_eq!(combos[0].name, "fast");
     }
 
     #[test]

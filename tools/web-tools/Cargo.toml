@@ -1,0 +1,34 @@
+[package]
+name = "web-tools"
+version = "0.1.0"
+edition = "2021"
+description = "SSOT-ядро мульти-движкового веб-поиска: движки, HTTP-слой, кеш и статистика сбоев"
+license = "MIT"
+
+[lib]
+name = "web_tools"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+reqwest = { workspace = true }
+# Атомарная запись кеша/статистики (read_text/write_atomic).
+json-store = { path = "../../json-store" }
+# Метки времени lastOkTs/lastFailTs в сводке статистики.
+chrono = { workspace = true }
+
+# Регулярки выдачи (порт JS-регулярок); \p{L}/\p{N} поддерживаются.
+regex = "1"
+# Bing (u= base64url) и double-decode uddg DDG. Оба pure Rust.
+base64 = "0.22"
+percent-encoding = "2"
+# Разбор URL (sogou_expand_url, source=hostname у startpage). Pure Rust.
+url = "2"
+# Разжатие ответов поисковиков — ПОРТ decodeBody вручную (gzip/deflate/brotli).
+# Фичи reqwest (gzip/deflate/brotli) тянут async-compression, которого нет в
+# кеше этой машины; flate2/brotli pure Rust, C не компилируется.
+flate2 = "1"
+brotli = "7"

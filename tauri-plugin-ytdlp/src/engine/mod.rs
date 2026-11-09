@@ -1,6 +1,7 @@
 //! Движок yt-dlp: управление бинарником, конфиг, скачивание видео.
 
 pub mod downloader;
+pub mod subtitles;
 pub mod ytdlp_manager;
 
 use serde::{Deserialize, Serialize};
@@ -60,7 +61,7 @@ pub fn save_config(app: &AppHandle, cfg: &YtdlpConfig) -> Result<(), String> {
     }
     let json = serde_json::to_string_pretty(cfg)
         .map_err(|e| format!("Ошибка сериализации: {e}"))?;
-    ko_json_store::write_atomic(&path, &json)
+    json_store::write_atomic(&path, &json)
         .map_err(|e| format!("Ошибка записи конфига: {e}"))
 }
 

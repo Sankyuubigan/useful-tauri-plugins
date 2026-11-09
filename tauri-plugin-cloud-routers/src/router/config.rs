@@ -136,13 +136,13 @@ const MIGRATED_KEYS: &[&str] = &["cloud_routers", "nine_router"];
 
 /// Каталог данных плагина без `AppHandle` (`APPDATA/cloud-routers`).
 ///
-/// Путь выбирает единая дверь [`ko_json_store::roots`]: тот же корень, что у
+/// Путь выбирает единая дверь [`json_store::roots`]: тот же корень, что у
 /// хоста и остальных плагинов. Раньше здесь был прямой `%APPDATA%` — и когда
 /// каталог оказывался закрыт для записи (уровень целостности процесса ниже
 /// уровня объекта, антивирус, квота), установка роутера падала с «отказано в
 /// доступе», и починить это на стороне хоста было невозможно.
 pub fn app_data_dir() -> PathBuf {
-    ko_json_store::roots::plugin_dir(APP_DATA_DIR_NAME)
+    json_store::roots::plugin_dir(APP_DATA_DIR_NAME)
 }
 
 /// Разовый перенос настроек из старого per-app конфига хоста, если общего файла
@@ -194,7 +194,7 @@ fn ensure_migrated(dest: &Path) {
                 return;
             }
         };
-        if let Err(e) = ko_json_store::write_atomic(dest, &json) {
+        if let Err(e) = json_store::write_atomic(dest, &json) {
             log::warn!("cloud-routers: перенос настроек не удался: {}", e);
             return;
         }
@@ -258,7 +258,7 @@ pub fn save_config(app: &AppHandle, router_id: RouterId, config: &RouterConfig) 
 /// Расширяемая для тестов версия сохранения (по явному пути).
 pub fn save_config_file(path: &PathBuf, router_id: RouterId, config: &RouterConfig) -> Result<(), String> {
     let value = serde_json::to_value(config).map_err(|e| e.to_string())?;
-    ko_json_store::update_json(path, move |root: &mut serde_json::Value| {
+    json_store::update_json(path, move |root: &mut serde_json::Value| {
         if !root.is_object() {
             *root = serde_json::json!({});
         }
@@ -340,7 +340,7 @@ pub fn server_script(dist: &std::path::Path, router_id: RouterId) -> PathBuf {
 
 /// Путь к каталогу данных роутера: единый для всех приложений (`APPDATA/<id>`).
 pub fn router_data_dir(_app: &AppHandle, router_id: RouterId) -> PathBuf {
-    let data_dir = ko_json_store::roots::plugin_dir(router_id.dir_name());
+    let data_dir = json_store::roots::plugin_dir(router_id.dir_name());
     if let Err(e) = fs::create_dir_all(&data_dir) {
         log::error!(
             "cloud-routers: не удалось создать {} ({}) — установка и запуск роутера невозможны",
@@ -411,7 +411,7 @@ pub fn write_server_record(
             .as_secs(),
     };
     if let Ok(json) = serde_json::to_string_pretty(&record) {
-        if let Err(e) = ko_json_store::write_atomic(&path, &json) {
+        if let Err(e) = json_store::write_atomic(&path, &json) {
             log::warn!("cloud-routers: ошибка записи server.json: {}", e);
         }
     }
@@ -433,7 +433,7 @@ pub fn migrate_legacy_config(app: &AppHandle) {
         .unwrap_or_else(|| serde_json::json!({}));
     if root.get("nine_router").is_some() && root.get("cloud_routers").is_none() {
         let nine = root.get("nine_router").cloned().unwrap_or_default();
-        let _ = ko_json_store::update_json(&path, move |root: &mut serde_json::Value| {
+        let _ = json_store::update_json(&path, move |root: &mut serde_json::Value| {
             if let serde_json::Value::Object(root_map) = root {
                 let cloud = root_map
                     .entry("cloud_routers".to_string())
@@ -482,7 +482,7 @@ mod tests {
     /// Это и есть свойство «шлюз общий для всех проектов»: путь к его бинарю не
     /// зависит от того, какое приложение сейчас открыто. Проверяется сравнением
     /// с [`app_data_dir`] — если бы дефолт снова считался от `current_exe`,
-    /// тест упал бы, а не «просто работал бы у King Orch».
+    /// тест упал бы, а не «просто работал бы у хоста».
     #[test]
     fn router_dir_defaults_to_plugin_dir() {
         for router in RouterId::ALL.iter().copied() {

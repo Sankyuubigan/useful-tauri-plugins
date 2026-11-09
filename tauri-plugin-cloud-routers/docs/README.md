@@ -113,7 +113,7 @@ tauri::Builder::default()
 `tauri.conf.json` — `app.withGlobalTauri: true` (для vanilla-канала) и опционально:
 
 ```json
-"plugins": { "cloud-routers": { "data_dir_name": "com.kingorch.app" } }
+"plugins": { "cloud-routers": { "data_dir_name": "com.example.app" } }
 ```
 
 ## Команды

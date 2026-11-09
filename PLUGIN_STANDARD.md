@@ -65,7 +65,7 @@ repos-control/                         ← ХОСТ (vanilla, без npm/бан�
 ```toml
 [workspace]
 resolver = "2"
-members = ["tauri-plugin-about-updates", "tauri-plugin-speech", "tauri-plugin-logs", "ko-json-store"]
+members = ["tauri-plugin-about-updates", "tauri-plugin-speech", "tauri-plugin-logs", "json-store"]
 
 [workspace.dependencies]
 tauri = { version = "2", features = [] }
@@ -82,13 +82,13 @@ cargo не должен требовать node при сборке хоста.
 
 ---
 
-## 2. Записи в `app_data_dir` / `sessions` — только через `ko-json-store`
+## 2. Записи в `app_data_dir` / `sessions` — только через `json-store`
 
-**Общий крейт `ko-json-store`** (`my-tauri-plugins/ko-json-store`) — обычная библиотека, **НЕ** Tauri-плагин (без `links`/`build.rs`/permissions). Единый механизм атомарных записей JSON для хоста и всех плагинов, чтобы протокол записи не дублировался:
+**Общий крейт `json-store`** (`my-tauri-plugins/json-store`) — обычная библиотека, **НЕ** Tauri-плагин (без `links`/`build.rs`/permissions). Единый механизм атомарных записей JSON для хоста и всех плагинов, чтобы протокол записи не дублировался:
 
 ```toml
 [dependencies]
-ko-json-store = { path = "../ko-json-store" }
+json-store = { path = "../json-store" }
 ```
 
 Два примитива:
@@ -102,7 +102,7 @@ ko-json-store = { path = "../ko-json-store" }
 
 **Исключения** (не `app_data_dir`): логи и выводы рядом с exe, sidecar-данные с собственным `DATA_DIR` (например, 9router SQLite) — остаются на прямой записи.
 
-**Тесты** (в `ko-json-store/src/lib.rs`): конкурентные `update_json` без потерь, читатель не видит невалидный JSON, tmp не остаётся при ошибке. Запуск: `cargo test -p ko-json-store --lib` (через `test-plugin.bat ko-json-store`).
+**Тесты** (в `json-store/src/lib.rs`): конкурентные `update_json` без потерь, читатель не видит невалидный JSON, tmp не остаётся при ошибке. Запуск: `cargo test -p json-store --lib` (через `test-plugin.bat json-store`).
 
 ---
 
@@ -536,7 +536,7 @@ function logPlugin(msg: string): void {
 
 ### 12.4 Почему нельзя использовать `console.error`
 
-`console.error` пишет **только в консоль Chromium DevTools (F12)**, которая закрыта у пользователя в релизе. В UI-вкладку «Логи» и файл `king_orch.log` сообщение не отправляется, и красная плашка-тост пользователю не показывается. Для юзера это выглядит как «нажал, ничего не произошло и тишина».
+`console.error` пишет **только в консоль Chromium DevTools (F12)**, которая закрыта у пользователя в релизе. В UI-вкладку «Логи» и лог-файл приложения сообщение не отправляется, и красная плашка-тост пользователю не показывается. Для юзера это выглядит как «нажал, ничего не произошло и тишина».
 
 ---
 
@@ -549,17 +549,17 @@ Web Component + **два JS-канала** (npm `dist-js` + vanilla `api-iife.js
 
 ## 13. Исключение из стандарта: CLI-крейты без Tauri
 
-`agent-tools/` — **не Tauri-плагин**: у него нет GUI, поэтому ненужны `links`,
+`tools/agent-tools/` — **не Tauri-плагин**: у него нет GUI, поэтому ненужны `links`,
 `build.rs`, `permissions/`, `guest-js/` и оба JS-канала. Это обычный
 workspace-member с бинарником, который вызывает ИИ-агент кодер из своей оболочки.
 
 Что из стандарта остаётся обязательным:
 
 - **[workspace.dependencies]** вместо собственных версий (см. §1);
-- **запись JSON — через `ko-json-store`** (см. §2): временные файлы и lock-файл
+- **запись JSON — через `json-store`** (см. §2): временные файлы и lock-файл
   рядом с состоянием не мусор, это цена атомарности;
 - **логирование** (§12): у CLI нет файла лога — ставится минимальный `log::Log`
-  в stderr, иначе `log::warn!` внутри `ko-json-store` исчезают без следа;
+  в stderr, иначе `log::warn!` внутри `json-store` исчезают без следа;
 - **UTF-8 без BOM** (§11), в том числе в `tests/`;
 - **тесты** — `test-plugin.bat <крейт>` (unit) и `cargo test -p <крейт>` (сквозные).
   Сквозные тесты CLI поднимают стаб-сервер на `127.0.0.1:0`, а не стучатся в живой
@@ -568,4 +568,4 @@ workspace-member с бинарником, который вызывает ИИ-�
   в сеть, обязан отдавать код возврата, а не паниковать.
 
 Контракт «тул ↔ агент» — **код возврата, а не текст**: значения зафиксированы в
-`agent-tools/src/exit.rs` и проверяются сквозными тестами.
+`tools/agent-tools/src/exit.rs` и проверяются сквозными тестами.

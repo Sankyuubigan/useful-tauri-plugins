@@ -264,7 +264,7 @@ pub fn load(data_dir: &Path) -> (ProviderPresetsCatalog, CatalogSource) {
 pub fn save_cache(data_dir: &Path, catalog: &ProviderPresetsCatalog) -> Result<(), String> {
     validate(catalog)?;
     let json = serde_json::to_string_pretty(catalog).map_err(|e| e.to_string())?;
-    ko_json_store::write_atomic(&presets_cache_path(data_dir), &json)
+    json_store::write_atomic(&presets_cache_path(data_dir), &json)
         .map_err(|e| format!("Не удалось записать кэш каталога: {}", e))
 }
 

@@ -527,12 +527,12 @@ mod real_model_tests {
         // У тест-бинарника `current_exe()` — это `target/debug/deps`, а не
         // приложение, поэтому каталог данных надо задать явно. В боевом
         // приложении его задаёт хост из `app_config.data_dir` (см. main.rs).
-        match std::env::var("KING_ORCH_DATA_DIR") {
+        match std::env::var("SYSTEM1_DATA_DIR") {
             Ok(dir) if !dir.trim().is_empty() => {
                 crate::set_data_dir(std::path::PathBuf::from(dir));
             }
             _ => {
-                eprintln!("SKIP: задайте KING_ORCH_DATA_DIR — корень данных KingOrchData");
+                eprintln!("SKIP: задайте SYSTEM1_DATA_DIR — корень данных плагина");
                 return;
             }
         }

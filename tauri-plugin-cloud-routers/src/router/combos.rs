@@ -125,7 +125,7 @@ pub fn get_models(base_url: &str) -> Result<Vec<String>, String> {
     if let Some(arr) = v.get("data").and_then(|d| d.as_array()) {
         for item in arr {
             if let Some(id) = item.get("id").and_then(|x| x.as_str()) {
-                // Только комбо — регион контекста King Orch (локальные gguf не трогаем).
+                // Только комбо — регион контекста хоста (локальные gguf не трогаем).
                 if item.get("owned_by").and_then(|o| o.as_str()) == Some("combo") {
                     out.push(id.to_string());
                 }

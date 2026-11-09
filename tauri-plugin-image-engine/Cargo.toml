@@ -41,7 +41,7 @@ symphonia = { version = "0.5", default-features = false, features = ["mp3", "aac
 tauri-plugin-downloader = { path = "../tauri-plugin-downloader" }
 
 # Атомарные записи JSON (app_config.json): tmp->rename + sidecar lock.
-ko-json-store = { path = "../ko-json-store" }
+json-store = { path = "../json-store" }
 
 [dev-dependencies]
 # Бенч: серверные строки sd-server (pipe_log → log::info!) должны попадать

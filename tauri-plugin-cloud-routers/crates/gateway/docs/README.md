@@ -33,7 +33,7 @@ cloud-routers-gateway --data-dir <каталог> [--port <порт>]
   gateway.log           stdout + stderr процесса
 ```
 
-Записи атомарные (`ko-json-store::write_atomic`): читатель никогда не увидит
+Записи атомарные (`json-store::write_atomic`): читатель никогда не увидит
 обрезанный JSON.
 
 ## API

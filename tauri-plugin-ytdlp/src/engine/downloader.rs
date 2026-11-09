@@ -5,7 +5,7 @@
 //! 2. Скачивание с парсингом прогресса из stdout
 //! 3. Поддержка отмены через kill_process_tree
 
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -389,6 +389,7 @@ pub async fn start_download(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Read;
 
     /// Регрессия на корневую причину падения `[Errno 22] Invalid argument`:
     /// stdout yt-dlp.exe на Windows в cp1251, строгий UTF-8-разбор обрывал

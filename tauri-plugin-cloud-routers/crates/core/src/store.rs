@@ -11,7 +11,7 @@
 //!   gateway.log           stdout+stderr шлюза
 //! ```
 //!
-//! Все записи — через `ko-json-store::write_atomic` (tmp → fsync → rename),
+//! Все записи — через `json-store::write_atomic` (tmp → fsync → rename),
 //! как требует `PLUGIN_STANDARD §2`: читатель никогда не увидит обрезанный JSON.
 //! Собственный lock-файл здесь не нужен — файл принадлежит одному процессу
 //! (шлюзу), читателей из хоста много, но они только читают.
@@ -24,9 +24,9 @@ use crate::config::GatewayConfig;
 
 /// Атомарная запись JSON (tmp + rename) — реэкспорт инфраструктурного крейта:
 /// шлюз пишет свои файлы состояния тем же механизмом, что `gateway.json`
-/// (free_usage.rs 27.10.26), и НЕ должен зависеть от `ko-json-store` напрямую
+/// (free_usage.rs 27.10.26), и НЕ должен зависеть от `json-store` напрямую
 /// минуя домен-слой.
-pub use ko_json_store::write_atomic;
+pub use json_store::write_atomic;
 
 /// Каталог данных роутера `gateway` внутри app-data хоста.
 ///
@@ -83,7 +83,7 @@ pub fn save_oauth_sessions(
     sessions: &std::collections::BTreeMap<String, crate::protocol::OAuthSession>,
 ) -> Result<(), String> {
     let json = serde_json::to_string_pretty(sessions).map_err(|e| e.to_string())?;
-    ko_json_store::write_atomic(&oauth_sessions_path(data_dir), &json)
+    json_store::write_atomic(&oauth_sessions_path(data_dir), &json)
         .map_err(|e| format!("Не удалось записать {}: {}", oauth_sessions_path(data_dir).display(), e))
 }
 
@@ -182,7 +182,7 @@ pub fn save(data_dir: &Path, cfg: &GatewayConfig) -> Result<(), String> {
         return Err(format!("Конфигурация не прошла проверку: {}", problems.join("; ")));
     }
     let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
-    ko_json_store::write_atomic(&config_path(data_dir), &json).map_err(|e| {
+    json_store::write_atomic(&config_path(data_dir), &json).map_err(|e| {
         format!("Не удалось записать {}: {}", config_path(data_dir).display(), e)
     })
 }
@@ -229,7 +229,7 @@ pub fn write_server_record(data_dir: &Path, pid: u32, port: u16, version: Option
     };
     match serde_json::to_string_pretty(&record) {
         Ok(json) => {
-            if let Err(e) = ko_json_store::write_atomic(&server_record_path(data_dir), &json) {
+            if let Err(e) = json_store::write_atomic(&server_record_path(data_dir), &json) {
                 log::warn!("cloud-routers: не удалось записать server.json: {}", e);
             }
         }

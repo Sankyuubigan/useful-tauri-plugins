@@ -17,7 +17,7 @@ log = { workspace = true }
 # Единый движок скачивания (SSOT) для установщиков/откатов версий.
 tauri-plugin-downloader = { path = "../tauri-plugin-downloader" }
 # Атомарные записи JSON в app_data_dir (отчёт об установке) — PLUGIN_STANDARD §2.
-ko-json-store = { path = "../ko-json-store" }
+json-store = { path = "../json-store" }
 
 [lib]
 name = "tauri_plugin_about_updates"

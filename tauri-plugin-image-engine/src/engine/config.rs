@@ -47,13 +47,13 @@ pub struct ImageEngineConfig {
 /// Путь к `app_config.json` хоста (runtime, через AppHandle).
 pub fn get_config_path(_app: &AppHandle) -> PathBuf {
     // Конфиг image-engine лежит в каталоге хоста, но путь выбирает общая дверь
-    // `ko-json-store`: прямой `app.path().app_data_dir()` приводил к тому, что
+    // `json-store`: прямой `app.path().app_data_dir()` приводил к тому, что
     // хост писал в один каталог, а плагин искал другой — и обе стороны
     // выглядели исправными, пока настройки не пропадали.
-    ko_json_store::roots::app_dir(HOST_APP_IDENTIFIER, "").join("app_config.json")
+    json_store::roots::app_dir(HOST_APP_IDENTIFIER, "").join("app_config.json")
 }
 
-/// Идентификатор приложения-хоста: имя папки данных King Orch.
+/// Идентификатор приложения-хоста (константа — известная привязка к хосту; вынос в параметр: README репозитория, таблица нарушений).
 const HOST_APP_IDENTIFIER: &str = "com.kingorch.app";
 
 /// Имя папки общего хранилища данных хоста — зеркало
@@ -105,8 +105,8 @@ fn best_drive_letter() -> Option<String> {
 /// `data_dir` из общего app_config.json (тот же файл, что читают все методы
 /// конфига) → диск с макс. свободным местом → фоллбэк `<exe>/KingOrchData`.
 pub fn data_root() -> PathBuf {
-    let path = ko_json_store::roots::app_dir(HOST_APP_IDENTIFIER, "").join("app_config.json");
-    if let Ok(Some(text)) = ko_json_store::read_text(&path) {
+    let path = json_store::roots::app_dir(HOST_APP_IDENTIFIER, "").join("app_config.json");
+    if let Ok(Some(text)) = json_store::read_text(&path) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
             if let Some(raw) = v.get("data_dir").and_then(|x| x.as_str()) {
                 if !raw.trim().is_empty() {
@@ -167,8 +167,8 @@ fn normalize_selected_video_bundle(cfg: &mut ImageEngineConfig) {
 /// Читает image-ключи ДО создания Tauri-приложения (тулы оркестратора, рантайм
 /// без AppHandle). Путь — тот же корень, что и у хоста.
 pub fn load_image_config_early() -> ImageEngineConfig {
-    let path = ko_json_store::roots::app_dir(HOST_APP_IDENTIFIER, "").join("app_config.json");
-    let mut cfg = match ko_json_store::read_text(&path) {
+    let path = json_store::roots::app_dir(HOST_APP_IDENTIFIER, "").join("app_config.json");
+    let mut cfg = match json_store::read_text(&path) {
         Ok(Some(data)) => serde_json::from_str(&data).unwrap_or_default(),
         Ok(None) => ImageEngineConfig::default(),
         Err(e) => {
@@ -333,7 +333,7 @@ pub fn load_image_config(app: &AppHandle) -> ImageEngineConfig {
 pub fn save_image_config(app: &AppHandle, config: &ImageEngineConfig) -> Result<(), String> {
     let path = get_config_path(app);
     let image_value = serde_json::to_value(config).map_err(|e| e.to_string())?;
-    ko_json_store::update_json(&path, move |root: &mut serde_json::Value| {
+    json_store::update_json(&path, move |root: &mut serde_json::Value| {
         if !root.is_object() {
             *root = serde_json::json!({});
         }

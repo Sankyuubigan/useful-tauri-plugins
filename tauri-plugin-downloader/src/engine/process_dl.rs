@@ -139,7 +139,7 @@ pub async fn powershell(task: &TaskHandle, url: &str, dest: &Path) -> Result<u64
 pub async fn bitsadmin(task: &TaskHandle, url: &str, dest: &Path) -> Result<u64, String> {
     let dest_str = dest.display().to_string();
     let job_name = format!(
-        "king_orch_dl_{}",
+        "dl_{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()

@@ -7,7 +7,7 @@
 //! пишется в общий лог. Так «откат сработал / не сработал» — проверяемый факт,
 //! а не надежда на флаги.
 //!
-//! Запись — только через `ko-json-store` (PLUGIN_STANDARD §2): tmp → sync → rename.
+//! Запись — только через `json-store` (PLUGIN_STANDARD §2): tmp → sync → rename.
 
 use std::path::PathBuf;
 
@@ -87,7 +87,7 @@ fn write_report<R: Runtime>(app: &AppHandle<R>, report: &InstallReport) -> Resul
     let path = report_path(app)?;
     let json = serde_json::to_string_pretty(report)
         .map_err(|e| format!("Не удалось сериализовать отчёт об установке: {}", e))?;
-    ko_json_store::write_atomic(&path, &json).map_err(|e| {
+    json_store::write_atomic(&path, &json).map_err(|e| {
         log::error!("[about-updates] не удалось записать отчёт {}: {}", path.display(), e);
         format!("Не удалось записать отчёт об установке: {}", e)
     })

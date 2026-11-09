@@ -31,7 +31,7 @@ tauri-plugin-downloader = { path = "../tauri-plugin-downloader" }
 encoding_rs = "0.8"
 
 # Атомарные записи JSON (app_config.json, server.json): tmp->rename + sidecar lock.
-ko-json-store = { path = "../ko-json-store" }
+json-store = { path = "../json-store" }
 
 [features]
 default = []

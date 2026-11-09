@@ -76,6 +76,8 @@ pub fn init() -> TauriPlugin<Wry, Config> {
             commands::fetch_video_info,
             commands::download_video,
             commands::cancel_download,
+            commands::prepare_transcript,
+            commands::get_transcript_chunk,
         ])
         .build()
 }

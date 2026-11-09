@@ -122,7 +122,7 @@ pub struct CatalogEntry {
 /// Все проекты, использующие плагин, читают и пишут один `app_config.json`.
 ///
 /// `set_app_data_dir_name` оставлена как no-op для обратной совместимости:
-/// существующие хосты (King Orch) вызывают её в `main()`, компиляция не ломается,
+/// существующие хосты вызывают её в `main()`, компиляция не ломается,
 /// но значение игнорируется — плагин всегда использует `"llama-engine"`.
 pub fn set_app_data_dir_name(_name: &str) {
     // Deprecated no-op: плагин владеет своим каталогом.
@@ -135,13 +135,13 @@ fn app_data_dir_name() -> &'static str {
 
 /// Папка данных плагина без AppHandle (`APPDATA/llama-engine`).
 ///
-/// Путь выбирает единая дверь [`ko_json_store::roots`], общая с хостом и
+/// Путь выбирает единая дверь [`json_store::roots`], общая с хостом и
 /// остальными плагинами. Прямой `%APPDATA%` означал, что недоступность
 /// каталога (уровень целостности процесса ниже уровня объекта, антивирус,
 /// квота) превращала запуск движка в «отказано в доступе» без возможности
 /// починить это с стороны хоста.
 pub fn app_data_dir_early() -> PathBuf {
-    ko_json_store::roots::plugin_dir(app_data_dir_name())
+    json_store::roots::plugin_dir(app_data_dir_name())
 }
 
 /// Каталоги-доноры для авто-миграции: старые per-app хранилища движка.
@@ -223,7 +223,7 @@ pub fn save_config(app: &AppHandle, config: &EngineConfig) -> Result<(), String>
 /// Расширяемая для тестов версия сохранения (по явному пути).
 pub fn save_engine_config_file(path: &Path, config: &EngineConfig) -> Result<(), String> {
     let engine_value = serde_json::to_value(config).map_err(|e| e.to_string())?;
-    ko_json_store::update_json(path, move |root: &mut serde_json::Value| {
+    json_store::update_json(path, move |root: &mut serde_json::Value| {
         if !root.is_object() {
             *root = serde_json::json!({});
         }

@@ -21,7 +21,7 @@ sha2 = "0.10"
 futures-util = "0.3"
 regex = "1"
 lazy_static = "1"
-ko-json-store = { path = "../ko-json-store" }
+json-store = { path = "../json-store" }
 
 [lib]
 name = "tauri_plugin_ytdlp"

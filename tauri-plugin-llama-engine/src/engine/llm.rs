@@ -572,7 +572,7 @@ impl LlamaEngine {
                         const VRAM_RESERVE_MB: f64 = 512.0;
                         // Решение о резке — ТОЛЬКО по факту (§00.2): измеренные
                         // компоненты (файл + KV + буферы) + резерв, БЕЗ множителя.
-                        // Инцидент 01.11.26 (king_orch (9).log, 8 ГБ, сборка уже
+                        // Инцидент 01.11.26 (лог юзера, 8 ГБ, сборка уже
                         // с резервом 512): (5167+768+256)×1.25+512 = 8251 МБ >
                         // свободно 7697 урезало Орнита до 29/32 слоёв → 5 t/s →
                         // два сгоревших факт-экстрактора = «14 минут юзера».
@@ -3171,7 +3171,7 @@ mod tests {
 
     #[test]
     fn cuda_fallback_diagnosis_finds_no_kernel_image() {
-        let dir = std::env::temp_dir().join(format!("ko_diag_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("diag_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("llama_server.log");
         std::fs::write(&log, concat!(
@@ -3187,7 +3187,7 @@ mod tests {
 
     #[test]
     fn cuda_fallback_diagnosis_empty_on_clean_log() {
-        let dir = std::env::temp_dir().join(format!("ko_diag2_{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("diag2_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let log = dir.join("llama_server.log");
         std::fs::write(&log, "llama server listening on port 17800").unwrap();

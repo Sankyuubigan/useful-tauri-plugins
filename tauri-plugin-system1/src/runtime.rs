@@ -195,7 +195,7 @@ static ENVIRONMENT: OnceLock<Result<(), String>> = OnceLock::new();
 /// переменную, чтобы его можно было менять в одном месте; сам дефолт НЕ
 /// подбирался — 4 это то, что уже стояло в проде.
 pub fn intra_threads() -> usize {
-    std::env::var("KING_ORCH_SYSTEM1_THREADS")
+    std::env::var("SYSTEM1_THREADS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
@@ -292,13 +292,13 @@ mod download_tests {
     /// Корень данных для тест-бинарника: `current_exe()` у него — это
     /// `target/debug/deps`, а не папка приложения.
     fn ensure_data_root() -> bool {
-        match std::env::var("KING_ORCH_DATA_DIR") {
+        match std::env::var("SYSTEM1_DATA_DIR") {
             Ok(dir) if !dir.trim().is_empty() => {
                 crate::set_data_dir(std::path::PathBuf::from(dir));
                 true
             }
             _ => {
-                eprintln!("SKIP: задайте KING_ORCH_DATA_DIR — корень данных KingOrchData");
+                eprintln!("SKIP: задайте SYSTEM1_DATA_DIR — корень данных плагина");
                 false
             }
         }

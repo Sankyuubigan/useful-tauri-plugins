@@ -149,3 +149,41 @@ pub fn cancel_download(app: AppHandle) -> Result<(), String> {
     let _ = app.emit("ytdlp:download-cancelled", ());
     Ok(())
 }
+
+// ===== Субтитры YouTube (SSOT-механика — engine::subtitles) =====
+
+/// Подготовка транскрипта YouTube: yt-dlp → VTT → чистка спонсорских → чанки.
+/// Тонкая обёртка для UI: механика — `engine::subtitles` (нативный тул хоста
+/// вызывает engine-функции напрямую, без AppHandle).
+#[tauri::command]
+pub async fn prepare_transcript(
+    app: AppHandle,
+    url: String,
+    chunk_size: Option<usize>,
+    cookies_file: Option<String>,
+) -> Result<engine::subtitles::PreparedTranscript, String> {
+    let dir = ytdlp_dir(&app);
+    tauri::async_runtime::spawn_blocking(move || {
+        let cookies = cookies_file.as_deref().map(std::path::Path::new);
+        engine::subtitles::prepare_transcript(
+            &dir,
+            &url,
+            chunk_size.unwrap_or(engine::subtitles::DEFAULT_CHUNK_SIZE),
+            cookies,
+        )
+    })
+    .await
+    .map_err(|e| format!("Ошибка подготовки транскрипта: {e}"))?
+    .map_err(|e| e.to_string())
+}
+
+/// Чанк транскрипта (1-based) из кеша модуля субтитров.
+#[tauri::command]
+pub async fn get_transcript_chunk(url: String, chunk_index: usize) -> Result<engine::subtitles::TranscriptChunk, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        engine::subtitles::get_transcript_chunk(&url, chunk_index)
+    })
+    .await
+    .map_err(|e| format!("Ошибка чтения чанка транскрипта: {e}"))?
+    .map_err(|e| e.to_string())
+}

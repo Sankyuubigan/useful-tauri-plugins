@@ -10,7 +10,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 log = { workspace = true }
 # Atomic JSON writes (tmp -> fsync -> rename) - PLUGIN_STANDARD §2.
-ko-json-store = { path = "../../../ko-json-store" }
+json-store = { path = "../../../json-store" }
 # System CSPRNG for the relay secret (see src/relay_token.rs). No `rand`:
 # a predictable relay token is the same as no token at all, so we need the OS
 # generator directly, not a seeded PRNG.

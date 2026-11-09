@@ -69,7 +69,7 @@ function launchApp(cfg, exePath, opts = {}) {
     //    (SHGetKnownFolderPath) и игнорирует env APPDATA, а плагины читают
     //    std::env::var_os("APPDATA") — подмена ломала плагины (инцидент
     //    «Движок изображений не установлен»). Dev и релиз делят один
-    //    %APPDATA%\<app>\ — это осознанно: записи атомарны (ko-json-store).
+    //    %APPDATA%\<app>\ — это осознанно: записи атомарны (json-store).
     //    Stale target/dev-appdata не удаляем автоматически (мусор в target).
 
     const p = spawn(exePath, [], { cwd: exeDir, detached: true, stdio: 'ignore', env });
@@ -104,7 +104,7 @@ function launchApp(cfg, exePath, opts = {}) {
 //
 // Историческая проблема: killApp делал `taskkill /IM <app>.exe` — это убивал
 // ВСЕ процессы с таким именем в системе, включая установленную рабочую копию
-// (напр. D:\Programs\nildencorp\King Orch\king_orch.exe). Из-за этого нельзя
+// (напр. D:\Programs\<vendor>\<App>\app.exe). Из-за этого нельзя
 // было держать релиз открытым во время сборки, а ИИ-агенты повторяли ту же
 // команду при ошибках линковки.
 //

@@ -22,7 +22,7 @@ fn spawn_hidden(program: &str) -> tokio::process::Command {
 pub async fn chrome_cdp(task: &TaskHandle, url: &str, dest: &Path) -> Result<u64, String> {
     let chrome_exe = find_chrome()?;
     let temp_dir = std::env::temp_dir().join(format!(
-        "king_orch_chrome_dl_{}",
+        "chrome_dl_{}",
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()

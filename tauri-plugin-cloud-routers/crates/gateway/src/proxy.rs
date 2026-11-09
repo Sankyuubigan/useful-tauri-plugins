@@ -33,6 +33,7 @@ use cloud_routers_core::config::{ComboConfig, GatewayConfig, ProviderConfig, tri
 use cloud_routers_core::keys::{parse_retry_after, FailureKind};
 use cloud_routers_core::models::{resolve_combo, resolve_user_combo};
 use serde_json::json;
+use std::time::Instant;
 
 use crate::app::AppState;
 
@@ -385,6 +386,9 @@ async fn route_provider(
 
     let mut last: Option<Response> = None;
     let mut attempted: Vec<String> = Vec::new();
+    // Тело запроса в дамп — один раз на запрос (первая попытка): между
+    // попытками ключей тело не меняется, дублирование сделало бы файл враньём.
+    let mut request_dumped = false;
     // Запрос расходует дневную бесплатную квоту OpenRouter (`:free`-модель)?
     // Предикат чистый, вычисляется один раз до цикла.
     let count_free = crate::free_usage::counts_toward_free_limit(&provider, &upstream_model);
@@ -418,14 +422,30 @@ async fn route_provider(
             }
         };
         let req = build_reqwest(&state, &up);
+        if !request_dumped {
+            request_dumped = true;
+            // Query не пишется: у части провайдеров ключ живёт в query-параметре
+            // (срезает сам дампер, см. bodydump::strip_query).
+            let url = up.route.request_url();
+            let stream = payload.get("stream").and_then(|v| v.as_bool()).unwrap_or(false);
+            state.dump().request(requested_model, &provider_id, &key_id, url, stream, &up.body);
+        }
         state.events().info(format!(
             "запрос {} → провайдер «{}» модель «{}» ключ {}",
             requested_model, provider_id, upstream_model, key_id
         ));
 
+        let attempt_started = Instant::now();
         let response = match state.http().execute(req).await {
             Ok(r) => r,
             Err(e) => {
+                state.dump().transport_error(
+                    requested_model,
+                    &provider_id,
+                    &key_id,
+                    &crate::neterr::describe(&e),
+                    attempt_started.elapsed().as_millis() as u64,
+                );
                 state.rotation().mark_failure(&provider_id, &key_id, FailureKind::Transport, None);
                 state.events().warn(format!(
                     "ключ {} провайдера «{}»: транспортная ошибка ({}), пробуем следующий",
@@ -469,6 +489,19 @@ async fn route_provider(
                     }
                 }
                 let detail = response.text().await.unwrap_or_default();
+                // Отказ ключа — тоже факт о провайдере: тело ответа (текст квоты,
+                // причина 401) в дампе, чтобы разбирать ротацию по файлам.
+                state.dump().response(
+                    requested_model,
+                    &provider_id,
+                    &key_id,
+                    status.as_u16(),
+                    attempt_started.elapsed().as_millis() as u64,
+                    false,
+                    detail.as_bytes(),
+                    detail.len() as u64,
+                    true,
+                );
                 let is_oauth = key_id == "oauth";
                 if !is_oauth {
                     state.rotation().mark_failure(&provider_id, &key_id, kind, retry_after);
@@ -512,8 +545,15 @@ async fn route_provider(
                 // Всё, что ниже, не содержит ни одного `continue` по ключу:
                 // байты уйдут клиенту, повтор приведёт к склейке двух ответов.
                 let final_status = status;
+                let dump_ctx = crate::bodydump::DumpCtx {
+                    dumper: state.dump(),
+                    model: requested_model.to_string(),
+                    provider: provider_id.clone(),
+                    key: key_id.clone(),
+                    started: attempt_started,
+                };
                 let passthrough =
-                    build_passthrough_response(response, adapter.as_ref()).await;
+                    build_passthrough_response(response, adapter.as_ref(), Some(dump_ctx)).await;
                 let body_hint = summarize(passthrough.body_hint.as_deref());
                 state.events().info(format!(
                     "ответ {} от провайдера «{}» ключ {} (HTTP {}){}",
@@ -565,9 +605,15 @@ struct Passthrough {
 /// `Body::from_stream(reqwest_stream)` — ни байта не копится в памяти, задержка
 /// между токенами определяется только сетью. Иначе тело читается целиком — там
 /// буферизация обязательна, иначе клиент не узнает длину ответа.
+///
+/// `dump` — контекст файлового дампа тел ([`crate::bodydump`]): стрим
+/// оборачивается в tee-обёртку (клиенту — тот же поток, копия капится в дамп
+/// и записывается один раз на завершении/обрыве), нестримовое тело дампится
+/// целиком из уже прочитанных байтов.
 async fn build_passthrough_response(
     upstream: reqwest::Response,
     adapter: &dyn crate::protocol::VendorProtocol,
+    dump: Option<crate::bodydump::DumpCtx>,
 ) -> Passthrough {
     let status = upstream.status();
     let content_type = upstream
@@ -578,7 +624,14 @@ async fn build_passthrough_response(
         .to_string();
 
     if adapter.is_stream_response(&content_type) {
-        let stream = upstream.bytes_stream();
+        let body = match dump {
+            Some(ctx) => Body::from_stream(crate::bodydump::TeeBody::new(
+                upstream.bytes_stream(),
+                status.as_u16(),
+                ctx,
+            )),
+            None => Body::from_stream(upstream.bytes_stream()),
+        };
         let response = Response::builder()
             .status(status)
             // Content-Type берём у апстрима: он знает, что именно прислал.
@@ -587,7 +640,7 @@ async fn build_passthrough_response(
             // пересчитанный content-length «схлопнул» бы поток.
             .header("cache-control", "no-cache")
             .header("x-accel-buffering", "no")
-            .body(Body::from_stream(stream))
+            .body(body)
             // Ошибка сборки возможна только при невалидном статус-коде, которого
             // здесь быть не может (status пришёл из reqwest). Отдаём 502, чтобы
             // клиент не увидел панику.
@@ -600,6 +653,19 @@ async fn build_passthrough_response(
     match upstream.bytes().await {
         Ok(bytes) => {
             let hint = String::from_utf8_lossy(&bytes[..bytes.len().min(400)]).to_string();
+            if let Some(ctx) = dump {
+                ctx.dumper.response(
+                    &ctx.model,
+                    &ctx.provider,
+                    &ctx.key,
+                    status.as_u16(),
+                    ctx.started.elapsed().as_millis() as u64,
+                    false,
+                    &bytes,
+                    bytes.len() as u64,
+                    true,
+                );
+            }
             let response = Response::builder()
                 .status(status)
                 .header(
@@ -613,14 +679,25 @@ async fn build_passthrough_response(
                 });
             Passthrough { response, body_hint: Some(hint) }
         }
-        Err(e) => Passthrough {
-            response: openai_error(
-                StatusCode::BAD_GATEWAY,
-                format!("Не удалось прочитать ответ апстрима: {}", crate::neterr::describe(&e)),
-                "upstream_read_error",
-            ),
-            body_hint: None,
-        },
+        Err(e) => {
+            if let Some(ctx) = dump {
+                ctx.dumper.transport_error(
+                    &ctx.model,
+                    &ctx.provider,
+                    &ctx.key,
+                    &format!("Не удалось прочитать ответ апстрима: {}", crate::neterr::describe(&e)),
+                    ctx.started.elapsed().as_millis() as u64,
+                );
+            }
+            Passthrough {
+                response: openai_error(
+                    StatusCode::BAD_GATEWAY,
+                    format!("Не удалось прочитать ответ апстрима: {}", crate::neterr::describe(&e)),
+                    "upstream_read_error",
+                ),
+                body_hint: None,
+            }
+        }
     }
 }
 

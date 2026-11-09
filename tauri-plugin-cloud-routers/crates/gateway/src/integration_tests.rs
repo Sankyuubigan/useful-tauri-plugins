@@ -1247,7 +1247,113 @@ async fn openrouter_key_check_rejects_relay_without_secret() {
         .expect_err("секрет релея обязателен");
     assert!(err.contains("секрет"), "{err}");
 
-    // До сети дело не дошло: эхо-релей не получил ни одного запроса.
+    // До сети не дошло: эхо-релей не получил ни одного запроса.
     assert!(echo.hits().is_empty(), "прямой запрос молча не шёл: {:?}", echo.hits());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ──────────────────────────── дамп тел запрос/ответ ────────────────────────────
+
+/// Все записи дампа каталога как JSON-объекты (части после ротации — тоже).
+fn dump_records(dir: &std::path::Path) -> Vec<serde_json::Value> {
+    let mut files: Vec<_> = std::fs::read_dir(dir.join("logs"))
+        .expect("каталог logs должен существовать")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().starts_with("dump_"))
+                .unwrap_or(false)
+        })
+        .collect();
+    files.sort();
+    let mut out = Vec::new();
+    for f in files {
+        let text = std::fs::read_to_string(&f).expect("дамп читается");
+        for line in text.lines().filter(|l| !l.trim().is_empty()) {
+            out.push(serde_json::from_str(line).expect("каждая строка — валидный JSON"));
+        }
+    }
+    out
+}
+
+#[tokio::test]
+async fn body_dump_writes_request_and_response_pair() {
+    // Нестримовый ответ: пара req/resp байт-в-байт, секрет ключа — не в файле.
+    let reply = br#"{"id":"c1","choices":[{"message":{"content":"ok"}}]}"#.to_vec();
+    let (base, _mock) = start_mock(MockBehavior {
+        chat_status: 200,
+        chat_content_type: "application/json".into(),
+        chat_body: reply.clone(),
+        models_body: models_body_json(),
+        ..Default::default()
+    })
+    .await;
+    let (state, dir) = state_for(&base, vec![key("k1", "sk-secret-value-1", true)]);
+
+    let r = post_chat(state, serde_json::json!({"model":"mock/m1","messages":[{"role":"user","content":"привет"}],"temperature":0.7})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let _ = body_string(r).await;
+
+    let recs = dump_records(&dir);
+    assert_eq!(recs.len(), 2, "ровно пара req/resp: {:?}", recs);
+    assert_eq!(recs[0]["dir"], "req");
+    assert_eq!(recs[0]["model"], "mock/m1", "в дампе — имя, которое просил клиент");
+    assert_eq!(recs[0]["provider"], "mock");
+    assert_eq!(recs[0]["key"], "k1", "id ключа пишется, сам секрет — нет");
+    assert_eq!(recs[0]["stream"], false);
+    assert_eq!(recs[0]["status"], serde_json::Value::Null);
+    let dumped_url = recs[0]["url"].as_str().expect("url — строка");
+    assert!(dumped_url.starts_with(&base), "URL указывает на мок: {dumped_url}");
+    assert!(!dumped_url.contains('?'), "query (место секретов у части провайдеров) не пишется");
+    let upstream_body: serde_json::Value =
+        serde_json::from_str(recs[0]["body"].as_str().expect("тело — строка")).expect("тело запроса — JSON");
+    assert_eq!(upstream_body["model"], "m1", "апстрим получает переписанный id модели");
+    assert_eq!(upstream_body["temperature"], 0.7);
+    assert_eq!(recs[1]["dir"], "resp");
+    assert_eq!(recs[1]["status"], 200);
+    assert_eq!(recs[1]["stream"], false);
+    assert_eq!(recs[1]["completed"], true);
+    assert_eq!(recs[1]["body"], String::from_utf8_lossy(&reply).as_ref(), "тело ответа байт-в-байт");
+
+    for entry in std::fs::read_dir(dir.join("logs")).expect("logs") {
+        let text = std::fs::read_to_string(entry.expect("e").path()).expect("read");
+        assert!(!text.contains("sk-secret-value-1"), "секрет ключа утёк в дамп");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test]
+async fn body_dump_captures_streamed_response() {
+    // SSE: дамп пишется по завершении потока, тело — вся SSE-последовательность.
+    let sse = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"При\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"вет\"}}]}\n\n",
+        "data: [DONE]\n\n"
+    )
+    .as_bytes()
+    .to_vec();
+    let (base, _mock) = start_mock(MockBehavior {
+        chat_status: 200,
+        chat_content_type: "text/event-stream".into(),
+        chat_body: sse.clone(),
+        models_body: models_body_json(),
+        ..Default::default()
+    })
+    .await;
+    let (state, dir) = state_for(&base, vec![key("k1", "sk-1", true)]);
+
+    let r = post_chat(state, serde_json::json!({"model":"mock/m1","messages":[],"stream":true})).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let body = body_string(r).await;
+    assert!(body.contains("[DONE]"), "поток дочитан до конца: {body}");
+
+    let recs = dump_records(&dir);
+    assert_eq!(recs.len(), 2, "пара req/resp и для стрима: {:?}", recs);
+    assert_eq!(recs[0]["stream"], true, "stream=true от запроса клиента");
+    assert_eq!(recs[1]["dir"], "resp");
+    assert_eq!(recs[1]["stream"], true);
+    assert_eq!(recs[1]["completed"], true, "поток дочитан — дамп помечен как полный");
+    assert_eq!(recs[1]["body"], String::from_utf8_lossy(&sse).as_ref(), "тело потока сохранено целиком");
+    assert!(recs[1]["dur_ms"].as_u64().expect("dur_ms") > 0);
     let _ = std::fs::remove_dir_all(&dir);
 }

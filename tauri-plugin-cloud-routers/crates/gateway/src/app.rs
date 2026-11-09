@@ -55,6 +55,8 @@ struct Inner {
     /// Счётчик бесплатных (`:free`) запросов OpenRouter — файл состояния
     /// рядом с конфигом, операции сериализованы внутри.
     free_usage: crate::free_usage::FreeUsageState,
+    /// Файловый дамп сырых тел запрос/ответ (`logs/dump_YYYY-MM-DD.jsonl`).
+    dump: std::sync::Arc<crate::bodydump::Dumper>,
     started_at: Instant,
 }
 
@@ -91,6 +93,7 @@ impl AppState {
                 events: EventLog::new(),
                 oauth: crate::kiro_oauth::OAuthState::new(),
                 free_usage: crate::free_usage::FreeUsageState::new(data_dir),
+                dump: std::sync::Arc::new(crate::bodydump::Dumper::new(data_dir)),
                 started_at: Instant::now(),
             }),
         })
@@ -123,6 +126,12 @@ impl AppState {
     /// Счётчик бесплатных (`:free`) запросов OpenRouter.
     pub fn free_usage(&self) -> &crate::free_usage::FreeUsageState {
         &self.inner.free_usage
+    }
+
+    /// Дампер сырых тел запрос/ответ: `Arc`, потому что уезжает в tee-стрим
+    /// ответа и переживает ответ хендлера.
+    pub fn dump(&self) -> std::sync::Arc<crate::bodydump::Dumper> {
+        std::sync::Arc::clone(&self.inner.dump)
     }
 
     /// Снимок конфигурации.

@@ -25,6 +25,7 @@
 
 mod admin;
 mod app;
+mod bodydump;
 mod combos_admin;
 mod eventstream;
 mod free_usage;

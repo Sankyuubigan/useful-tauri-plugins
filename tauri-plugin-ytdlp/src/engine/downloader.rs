@@ -461,10 +461,24 @@ pub async fn start_download(
             Ok(v) => v.join("\n"),
             Err(poisoned) => poisoned.into_inner().join("\n"),
         };
-        let host = match last_host.lock() {
+        let mut host = match last_host.lock() {
             Ok(g) => g.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
         };
+        // 503-строки не содержат домена — если ни одна строка ошибки его не дала,
+        // достаём CDN-домен фрагментов из метаданных (youtube.com доступен даже
+        // при заблокированном CDN). Проверено логами: extract-фаза проходит всегда.
+        if host.is_none() && errors_seen > 0 {
+            match fetch_info(&dir, &url) {
+                Ok(info) => {
+                    if let Some(h) = net_errors::cdn_host_from_info(&info) {
+                        log::warn!("[YTDLP] {}", net_errors::host_warning(&h));
+                        host = Some(h);
+                    }
+                }
+                Err(e) => log::info!("[YTDLP] CDN-домен из метаданных не получен: {e}"),
+            }
+        }
         let collected_trim = collected.trim().to_string();
         let mut msg = if errors_seen > 0 {
             // Сетевые ошибки были: наверху — что случилось и что делать,

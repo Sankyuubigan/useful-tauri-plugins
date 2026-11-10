@@ -34,6 +34,32 @@ pub fn is_skipping_fragment(line: &str) -> bool {
     SKIPPING_FRAGMENT_RE.is_match(line)
 }
 
+/// CDN-домен фрагментов из метаданных yt-dlp (`--dump-json`).
+///
+/// Запасной источник домена: строки «HTTP Error 503: Service Unavailable»
+/// не содержат host, и домен попадается в логе только когда CDN отвечает
+/// таймаутом/reset. Для HLS у формата `fragment_base_url` указывает на
+/// `rrN---sn-*.googlevideo.com`, для DASH — сам `url`. Метаданные идут через
+/// youtube.com и доступны даже при заблокированном CDN.
+pub fn cdn_host_from_info(info: &serde_json::Value) -> Option<String> {
+    let formats = info.get("formats")?.as_array()?;
+    for key in ["fragment_base_url", "url"] {
+        for f in formats {
+            let Some(u) = f.get(key).and_then(|v| v.as_str()) else { continue };
+            let Some(rest) = u.strip_prefix("https://").or_else(|| u.strip_prefix("http://"))
+            else {
+                continue;
+            };
+            let end = rest.find('/').unwrap_or(rest.len());
+            let host = &rest[..end];
+            if host.ends_with("googlevideo.com") {
+                return Some(host.to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Текст явного предупреждения о домене (единая формулировка для stdout/stderr).
 pub fn host_warning(host: &str) -> String {
     format!(
@@ -102,5 +128,30 @@ mod tests {
         assert!(m.contains("прокси"));
         let m2 = abort_message(None);
         assert!(m2.contains("CDN-домен"));
+    }
+
+    #[test]
+    fn cdn_host_from_dump_json() {
+        let info: serde_json::Value = serde_json::json!({
+            "formats": [
+                {"format_id": "625", "url": "https://manifest.googlevideo.com/api/manifest/hls_playlist/x"},
+                {"format_id": "999", "fragment_base_url": "https://rr3---sn-xguxaxjvh-8v1s.googlevideo.com/videoplayback/x"}
+            ]
+        });
+        // fragment_base_url приоритетнее url: именно он — хост фрагментов
+        assert_eq!(
+            cdn_host_from_info(&info),
+            Some("rr3---sn-xguxaxjvh-8v1s.googlevideo.com".to_string())
+        );
+        let url_only: serde_json::Value =
+            serde_json::json!({ "formats": [{"url": "https://rr2---sn-ixh7rn76.googlevideo.com/videoplayback/x"}] });
+        assert_eq!(
+            cdn_host_from_info(&url_only),
+            Some("rr2---sn-ixh7rn76.googlevideo.com".to_string())
+        );
+        let no_cdn: serde_json::Value = serde_json::json!({ "formats": [{"url": "https://youtube.com/x"}] });
+        assert_eq!(cdn_host_from_info(&no_cdn), None);
+        let empty: serde_json::Value = serde_json::json!({});
+        assert_eq!(cdn_host_from_info(&empty), None);
     }
 }

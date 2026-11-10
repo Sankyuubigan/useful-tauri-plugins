@@ -15,6 +15,7 @@ Default permissions for the ytdlp plugin.
 - `allow-fetch-video-info`
 - `allow-download-video`
 - `allow-cancel-download`
+- `allow-grab-ytdlp-cookies`
 
 ## Permission Table
 
@@ -424,6 +425,19 @@ Allow downloading YouTube videos via yt-dlp.
 <td>
 
 Allow cancelling active yt-dlp download.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`ytdlp:allow-grab-ytdlp-cookies`
+
+</td>
+<td>
+
+Allow grabbing YouTube cookies from a browser/profile dir (anti-bot).
 
 </td>
 </tr>

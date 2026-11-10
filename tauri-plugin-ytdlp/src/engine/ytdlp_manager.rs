@@ -124,6 +124,7 @@ pub fn get_status(dir: &Path, app: &AppHandle) -> Result<YtdlpStatus, String> {
         "yt-dlp не установлен. Нажмите «Установить».".to_string()
     };
 
+    let cfg = super::load_config(app);
     Ok(YtdlpStatus {
         installed,
         version,
@@ -137,7 +138,9 @@ pub fn get_status(dir: &Path, app: &AppHandle) -> Result<YtdlpStatus, String> {
         } else {
             None
         },
-        proxy: super::load_config(app).proxy,
+        proxy: cfg.proxy,
+        cookie_browser: cfg.cookie_browser.clone(),
+        cookie_profile_dir: cfg.cookie_profile_dir.clone(),
         message,
     })
 }

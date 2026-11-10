@@ -20,6 +20,12 @@ export function setFfmpegPath(path) {
 export function setYtdlpProxy(proxy) {
     return invoke('plugin:ytdlp|set_ytdlp_proxy', { proxy });
 }
+export function grabYtdlpCookies(browser, profileDir) {
+    return invoke('plugin:ytdlp|grab_ytdlp_cookies', {
+        browser,
+        profileDir,
+    });
+}
 export function installDeno() {
     return invoke('plugin:ytdlp|install_deno');
 }

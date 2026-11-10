@@ -86,6 +86,32 @@
                  style="flex:1; min-width:180px;">
           <button id="setProxy">\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C</button>
         </div>
+        <h3 class="section-title" style="margin-top:12px;">\u041A\u0443\u043A\u0438\u0441\u044B YouTube (\u0430\u043D\u0442\u0438-\u0431\u043E\u0442)</h3>
+        <div class="row">
+          <label>\u0411\u0440\u0430\u0443\u0437\u0435\u0440:</label>
+          <select id="cookieBrowser">
+            <option value="chrome">Chrome</option>
+            <option value="edge">Edge</option>
+            <option value="firefox">Firefox</option>
+            <option value="brave">Brave</option>
+            <option value="opera">Opera</option>
+            <option value="opera_gx">Opera GX</option>
+            <option value="vivaldi">Vivaldi</option>
+            <option value="chromium">Chromium</option>
+            <option value="arc">Arc</option>
+            <option value="librewolf">LibreWolf</option>
+            <option value="zen">Zen</option>
+          </select>
+        </div>
+        <div class="row">
+          <label>\u041F\u0430\u043F\u043A\u0430 User Data:</label>
+          <input type="text" id="cookieProfileDir" placeholder="\u2026GoogleChromeUser Data \u2014 \u043B\u044E\u0431\u043E\u0439 Chromium-\u0444\u043E\u0440\u043A" style="flex:1; min-width:180px;">
+          <button id="browseCookieDir">\u041E\u0431\u0437\u043E\u0440</button>
+        </div>
+        <div class="row">
+          <button id="grabCookies" class="primary">\u0417\u0430\u0431\u0440\u0430\u0442\u044C \u043A\u0443\u043A\u0438\u0441\u044B</button>
+          <span id="cookieStatus" class="hint" style="flex:1; word-break:break-all;"></span>
+        </div>
         <div class="row" style="margin-top:10px;">
           <button id="install" class="primary">\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C yt-dlp</button>
           <button id="checkUpdate" style="display:none;">\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435</button>
@@ -106,6 +132,8 @@
       this.root.getElementById("setDir").addEventListener("click", () => this.onSetDir());
       this.root.getElementById("setFfmpeg").addEventListener("click", () => this.onSetFfmpeg());
       this.root.getElementById("setProxy").addEventListener("click", () => this.onSetProxy());
+      this.root.getElementById("browseCookieDir").addEventListener("click", () => this.onBrowseCookieDir());
+      this.root.getElementById("grabCookies").addEventListener("click", () => this.onGrabCookies());
       void this.refresh();
     }
     disconnectedCallback() {
@@ -142,6 +170,10 @@
       }
       const proxyInput = this.root.getElementById("proxyInput");
       proxyInput.value = st.proxy ?? "";
+      const cookieBrowser = this.root.getElementById("cookieBrowser");
+      if (st.cookie_browser) cookieBrowser.value = st.cookie_browser;
+      const cookieDir = this.root.getElementById("cookieProfileDir");
+      cookieDir.value = st.cookie_profile_dir ?? "";
       const installed = st.installed;
       this.root.getElementById("install").style.display = installed ? "none" : "inline-block";
       this.root.getElementById("checkUpdate").style.display = installed ? "inline-block" : "none";
@@ -263,6 +295,42 @@
         toast(`\u041E\u0448\u0438\u0431\u043A\u0430: ${e}`, "error");
       }
     }
+    async onBrowseCookieDir() {
+      try {
+        const sel = await open({ directory: true });
+        if (!sel) return;
+        const path = Array.isArray(sel) ? sel[0] : sel;
+        if (!path) return;
+        this.root.getElementById("cookieProfileDir").value = path;
+      } catch (e) {
+        toast(`\u041E\u0448\u0438\u0431\u043A\u0430: ${e}`, "error");
+      }
+    }
+    async onGrabCookies() {
+      const btn = this.root.getElementById("grabCookies");
+      const statusEl = this.root.getElementById("cookieStatus");
+      const browser = this.root.getElementById("cookieBrowser").value;
+      const dir = this.root.getElementById("cookieProfileDir").value.trim();
+      if (btn.disabled) return;
+      btn.disabled = true;
+      statusEl.textContent = "\u0417\u0430\u0445\u0432\u0430\u0442 \u043A\u0443\u043A\u0438\u0441\u043E\u0432\u2026";
+      try {
+        const res = await grabYtdlpCookies(dir ? null : browser, dir || null);
+        const parts = [`${res.count} \u043A\u0443\u043A\u0438\u0441\u043E\u0432 \u0434\u043B\u044F youtube.com \u2014 \u0438\u0441\u0442\u043E\u0447\u043D\u0438\u043A: ${res.source}`];
+        if (res.notes.length) parts.push(res.notes.join(" "));
+        statusEl.textContent = parts.join(". ");
+        if (res.count > 0) {
+          toast(`\u041A\u0443\u043A\u0438\u0441\u044B \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u044B: ${res.count} \u0448\u0442.`);
+        } else {
+          toast(res.notes.join(" ") || "\u041A\u0443\u043A\u0438\u0441\u043E\u0432 \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D\u043E", "error");
+        }
+      } catch (e) {
+        statusEl.textContent = "";
+        toast(`\u041E\u0448\u0438\u0431\u043A\u0430: ${e}`, "error");
+      } finally {
+        btn.disabled = false;
+      }
+    }
   };
   var YtdlpDownloadPanel = class extends HTMLElement {
     constructor() {
@@ -303,6 +371,9 @@
             <option value="browser">\u0418\u0437 \u0431\u0440\u0430\u0443\u0437\u0435\u0440\u0430</option>
             <option value="file">Cookies.txt</option>
           </select>
+          <span id="browserHint" class="hint" style="display:none; flex:1;">
+            \u041A\u0443\u043A\u0438\u0441\u044B, \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D\u043D\u044B\u0435 \u043D\u0430 \u0432\u043A\u043B\u0430\u0434\u043A\u0435 \u042E\u0442\u0443\u0431 (\xAB\u0417\u0430\u0431\u0440\u0430\u0442\u044C \u043A\u0443\u043A\u0438\u0441\u044B\xBB)
+          </span>
           <select id="browserSelect" style="display:none;">
             <option value="chrome">Chrome</option>
             <option value="edge">Edge</option>
@@ -378,15 +449,22 @@
         if (cfg.download_path) {
           outputDir.value = cfg.download_path;
         }
+        if (cfg.cookie_browser || cfg.cookie_profile_dir) {
+          const authMode = this.root.getElementById("authMode");
+          authMode.value = "browser";
+          this.onAuthChange();
+        }
       } catch {
       }
     }
     onAuthChange() {
       const mode = this.root.getElementById("authMode").value;
+      const browserHint = this.root.getElementById("browserHint");
       const browserSelect = this.root.getElementById("browserSelect");
       const cookiesFile = this.root.getElementById("cookiesFile");
       const browseCookies = this.root.getElementById("browseCookies");
-      browserSelect.style.display = mode === "browser" ? "inline-block" : "none";
+      browserHint.style.display = mode === "browser" ? "inline" : "none";
+      browserSelect.style.display = mode === "browser" ? "none" : "inline-block";
       cookiesFile.style.display = mode === "file" ? "inline-block" : "none";
       browseCookies.style.display = mode === "file" ? "inline-block" : "none";
     }
@@ -432,7 +510,6 @@
       const quality = this.root.getElementById("quality").value;
       const outputDir = this.root.getElementById("outputDir").value.trim();
       const authMode = this.root.getElementById("authMode").value;
-      const browser = this.root.getElementById("browserSelect").value;
       const cookiesFile = this.root.getElementById("cookiesFile").value.trim();
       if (!outputDir) {
         toast("\u0423\u043A\u0430\u0436\u0438\u0442\u0435 \u043F\u0430\u043F\u043A\u0443 \u0434\u043B\u044F \u0441\u043E\u0445\u0440\u0430\u043D\u0435\u043D\u0438\u044F", "error");
@@ -452,7 +529,9 @@
           quality,
           outputDir,
           authMode,
-          browser: authMode === "browser" ? browser : null,
+          // «Из браузера»: бэкенд сам подставит сохранённый cookies.txt
+          // (вкладка Ютуб → «Забрать кукисы»).
+          browser: null,
           cookiesFile: authMode === "file" ? cookiesFile : null
         });
       } catch (e) {
@@ -496,6 +575,12 @@
   }
   function setYtdlpProxy(proxy) {
     return invoke("plugin:ytdlp|set_ytdlp_proxy", { proxy });
+  }
+  function grabYtdlpCookies(browser, profileDir) {
+    return invoke("plugin:ytdlp|grab_ytdlp_cookies", {
+      browser,
+      profileDir
+    });
   }
   function installDeno() {
     return invoke("plugin:ytdlp|install_deno");

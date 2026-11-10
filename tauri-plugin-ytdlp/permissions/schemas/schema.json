@@ -415,10 +415,10 @@
           "markdownDescription": "Denies the set_ytdlp_dir command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the ytdlp plugin.\n#### This default permission set includes:\n\n- `allow-get-ytdlp-status`\n- `allow-install-ytdlp`\n- `allow-check-ytdlp-update`\n- `allow-install-ytdlp-update`\n- `allow-set-ytdlp-dir`\n- `allow-set-ffmpeg-path`\n- `allow-set-ytdlp-proxy`\n- `allow-install-deno`\n- `allow-fetch-video-info`\n- `allow-download-video`\n- `allow-cancel-download`",
+          "description": "Default permissions for the ytdlp plugin.\n#### This default permission set includes:\n\n- `allow-get-ytdlp-status`\n- `allow-install-ytdlp`\n- `allow-check-ytdlp-update`\n- `allow-install-ytdlp-update`\n- `allow-set-ytdlp-dir`\n- `allow-set-ffmpeg-path`\n- `allow-set-ytdlp-proxy`\n- `allow-install-deno`\n- `allow-fetch-video-info`\n- `allow-download-video`\n- `allow-cancel-download`\n- `allow-grab-ytdlp-cookies`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the ytdlp plugin.\n#### This default permission set includes:\n\n- `allow-get-ytdlp-status`\n- `allow-install-ytdlp`\n- `allow-check-ytdlp-update`\n- `allow-install-ytdlp-update`\n- `allow-set-ytdlp-dir`\n- `allow-set-ffmpeg-path`\n- `allow-set-ytdlp-proxy`\n- `allow-install-deno`\n- `allow-fetch-video-info`\n- `allow-download-video`\n- `allow-cancel-download`"
+          "markdownDescription": "Default permissions for the ytdlp plugin.\n#### This default permission set includes:\n\n- `allow-get-ytdlp-status`\n- `allow-install-ytdlp`\n- `allow-check-ytdlp-update`\n- `allow-install-ytdlp-update`\n- `allow-set-ytdlp-dir`\n- `allow-set-ffmpeg-path`\n- `allow-set-ytdlp-proxy`\n- `allow-install-deno`\n- `allow-fetch-video-info`\n- `allow-download-video`\n- `allow-cancel-download`\n- `allow-grab-ytdlp-cookies`"
         },
         {
           "description": "Allow reading yt-dlp status (installed, version, path, ffmpeg, deno).",
@@ -485,6 +485,12 @@
           "type": "string",
           "const": "allow-cancel-download",
           "markdownDescription": "Allow cancelling active yt-dlp download."
+        },
+        {
+          "description": "Allow grabbing YouTube cookies from a browser/profile dir (anti-bot).",
+          "type": "string",
+          "const": "allow-grab-ytdlp-cookies",
+          "markdownDescription": "Allow grabbing YouTube cookies from a browser/profile dir (anti-bot)."
         }
       ]
     }

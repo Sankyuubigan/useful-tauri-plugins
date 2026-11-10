@@ -8,6 +8,8 @@ export interface YtdlpStatus {
     deno_installed: boolean;
     deno_path?: string | null;
     proxy?: string | null;
+    cookie_browser?: string | null;
+    cookie_profile_dir?: string | null;
     message: string;
 }
 export interface VideoInfo {
@@ -25,6 +27,13 @@ export declare function installYtdlpUpdate(): Promise<YtdlpStatus>;
 export declare function setYtdlpDir(path: string): Promise<YtdlpStatus>;
 export declare function setFfmpegPath(path: string): Promise<YtdlpStatus>;
 export declare function setYtdlpProxy(proxy: string): Promise<YtdlpStatus>;
+export interface GrabCookiesStatus {
+    count: number;
+    source: string;
+    notes: string[];
+    file: string;
+}
+export declare function grabYtdlpCookies(browser: string | null, profileDir: string | null): Promise<GrabCookiesStatus>;
 export declare function installDeno(): Promise<YtdlpStatus>;
 export declare function fetchVideoInfo(url: string): Promise<VideoInfo>;
 export interface DownloadParams {

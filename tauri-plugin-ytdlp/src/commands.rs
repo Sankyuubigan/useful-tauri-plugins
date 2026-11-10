@@ -18,6 +18,9 @@ pub struct YtdlpStatus {
     pub deno_installed: bool,
     pub deno_path: Option<String>,
     pub proxy: Option<String>,
+    /// Сохранённый источник кукисов (для префилла панели).
+    pub cookie_browser: Option<String>,
+    pub cookie_profile_dir: Option<String>,
     pub message: String,
 }
 
@@ -143,7 +146,23 @@ pub async fn download_video(
     cookies_file: Option<String>,
 ) -> Result<(), String> {
     let dir = ytdlp_dir(&app);
-    let proxy = engine::load_config(&app).proxy;
+    let cfg = engine::load_config(&app);
+    let proxy = cfg.proxy;
+    // «Из браузера» = сохранённый cookies.txt (механика dpi_gui). Файла нет —
+    // честная ошибка с путём лечения, ДО запуска yt-dlp.
+    let cookies_file = if auth_mode == "browser" {
+        let saved = crate::browser_cookies::saved_cookies_path(&app);
+        if !saved.is_file() {
+            return Err(
+                "Кукисы из браузера не сохранены: на вкладке Ютуб (настройки загрузчика) \
+                 нажми «Забрать кукисы», затем повтори скачивание."
+                    .to_string(),
+            );
+        }
+        Some(saved.to_string_lossy().into_owned())
+    } else {
+        cookies_file
+    };
     downloader::start_download(
         app.clone(),
         dir,
@@ -164,6 +183,50 @@ pub fn cancel_download(app: AppHandle) -> Result<(), String> {
     downloader::cancel_active();
     let _ = app.emit("ytdlp:download-cancelled", ());
     Ok(())
+}
+
+// ===== Кукисы браузера (anti-bot YouTube) — механика dpi_gui (rookie) =====
+
+/// Статус захвата кукисов для UI: количества и ноты. Значения кукисов не
+/// возвращаются и в лог не пишутся.
+#[derive(Serialize, Clone)]
+pub struct GrabCookiesStatus {
+    pub count: usize,
+    pub source: String,
+    pub notes: Vec<String>,
+    pub file: String,
+}
+
+#[tauri::command]
+pub async fn grab_ytdlp_cookies(
+    app: AppHandle,
+    browser: Option<String>,
+    profile_dir: Option<String>,
+) -> Result<GrabCookiesStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let (outcome, path) =
+            crate::browser_cookies::grab_and_save(&app, browser.as_deref(), profile_dir.as_deref())?;
+        // Источник — в конфиг для префилла UI (даже при 0 кукисов, как в dpi_gui);
+        // сбой сохранения конфига не роняет результат захвата.
+        let mut cfg = engine::load_config(&app);
+        cfg.cookie_browser = browser
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.trim().to_string());
+        cfg.cookie_profile_dir = profile_dir
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.trim().to_string());
+        if let Err(e) = engine::save_config(&app, &cfg) {
+            log::warn!("[YTDLP] Источник кукисов не сохранён в конфиг: {e}");
+        }
+        Ok(GrabCookiesStatus {
+            count: outcome.count,
+            source: outcome.source,
+            notes: outcome.notes,
+            file: path.to_string_lossy().into_owned(),
+        })
+    })
+    .await
+    .map_err(|e| format!("Ошибка потока: {e}"))?
 }
 
 // ===== Субтитры YouTube (SSOT-механика — engine::subtitles) =====

@@ -55,6 +55,11 @@ identifier = "allow-cancel-download"
 description = "Allow cancelling active yt-dlp download."
 commands.allow = ["cancel_download"]
 
+[[permission]]
+identifier = "allow-grab-ytdlp-cookies"
+description = "Allow grabbing YouTube cookies from a browser/profile dir (anti-bot)."
+commands.allow = ["grab_ytdlp_cookies"]
+
 [default]
 description = "Default permissions for the ytdlp plugin."
 permissions = [
@@ -69,4 +74,5 @@ permissions = [
   "allow-fetch-video-info",
   "allow-download-video",
   "allow-cancel-download",
+  "allow-grab-ytdlp-cookies",
 ]

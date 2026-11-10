@@ -144,6 +144,24 @@ pub fn fetch_info(dir: &Path, url: &str) -> Result<serde_json::Value, String> { 
     serde_json::from_str(&stdout).map_err(|e| format!("Ошибка парсинга JSON: {e}"))
 }
 
+/// GET HLS-манифеста → первый googlevideo-хост фрагментов из m3u8.
+/// reqwest::blocking в отдельном потоке: его Client нельзя дропать в
+/// async-контексте, а hang сети не должен вешать error-ветку (таймаут 10с).
+fn fetch_manifest_host(manifest_url: &str) -> Result<Option<String>, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("HTTP-клиент: {e}"))?;
+    let body = client
+        .get(manifest_url)
+        .send()
+        .map_err(|e| format!("GET манифеста: {e}"))?
+        .text()
+        .map_err(|e| format!("Тело манифеста: {e}"))?;
+    Ok(net_errors::fragment_host_from_m3u8(&body))
+}
+
 /// Одна строка на НОВЫЙ CDN-домен из строки сетевой ошибки (дедуп на загрузку).
 /// Строка сама в лог не пишется — это ретрай-спам («Got error … Retrying»):
 /// пользователь получает домен одной warn-строкой, счётчик — в итоговой сводке.
@@ -183,7 +201,9 @@ pub async fn start_download(
     quality: String,
     output_dir: String,
     auth_mode: String,
-    browser: Option<String>,
+    // Имя браузера больше не уходит в yt-dlp (--cookies-from-browser заменён
+    // сохранённым cookies.txt) — параметр остаётся для совместимости вызова.
+    _browser: Option<String>,
     cookies_file: Option<String>,
     proxy: Option<String>,
 ) -> Result<(), String> {
@@ -283,9 +303,24 @@ pub async fn start_download(
 
     match auth_mode.as_str() {
         "browser" => {
-            if let Some(b) = &browser {
-                args.push("--cookies-from-browser".to_string());
-                args.push(b.clone());
+            // «Из браузера» — кукисы, сохранённые кнопкой «Забрать кукисы»
+            // (cookies.txt в данных юзера, rookie-захват как в dpi_gui).
+            // Прежний --cookies-from-browser заменён: он ломается на App-Bound
+            // Encryption (Chrome/Edge ≥127) и не умеет произвольные папки
+            // User Data любых Chromium-форков.
+            match &cookies_file {
+                Some(cf) => {
+                    args.push("--cookies".to_string());
+                    args.push(cf.clone());
+                    log::info!("[YTDLP] Кукисы подключены (режим «Из браузера»)");
+                }
+                None => {
+                    return Err(
+                        "Кукисы из браузера не сохранены: на вкладке Ютуб (настройки \
+                         загрузчика) нажми «Забрать кукисы», затем повтори скачивание."
+                            .to_string(),
+                    )
+                }
             }
         }
         "file" => {
@@ -328,6 +363,11 @@ pub async fn start_download(
     let last_host_err = last_host.clone();
     let net_error_count_err = net_error_count.clone();
 
+    // YouTube anti-bot: «ERROR: Sign in to confirm you're not a bot» в stderr —
+    // не сетевая проблема, лечится кукисами (вкладка Ютуб → «Забрать кукисы»).
+    let bot_check_hit = Arc::new(AtomicBool::new(false));
+    let bot_check_err = bot_check_hit.clone();
+
     // stderr нужно читать непрерывно: буфер stderr на Windows — 64 КБ, и если
     // процесс пишет больше, он зависает НАВСЕГДА (таймаута нет). Раньше stderr
     // читался только после child.wait() — это гарантированный дедлок.
@@ -336,6 +376,12 @@ pub async fn start_download(
     let stderr_thread = std::thread::spawn(move || {
         let mut reader = BufReader::new(stderr);
         let mut sink = |line: &str| {
+            // Anti-bot YouTube: строка не «Got error» — раньше уходила в общий
+            // info-лог и терялась; теперь флаг + явный warn с путём лечения.
+            if line.contains("Sign in to confirm you're not a bot") {
+                bot_check_err.store(true, Ordering::SeqCst);
+                log::warn!("[YTDLP] YouTube anti-bot: «Sign in to confirm you're not a bot» — нужны кукисы (вкладка Ютуб → «Забрать кукисы», в диалоге — режим «Из браузера»)");
+            }
             // Ретрай-спам («Got error … Retrying/Giving up») в лог не пишем:
             // домен поднимается одной warn-строкой, счётчик — в итоговой сводке.
             if line.contains("Got error") {
@@ -468,12 +514,31 @@ pub async fn start_download(
         // 503-строки не содержат домена — если ни одна строка ошибки его не дала,
         // достаём CDN-домен фрагментов из метаданных (youtube.com доступен даже
         // при заблокированном CDN). Проверено логами: extract-фаза проходит всегда.
+        // Для HLS-форматов в метаданных только URL МАНИФЕСТА (он работает) —
+        // хост фрагментов добираем GET'ом манифеста изнутри m3u8.
         if host.is_none() && errors_seen > 0 {
             match fetch_info(&dir, &url) {
                 Ok(info) => {
                     if let Some(h) = net_errors::cdn_host_from_info(&info) {
                         log::warn!("[YTDLP] {}", net_errors::host_warning(&h));
                         host = Some(h);
+                    } else if let Some(manifest_url) = net_errors::hls_manifest_url_from_info(&info) {
+                        log::info!(
+                            "[YTDLP] В метаданных только HLS-манифест — уточняю хост фрагментов из m3u8"
+                        );
+                        // reqwest::blocking нельзя дропать в async-контексте —
+                        // отдельный поток; hang сети не вешает error-ветку (таймаут 10с).
+                        match std::thread::spawn(move || fetch_manifest_host(&manifest_url)).join() {
+                            Ok(Ok(Some(h))) => {
+                                log::warn!("[YTDLP] {}", net_errors::host_warning(&h));
+                                host = Some(h);
+                            }
+                            Ok(Ok(None)) => {
+                                log::info!("[YTDLP] В m3u8 нет абсолютных googlevideo-URL — хост фрагментов не уточнён")
+                            }
+                            Ok(Err(e)) => log::info!("[YTDLP] Манифест HLS недоступен: {e}"),
+                            Err(_) => log::info!("[YTDLP] Поток GET манифеста завершился аварийно"),
+                        }
                     }
                 }
                 Err(e) => log::info!("[YTDLP] CDN-домен из метаданных не получен: {e}"),
@@ -498,6 +563,12 @@ pub async fn start_download(
             if !msg.contains(h) {
                 msg.push_str(&format!("\n{}", net_errors::host_warning(h)));
             }
+        }
+        // Anti-bot YouTube: подсказка про кукисы — ПЕРВОЙ строкой ошибки,
+        // сырой вывод yt-dlp — ниже для деталей.
+        if bot_check_hit.load(Ordering::SeqCst) {
+            let hint = "YouTube требует подтвердить, что ты не бот (anti-bot). Лечится кукисами: вкладка Ютуб → «Кукисы» → «Забрать кукисы» (нужен залогиненный браузер), затем в диалоге скачивания — режим «Из браузера».\n\n";
+            msg.insert_str(0, hint);
         }
         log::error!("[YTDLP] Ошибка загрузки: код выхода {}", status.code().unwrap_or(-1));
         let _ = app.emit("ytdlp:download-error", &msg);

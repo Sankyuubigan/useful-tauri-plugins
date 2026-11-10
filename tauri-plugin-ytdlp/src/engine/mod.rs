@@ -32,6 +32,12 @@ pub struct YtdlpConfig {
     pub download_quality: Option<String>,
     #[serde(default)]
     pub proxy: Option<String>,
+    /// Источник кукисов для anti-bot (механика dpi_gui): имя браузера или папка
+    /// User Data. Сохраняется командой grab_ytdlp_cookies для префилла UI.
+    #[serde(default)]
+    pub cookie_browser: Option<String>,
+    #[serde(default)]
+    pub cookie_profile_dir: Option<String>,
 }
 
 pub fn load_config(app: &AppHandle) -> YtdlpConfig {

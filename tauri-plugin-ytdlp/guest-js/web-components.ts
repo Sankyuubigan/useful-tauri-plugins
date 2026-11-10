@@ -3,6 +3,7 @@ import {
   checkYtdlpUpdate,
   downloadVideo,
   getYtdlpStatus,
+  grabYtdlpCookies,
   installDeno,
   installYtdlp,
   installYtdlpUpdate,
@@ -87,6 +88,32 @@ class YtdlpPanel extends HTMLElement {
                  style="flex:1; min-width:180px;">
           <button id="setProxy">Сохранить</button>
         </div>
+        <h3 class="section-title" style="margin-top:12px;">Кукисы YouTube (анти-бот)</h3>
+        <div class="row">
+          <label>Браузер:</label>
+          <select id="cookieBrowser">
+            <option value="chrome">Chrome</option>
+            <option value="edge">Edge</option>
+            <option value="firefox">Firefox</option>
+            <option value="brave">Brave</option>
+            <option value="opera">Opera</option>
+            <option value="opera_gx">Opera GX</option>
+            <option value="vivaldi">Vivaldi</option>
+            <option value="chromium">Chromium</option>
+            <option value="arc">Arc</option>
+            <option value="librewolf">LibreWolf</option>
+            <option value="zen">Zen</option>
+          </select>
+        </div>
+        <div class="row">
+          <label>Папка User Data:</label>
+          <input type="text" id="cookieProfileDir" placeholder="…\Google\Chrome\User Data — любой Chromium-форк" style="flex:1; min-width:180px;">
+          <button id="browseCookieDir">Обзор</button>
+        </div>
+        <div class="row">
+          <button id="grabCookies" class="primary">Забрать кукисы</button>
+          <span id="cookieStatus" class="hint" style="flex:1; word-break:break-all;"></span>
+        </div>
         <div class="row" style="margin-top:10px;">
           <button id="install" class="primary">Установить yt-dlp</button>
           <button id="checkUpdate" style="display:none;">Проверить обновление</button>
@@ -108,6 +135,8 @@ class YtdlpPanel extends HTMLElement {
     this.root.getElementById('setDir')!.addEventListener('click', () => this.onSetDir())
     this.root.getElementById('setFfmpeg')!.addEventListener('click', () => this.onSetFfmpeg())
     this.root.getElementById('setProxy')!.addEventListener('click', () => this.onSetProxy())
+    this.root.getElementById('browseCookieDir')!.addEventListener('click', () => this.onBrowseCookieDir())
+    this.root.getElementById('grabCookies')!.addEventListener('click', () => this.onGrabCookies())
 
     void this.refresh()
   }
@@ -152,6 +181,12 @@ class YtdlpPanel extends HTMLElement {
 
     const proxyInput = this.root.getElementById('proxyInput') as HTMLInputElement
     proxyInput.value = st.proxy ?? ''
+
+    // Префилл источника кукисов (сохранён командой grab_ytdlp_cookies).
+    const cookieBrowser = this.root.getElementById('cookieBrowser') as HTMLSelectElement
+    if (st.cookie_browser) cookieBrowser.value = st.cookie_browser
+    const cookieDir = this.root.getElementById('cookieProfileDir') as HTMLInputElement
+    cookieDir.value = st.cookie_profile_dir ?? ''
 
     const installed = st.installed
     this.root.getElementById('install')!.style.display = installed ? 'none' : 'inline-block'
@@ -281,6 +316,46 @@ class YtdlpPanel extends HTMLElement {
       toast(`Ошибка: ${e}`, 'error')
     }
   }
+
+  private async onBrowseCookieDir() {
+    try {
+      const sel = await openDialog({ directory: true })
+      if (!sel) return
+      const path = Array.isArray(sel) ? sel[0] : sel
+      if (!path) return
+      ;(this.root.getElementById('cookieProfileDir') as HTMLInputElement).value = path
+    } catch (e) {
+      toast(`Ошибка: ${e}`, 'error')
+    }
+  }
+
+  private async onGrabCookies() {
+    const btn = this.root.getElementById('grabCookies') as HTMLButtonElement
+    const statusEl = this.root.getElementById('cookieStatus')!
+    const browser = (this.root.getElementById('cookieBrowser') as HTMLSelectElement).value
+    const dir = (this.root.getElementById('cookieProfileDir') as HTMLInputElement).value.trim()
+    if (btn.disabled) return
+    btn.disabled = true
+    statusEl.textContent = 'Захват кукисов…'
+    try {
+      // Папка User Data приоритетнее имени браузера (любой Chromium-форк,
+      // как в dpi_gui). Значения кукисов сюда не приходят — только количества.
+      const res = await grabYtdlpCookies(dir ? null : browser, dir || null)
+      const parts = [`${res.count} кукисов для youtube.com — источник: ${res.source}`]
+      if (res.notes.length) parts.push(res.notes.join(' '))
+      statusEl.textContent = parts.join('. ')
+      if (res.count > 0) {
+        toast(`Кукисы сохранены: ${res.count} шт.`)
+      } else {
+        toast(res.notes.join(' ') || 'Кукисов не найдено', 'error')
+      }
+    } catch (e) {
+      statusEl.textContent = ''
+      toast(`Ошибка: ${e}`, 'error')
+    } finally {
+      btn.disabled = false
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -331,6 +406,9 @@ class YtdlpDownloadPanel extends HTMLElement {
             <option value="browser">Из браузера</option>
             <option value="file">Cookies.txt</option>
           </select>
+          <span id="browserHint" class="hint" style="display:none; flex:1;">
+            Кукисы, сохранённые на вкладке Ютуб («Забрать кукисы»)
+          </span>
           <select id="browserSelect" style="display:none;">
             <option value="chrome">Chrome</option>
             <option value="edge">Edge</option>
@@ -407,21 +485,37 @@ class YtdlpDownloadPanel extends HTMLElement {
 
   private async loadDefaults() {
     try {
-      const cfg = await invoke<{ download_path?: string }>('plugin:ytdlp|get_ytdlp_status', {})
+      const cfg = await invoke<{
+        download_path?: string
+        cookie_browser?: string | null
+        cookie_profile_dir?: string | null
+      }>('plugin:ytdlp|get_ytdlp_status', {})
       const outputDir = this.root.getElementById('outputDir') as HTMLInputElement
       if (cfg.download_path) {
         outputDir.value = cfg.download_path
+      }
+      // Кукисы уже забраны — режим «Из браузера» по умолчанию: без кукисов
+      // yt-dlp качает как аноним и упирается в anti-bot/троттлинг CDN
+      // (проба 23:15: кукисы забраны, а скачивание прошло без --cookies).
+      if (cfg.cookie_browser || cfg.cookie_profile_dir) {
+        const authMode = this.root.getElementById('authMode') as HTMLSelectElement
+        authMode.value = 'browser'
+        this.onAuthChange()
       }
     } catch { /* ignore */ }
   }
 
   private onAuthChange() {
     const mode = (this.root.getElementById('authMode') as HTMLSelectElement).value
+    const browserHint = this.root.getElementById('browserHint') as HTMLElement
     const browserSelect = this.root.getElementById('browserSelect') as HTMLSelectElement
     const cookiesFile = this.root.getElementById('cookiesFile') as HTMLInputElement
     const browseCookies = this.root.getElementById('browseCookies') as HTMLButtonElement
 
-    browserSelect.style.display = mode === 'browser' ? 'inline-block' : 'none'
+    // «Из браузера» использует кукисы, сохранённые на вкладке Ютуб
+    // (rookie-захват как в dpi_gui) — выбор браузера в диалоге не нужен.
+    browserHint.style.display = mode === 'browser' ? 'inline' : 'none'
+    browserSelect.style.display = mode === 'browser' ? 'none' : 'inline-block'
     cookiesFile.style.display = mode === 'file' ? 'inline-block' : 'none'
     browseCookies.style.display = mode === 'file' ? 'inline-block' : 'none'
   }
@@ -473,7 +567,6 @@ class YtdlpDownloadPanel extends HTMLElement {
     const quality = (this.root.getElementById('quality') as HTMLSelectElement).value
     const outputDir = (this.root.getElementById('outputDir') as HTMLInputElement).value.trim()
     const authMode = (this.root.getElementById('authMode') as HTMLSelectElement).value
-    const browser = (this.root.getElementById('browserSelect') as HTMLSelectElement).value
     const cookiesFile = (this.root.getElementById('cookiesFile') as HTMLInputElement).value.trim()
 
     if (!outputDir) {
@@ -497,7 +590,9 @@ class YtdlpDownloadPanel extends HTMLElement {
         quality,
         outputDir,
         authMode,
-        browser: authMode === 'browser' ? browser : null,
+        // «Из браузера»: бэкенд сам подставит сохранённый cookies.txt
+        // (вкладка Ютуб → «Забрать кукисы»).
+        browser: null,
         cookiesFile: authMode === 'file' ? cookiesFile : null,
       })
     } catch (e) {

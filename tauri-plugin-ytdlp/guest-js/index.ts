@@ -10,6 +10,8 @@ export interface YtdlpStatus {
   deno_installed: boolean
   deno_path?: string | null
   proxy?: string | null
+  cookie_browser?: string | null
+  cookie_profile_dir?: string | null
   message: string
 }
 
@@ -48,6 +50,23 @@ export function setFfmpegPath(path: string): Promise<YtdlpStatus> {
 
 export function setYtdlpProxy(proxy: string): Promise<YtdlpStatus> {
   return invoke<YtdlpStatus>('plugin:ytdlp|set_ytdlp_proxy', { proxy })
+}
+
+export interface GrabCookiesStatus {
+  count: number
+  source: string
+  notes: string[]
+  file: string
+}
+
+export function grabYtdlpCookies(
+  browser: string | null,
+  profileDir: string | null,
+): Promise<GrabCookiesStatus> {
+  return invoke<GrabCookiesStatus>('plugin:ytdlp|grab_ytdlp_cookies', {
+    browser,
+    profileDir,
+  })
 }
 
 export function installDeno(): Promise<YtdlpStatus> {

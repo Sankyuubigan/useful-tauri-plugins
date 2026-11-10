@@ -11,6 +11,7 @@ members = [
     "tauri-plugin-downloader",
     "tauri-plugin-image-engine",
     "tauri-plugin-ytdlp",
+    "tauri-plugin-ffmpeg",
     "tauri-plugin-system1",
     "json-store",
     "tools/code-tools",

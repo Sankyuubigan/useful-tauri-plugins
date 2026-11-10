@@ -1,0 +1,10 @@
+"$schema" = "../gen/schemas/acl.json"
+
+[[permission]]
+identifier = "allow-ffmpeg-status"
+description = "Allow reading FFmpeg status (installed, versions, dir)."
+commands.allow = ["ffmpeg_status"]
+
+[default]
+description = "Default permissions for the ffmpeg plugin."
+permissions = ["allow-ffmpeg-status"]

@@ -1,0 +1,23 @@
+[package]
+name = "tauri-plugin-ffmpeg"
+version = "0.1.0"
+edition = "2021"
+links = "tauri-plugin-ffmpeg"
+description = "Reusable FFmpeg engine: auto-download official build into a host-provided dir, run ffmpeg/ffprobe as subprocess (no shell)"
+license = "MIT"
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }
+
+[dependencies]
+tauri = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+log = { workspace = true }
+zip = { workspace = true }
+# Скачивание архива — единый движок репозитория (chain фолбэков, magic/min_size-гейты).
+tauri-plugin-downloader = { path = "../tauri-plugin-downloader" }
+
+[lib]
+name = "tauri_plugin_ffmpeg"
+path = "src/lib.rs"

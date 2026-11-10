@@ -1,0 +1,26 @@
+{
+  "name": "@my-tauri-plugins/plugin-ffmpeg",
+  "version": "0.1.0",
+  "description": "Reusable FFmpeg engine (auto-download official build, run ffmpeg/ffprobe as subprocess without shell) for Tauri apps - TS API.",
+  "type": "module",
+  "main": "dist-js/index.js",
+  "types": "dist-js/index.d.ts",
+  "files": [
+    "dist-js",
+    "guest-js",
+    "api-iife.js"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:global": "esbuild guest-js/iife-entry.ts --bundle --format=iife --outfile=api-iife.js --alias:@tauri-apps/api/core=./guest-js/shims/core.ts",
+    "check:global": "npm run build:global && node --check api-iife.js"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2"
+  },
+  "devDependencies": {
+    "esbuild": "^0.21.0",
+    "typescript": "^5.4.0"
+  },
+  "license": "MIT"
+}

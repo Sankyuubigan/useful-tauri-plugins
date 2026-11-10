@@ -10,6 +10,7 @@ Default permissions for the ytdlp plugin.
 - `allow-install-ytdlp-update`
 - `allow-set-ytdlp-dir`
 - `allow-set-ffmpeg-path`
+- `allow-set-ytdlp-proxy`
 - `allow-install-deno`
 - `allow-fetch-video-info`
 - `allow-download-video`
@@ -358,6 +359,19 @@ Allow overriding the yt-dlp directory.
 <td>
 
 Allow setting custom ffmpeg path.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`ytdlp:allow-set-ytdlp-proxy`
+
+</td>
+<td>
+
+Allow setting a proxy for yt-dlp downloads (bypass provider blocking).
 
 </td>
 </tr>

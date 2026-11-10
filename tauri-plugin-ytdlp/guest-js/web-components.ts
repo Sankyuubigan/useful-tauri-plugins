@@ -8,6 +8,7 @@ import {
   installYtdlpUpdate,
   setFfmpegPath,
   setYtdlpDir,
+  setYtdlpProxy,
   type YtdlpStatus,
 } from './index'
 import { invoke } from '@tauri-apps/api/core'
@@ -80,6 +81,12 @@ class YtdlpPanel extends HTMLElement {
         <div class="row"><label>Путь:</label><span id="path" class="hint" style="word-break:break-all; flex:1;"></span></div>
         <div class="row"><label>FFmpeg:</label><span id="ffmpeg" class="hint">—</span></div>
         <div class="row"><label>Deno:</label><span id="deno" class="hint">—</span></div>
+        <div class="row">
+          <label>Прокси:</label>
+          <input type="text" id="proxyInput" placeholder="http://127.0.0.1:2080 (пусто = напрямую)"
+                 style="flex:1; min-width:180px;">
+          <button id="setProxy">Сохранить</button>
+        </div>
         <div class="row" style="margin-top:10px;">
           <button id="install" class="primary">Установить yt-dlp</button>
           <button id="checkUpdate" style="display:none;">Проверить обновление</button>
@@ -100,6 +107,7 @@ class YtdlpPanel extends HTMLElement {
     this.root.getElementById('installDeno')!.addEventListener('click', () => this.onInstallDeno())
     this.root.getElementById('setDir')!.addEventListener('click', () => this.onSetDir())
     this.root.getElementById('setFfmpeg')!.addEventListener('click', () => this.onSetFfmpeg())
+    this.root.getElementById('setProxy')!.addEventListener('click', () => this.onSetProxy())
 
     void this.refresh()
   }
@@ -141,6 +149,9 @@ class YtdlpPanel extends HTMLElement {
     } else {
       denoEl.innerHTML = '<span class="badge-warn">Не установлен (нужен для n-sig)</span>'
     }
+
+    const proxyInput = this.root.getElementById('proxyInput') as HTMLInputElement
+    proxyInput.value = st.proxy ?? ''
 
     const installed = st.installed
     this.root.getElementById('install')!.style.display = installed ? 'none' : 'inline-block'
@@ -254,6 +265,17 @@ class YtdlpPanel extends HTMLElement {
       if (!path) return
       await setFfmpegPath(path)
       toast('Путь к FFmpeg изменён')
+      await this.refresh()
+    } catch (e) {
+      toast(`Ошибка: ${e}`, 'error')
+    }
+  }
+
+  private async onSetProxy() {
+    const input = this.root.getElementById('proxyInput') as HTMLInputElement
+    try {
+      await setYtdlpProxy(input.value.trim())
+      toast('Прокси для yt-dlp сохранён (пусто = качать напрямую)')
       await this.refresh()
     } catch (e) {
       toast(`Ошибка: ${e}`, 'error')

@@ -1,6 +1,7 @@
 //! Движок yt-dlp: управление бинарником, конфиг, скачивание видео.
 
 pub mod downloader;
+pub mod net_errors;
 pub mod subtitles;
 pub mod ytdlp_manager;
 
@@ -29,6 +30,8 @@ pub struct YtdlpConfig {
     pub download_format: Option<String>,
     #[serde(default)]
     pub download_quality: Option<String>,
+    #[serde(default)]
+    pub proxy: Option<String>,
 }
 
 pub fn load_config(app: &AppHandle) -> YtdlpConfig {

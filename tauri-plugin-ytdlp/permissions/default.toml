@@ -31,6 +31,11 @@ description = "Allow setting custom ffmpeg path."
 commands.allow = ["set_ffmpeg_path"]
 
 [[permission]]
+identifier = "allow-set-ytdlp-proxy"
+description = "Allow setting a proxy for yt-dlp downloads (bypass provider blocking)."
+commands.allow = ["set_ytdlp_proxy"]
+
+[[permission]]
 identifier = "allow-install-deno"
 description = "Allow installing Deno runtime for YouTube n-sig extraction."
 commands.allow = ["install_deno"]
@@ -59,6 +64,7 @@ permissions = [
   "allow-install-ytdlp-update",
   "allow-set-ytdlp-dir",
   "allow-set-ffmpeg-path",
+  "allow-set-ytdlp-proxy",
   "allow-install-deno",
   "allow-fetch-video-info",
   "allow-download-video",

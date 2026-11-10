@@ -104,7 +104,7 @@ fn get_download_url() -> String {
     }
 }
 
-pub fn get_status(dir: &Path, _app: &AppHandle) -> Result<YtdlpStatus, String> {
+pub fn get_status(dir: &Path, app: &AppHandle) -> Result<YtdlpStatus, String> {
     let exe = get_exe_path(dir);
     let installed = is_installed(dir);
     let version = if installed { get_version(dir) } else { None };
@@ -137,6 +137,7 @@ pub fn get_status(dir: &Path, _app: &AppHandle) -> Result<YtdlpStatus, String> {
         } else {
             None
         },
+        proxy: super::load_config(app).proxy,
         message,
     })
 }
@@ -237,7 +238,9 @@ fn download_file(url: &str, dest: &Path, callback: &dyn Fn(String)) -> Result<()
         downloaded += n as u64;
         if total > 0 {
             let pct = (downloaded * 100 / total) as u32;
-            if last_pct != Some(pct) {
+            // Шум-фильтр: было по строке на каждый процент (100 строк на файл),
+            // остались только вехи каждые 10%.
+            if pct % 10 == 0 && last_pct != Some(pct) {
                 last_pct = Some(pct);
                 callback(format!("Скачивание yt-dlp... {pct}%"));
             }

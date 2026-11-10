@@ -80,6 +80,12 @@
         <div class="row"><label>\u041F\u0443\u0442\u044C:</label><span id="path" class="hint" style="word-break:break-all; flex:1;"></span></div>
         <div class="row"><label>FFmpeg:</label><span id="ffmpeg" class="hint">\u2014</span></div>
         <div class="row"><label>Deno:</label><span id="deno" class="hint">\u2014</span></div>
+        <div class="row">
+          <label>\u041F\u0440\u043E\u043A\u0441\u0438:</label>
+          <input type="text" id="proxyInput" placeholder="http://127.0.0.1:2080 (\u043F\u0443\u0441\u0442\u043E = \u043D\u0430\u043F\u0440\u044F\u043C\u0443\u044E)"
+                 style="flex:1; min-width:180px;">
+          <button id="setProxy">\u0421\u043E\u0445\u0440\u0430\u043D\u0438\u0442\u044C</button>
+        </div>
         <div class="row" style="margin-top:10px;">
           <button id="install" class="primary">\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u0442\u044C yt-dlp</button>
           <button id="checkUpdate" style="display:none;">\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435</button>
@@ -99,6 +105,7 @@
       this.root.getElementById("installDeno").addEventListener("click", () => this.onInstallDeno());
       this.root.getElementById("setDir").addEventListener("click", () => this.onSetDir());
       this.root.getElementById("setFfmpeg").addEventListener("click", () => this.onSetFfmpeg());
+      this.root.getElementById("setProxy").addEventListener("click", () => this.onSetProxy());
       void this.refresh();
     }
     disconnectedCallback() {
@@ -133,6 +140,8 @@
       } else {
         denoEl.innerHTML = '<span class="badge-warn">\u041D\u0435 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D (\u043D\u0443\u0436\u0435\u043D \u0434\u043B\u044F n-sig)</span>';
       }
+      const proxyInput = this.root.getElementById("proxyInput");
+      proxyInput.value = st.proxy ?? "";
       const installed = st.installed;
       this.root.getElementById("install").style.display = installed ? "none" : "inline-block";
       this.root.getElementById("checkUpdate").style.display = installed ? "inline-block" : "none";
@@ -239,6 +248,16 @@
         if (!path) return;
         await setFfmpegPath(path);
         toast("\u041F\u0443\u0442\u044C \u043A FFmpeg \u0438\u0437\u043C\u0435\u043D\u0451\u043D");
+        await this.refresh();
+      } catch (e) {
+        toast(`\u041E\u0448\u0438\u0431\u043A\u0430: ${e}`, "error");
+      }
+    }
+    async onSetProxy() {
+      const input = this.root.getElementById("proxyInput");
+      try {
+        await setYtdlpProxy(input.value.trim());
+        toast("\u041F\u0440\u043E\u043A\u0441\u0438 \u0434\u043B\u044F yt-dlp \u0441\u043E\u0445\u0440\u0430\u043D\u0451\u043D (\u043F\u0443\u0441\u0442\u043E = \u043A\u0430\u0447\u0430\u0442\u044C \u043D\u0430\u043F\u0440\u044F\u043C\u0443\u044E)");
         await this.refresh();
       } catch (e) {
         toast(`\u041E\u0448\u0438\u0431\u043A\u0430: ${e}`, "error");
@@ -474,6 +493,9 @@
   }
   function setFfmpegPath(path) {
     return invoke("plugin:ytdlp|set_ffmpeg_path", { path });
+  }
+  function setYtdlpProxy(proxy) {
+    return invoke("plugin:ytdlp|set_ytdlp_proxy", { proxy });
   }
   function installDeno() {
     return invoke("plugin:ytdlp|install_deno");

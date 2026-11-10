@@ -5,6 +5,7 @@
 //! 2. Скачивание с парсингом прогресса из stdout
 //! 3. Поддержка отмены через kill_process_tree
 
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -14,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use regex::Regex;
 use tauri::{AppHandle, Emitter};
 
+use super::net_errors;
 use super::ytdlp_manager;
 
 lazy_static::lazy_static! {
@@ -142,6 +144,36 @@ pub fn fetch_info(dir: &Path, url: &str) -> Result<serde_json::Value, String> { 
     serde_json::from_str(&stdout).map_err(|e| format!("Ошибка парсинга JSON: {e}"))
 }
 
+/// Одна строка на НОВЫЙ CDN-домен из строки сетевой ошибки (дедуп на загрузку).
+/// Строка сама в лог не пишется — это ретрай-спам («Got error … Retrying»):
+/// пользователь получает домен одной warn-строкой, счётчик — в итоговой сводке.
+fn note_error_host(
+    line: &str,
+    seen: &Mutex<HashSet<String>>,
+    last: &Mutex<Option<String>>,
+    count: &Mutex<u32>,
+) {
+    // Считаем КАЖДУЮ сетевую ошибку, даже без извлекаемого домена:
+    // «HTTP Error 503» не содержит host='...' — хост-гейт делал счётчик вруном (0 ошибок).
+    if let Ok(mut n) = count.lock() {
+        *n += 1;
+    }
+
+    let Some(host) = net_errors::extract_error_host(line) else { return };
+
+    if let Ok(mut g) = last.lock() {
+        *g = Some(host.clone());
+    }
+
+    let is_new = match seen.lock() {
+        Ok(mut s) => s.insert(host.clone()),
+        Err(poisoned) => poisoned.into_inner().insert(host.clone()),
+    };
+    if is_new {
+        log::warn!("[YTDLP] {}", net_errors::host_warning(&host));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn start_download(
     app: AppHandle,
@@ -153,6 +185,7 @@ pub async fn start_download(
     auth_mode: String,
     browser: Option<String>,
     cookies_file: Option<String>,
+    proxy: Option<String>,
 ) -> Result<(), String> {
     ACTIVE_CANCEL.store(false, Ordering::SeqCst);
 
@@ -216,11 +249,25 @@ pub async fn start_download(
 
     args.push("--no-playlist".to_string());
     args.push("--socket-timeout".to_string());
-    args.push("60".to_string());
+    args.push("20".to_string());
+    // Fail-fast: 10 ретраев на фрагмент превращали блокировку CDN в 18-минутное
+    // «зависание» (~600 попыток). 3 ретрая + нативный обрыв на первом пропущенном
+    // фрагменте — ошибка видна за минуты, домен и причина — в логе и на UI.
     args.push("--retries".to_string());
-    args.push("10".to_string());
+    args.push("3".to_string());
+    args.push("--fragment-retries".to_string());
+    args.push("3".to_string());
+    args.push("--abort-on-unavailable-fragment".to_string());
     args.push("--newline".to_string());
     args.push("--no-warnings".to_string());
+
+    // Прокси из настроек плагина: yt-dlp НЕ использует системный прокси Windows
+    // сам по себе — флаг нужен явно, иначе качает напрямую и упирается в блок.
+    if let Some(proxy) = proxy.as_deref().filter(|p| !p.trim().is_empty()) {
+        args.push("--proxy".to_string());
+        args.push(proxy.to_string());
+        log::info!("[YTDLP] Прокси включён (из настроек плагина)");
+    }
 
     let runtimes = js_runtimes(&dir);
     if runtimes.is_empty() {
@@ -272,6 +319,15 @@ pub async fn start_download(
 
     let app_clone = app.clone();
 
+    // Общие счётчики сетевых ошибок (stdout + stderr): warn-once домена,
+    // последний домен для сообщений, итоговая сводка вместо ретрай-спама.
+    let seen_hosts = Arc::new(Mutex::new(HashSet::new()));
+    let last_host: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+    let net_error_count = Arc::new(Mutex::new(0u32));
+    let seen_hosts_err = seen_hosts.clone();
+    let last_host_err = last_host.clone();
+    let net_error_count_err = net_error_count.clone();
+
     // stderr нужно читать непрерывно: буфер stderr на Windows — 64 КБ, и если
     // процесс пишет больше, он зависает НАВСЕГДА (таймаута нет). Раньше stderr
     // читался только после child.wait() — это гарантированный дедлок.
@@ -280,6 +336,12 @@ pub async fn start_download(
     let stderr_thread = std::thread::spawn(move || {
         let mut reader = BufReader::new(stderr);
         let mut sink = |line: &str| {
+            // Ретрай-спам («Got error … Retrying/Giving up») в лог не пишем:
+            // домен поднимается одной warn-строкой, счётчик — в итоговой сводке.
+            if line.contains("Got error") {
+                note_error_host(line, &seen_hosts_err, &last_host_err, &net_error_count_err);
+                return;
+            }
             log::info!("[YTDLP][stderr] {line}");
             match stderr_lines_sink.lock() {
                 Ok(mut v) => v.push(line.to_string()),
@@ -292,11 +354,12 @@ pub async fn start_download(
     let mut reader = BufReader::new(stdout);
     let mut last_percent = -1;
     let mut merge_announced = false;
+    let mut skipped_total: u32 = 0;
 
     let mut on_stdout_line = |line: &str| {
         if let Some(m) = PROGRESS_RE.captures(line) {
             // Процент дробный ("0.2", "10.0") — f64, потом округляем. События
-            // шлём только при смене целого процента: иначе тысячи IPC-вызовов.
+            // шлём only при смене целого процента: иначе тысячи IPC-вызовов.
             let pct: f64 = m[1].parse().unwrap_or(0.0);
             let pct_int = pct.round() as i32;
             if pct_int != last_percent {
@@ -318,6 +381,19 @@ pub async fn start_download(
         if DEST_RE.is_match(line) {
             // Новый файл (поток): у него свой прогресс с нуля.
             last_percent = -1;
+        }
+
+        if net_errors::is_skipping_fragment(line) {
+            skipped_total += 1;
+            // Скачки фрагментов теперь редки (abort-on-unavailable-fragment
+            // обрывает загрузку на первом пропущенном), строка ценная — пишем.
+            log::warn!("[YTDLP] {line} — обрываю загрузку (CDN недоступен)");
+            return;
+        }
+
+        if line.contains("Got error") {
+            note_error_host(line, &seen_hosts, &last_host, &net_error_count);
+            return;
         }
 
         log::info!("[YTDLP] {line}");
@@ -355,6 +431,26 @@ pub async fn start_download(
         log::error!("[YTDLP] Поток чтения stderr завершился аварийно");
     }
 
+    // Итоговая сводка вместо сотен строк «Got error … Retrying»:
+    // одна строка — сколько ошибок и какие домены.
+    let errors_seen = match net_error_count.lock() {
+        Ok(g) => *g,
+        Err(poisoned) => *poisoned.into_inner(),
+    };
+    if errors_seen > 0 {
+        let hosts = match seen_hosts.lock() {
+            Ok(g) => g.iter().cloned().collect::<Vec<_>>().join(", "),
+            Err(poisoned) => poisoned.into_inner().iter().cloned().collect::<Vec<_>>().join(", "),
+        };
+        if hosts.is_empty() {
+            log::info!(
+                "[YTDLP] Сетевых ошибок за загрузку: {errors_seen}; домен в ошибках не указан (HTTP 503/таймаут) — проверь доступность googlevideo через обход блокировок"
+            );
+        } else {
+            log::info!("[YTDLP] Сетевых ошибок за загрузку: {errors_seen}; домены: {hosts}");
+        }
+    }
+
     if cancelled {
         let _ = app_clone.emit("ytdlp:download-cancelled", ());
         return Err("Скачивание отменено".to_string());
@@ -365,11 +461,30 @@ pub async fn start_download(
             Ok(v) => v.join("\n"),
             Err(poisoned) => poisoned.into_inner().join("\n"),
         };
-        let msg = if collected.trim().is_empty() {
+        let host = match last_host.lock() {
+            Ok(g) => g.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        let collected_trim = collected.trim().to_string();
+        let mut msg = if errors_seen > 0 {
+            // Сетевые ошибки были: наверху — что случилось и что делать,
+            // сырой вывод yt-dlp — ниже для деталей.
+            let mut m = net_errors::abort_message(host.as_deref());
+            if !collected_trim.is_empty() {
+                m.push_str("\n\n");
+                m.push_str(&collected_trim);
+            }
+            m
+        } else if collected_trim.is_empty() {
             format!("yt-dlp завершился с кодом {}", status.code().unwrap_or(-1))
         } else {
-            collected.trim().to_string()
+            collected_trim
         };
+        if let Some(h) = &host {
+            if !msg.contains(h) {
+                msg.push_str(&format!("\n{}", net_errors::host_warning(h)));
+            }
+        }
         log::error!("[YTDLP] Ошибка загрузки: код выхода {}", status.code().unwrap_or(-1));
         let _ = app.emit("ytdlp:download-error", &msg);
         return Err(msg);
@@ -377,6 +492,12 @@ pub async fn start_download(
 
     if let Some(e) = read_error {
         log::error!("[YTDLP] Поток stdout прерван, но процесс завершился успешно: {e}");
+    }
+
+    if skipped_total > 0 {
+        log::warn!(
+            "[YTDLP] Загрузка успешна, но пропущено фрагментов: {skipped_total} (сеть нестабильна) — возможны артефакты в видео."
+        );
     }
 
     log::info!("[YTDLP] Загрузка завершена успешно");

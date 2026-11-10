@@ -9,6 +9,7 @@ export interface YtdlpStatus {
   ffmpeg_path?: string | null
   deno_installed: boolean
   deno_path?: string | null
+  proxy?: string | null
   message: string
 }
 
@@ -43,6 +44,10 @@ export function setYtdlpDir(path: string): Promise<YtdlpStatus> {
 
 export function setFfmpegPath(path: string): Promise<YtdlpStatus> {
   return invoke<YtdlpStatus>('plugin:ytdlp|set_ffmpeg_path', { path })
+}
+
+export function setYtdlpProxy(proxy: string): Promise<YtdlpStatus> {
+  return invoke<YtdlpStatus>('plugin:ytdlp|set_ytdlp_proxy', { proxy })
 }
 
 export function installDeno(): Promise<YtdlpStatus> {

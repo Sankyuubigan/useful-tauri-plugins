@@ -17,6 +17,7 @@ pub struct YtdlpStatus {
     pub ffmpeg_path: Option<String>,
     pub deno_installed: bool,
     pub deno_path: Option<String>,
+    pub proxy: Option<String>,
     pub message: String,
 }
 
@@ -95,6 +96,19 @@ pub fn set_ffmpeg_path(app: AppHandle, path: String) -> Result<YtdlpStatus, Stri
 }
 
 #[tauri::command]
+pub fn set_ytdlp_proxy(app: AppHandle, proxy: String) -> Result<YtdlpStatus, String> {
+    let mut cfg = engine::load_config(&app);
+    cfg.proxy = if proxy.trim().is_empty() {
+        None
+    } else {
+        Some(proxy.trim().to_string())
+    };
+    engine::save_config(&app, &cfg)?;
+    let dir = ytdlp_dir(&app);
+    ytdlp_manager::get_status(&dir, &app)
+}
+
+#[tauri::command]
 pub async fn install_deno(app: AppHandle) -> Result<YtdlpStatus, String> {
     let dir = ytdlp_dir(&app);
     let app_clone = app.clone();
@@ -129,6 +143,7 @@ pub async fn download_video(
     cookies_file: Option<String>,
 ) -> Result<(), String> {
     let dir = ytdlp_dir(&app);
+    let proxy = engine::load_config(&app).proxy;
     downloader::start_download(
         app.clone(),
         dir,
@@ -139,6 +154,7 @@ pub async fn download_video(
         auth_mode,
         browser,
         cookies_file,
+        proxy,
     )
     .await
 }

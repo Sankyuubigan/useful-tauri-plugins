@@ -72,6 +72,7 @@ pub fn init() -> TauriPlugin<Wry, Config> {
             commands::install_ytdlp_update,
             commands::set_ytdlp_dir,
             commands::set_ffmpeg_path,
+            commands::set_ytdlp_proxy,
             commands::install_deno,
             commands::fetch_video_info,
             commands::download_video,

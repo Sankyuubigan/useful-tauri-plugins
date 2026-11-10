@@ -415,10 +415,10 @@
           "markdownDescription": "Denies the set_ytdlp_dir command without any pre-configured scope."
         },
         {
-          "description": "Default permissions for the ytdlp plugin.\n#### This default permission set includes:\n\n- `allow-get-ytdlp-status`\n- `allow-install-ytdlp`\n- `allow-check-ytdlp-update`\n- `allow-install-ytdlp-update`\n- `allow-set-ytdlp-dir`\n- `allow-set-ffmpeg-path`\n- `allow-install-deno`\n- `allow-fetch-video-info`\n- `allow-download-video`\n- `allow-cancel-download`",
+          "description": "Default permissions for the ytdlp plugin.\n#### This default permission set includes:\n\n- `allow-get-ytdlp-status`\n- `allow-install-ytdlp`\n- `allow-check-ytdlp-update`\n- `allow-install-ytdlp-update`\n- `allow-set-ytdlp-dir`\n- `allow-set-ffmpeg-path`\n- `allow-set-ytdlp-proxy`\n- `allow-install-deno`\n- `allow-fetch-video-info`\n- `allow-download-video`\n- `allow-cancel-download`",
           "type": "string",
           "const": "default",
-          "markdownDescription": "Default permissions for the ytdlp plugin.\n#### This default permission set includes:\n\n- `allow-get-ytdlp-status`\n- `allow-install-ytdlp`\n- `allow-check-ytdlp-update`\n- `allow-install-ytdlp-update`\n- `allow-set-ytdlp-dir`\n- `allow-set-ffmpeg-path`\n- `allow-install-deno`\n- `allow-fetch-video-info`\n- `allow-download-video`\n- `allow-cancel-download`"
+          "markdownDescription": "Default permissions for the ytdlp plugin.\n#### This default permission set includes:\n\n- `allow-get-ytdlp-status`\n- `allow-install-ytdlp`\n- `allow-check-ytdlp-update`\n- `allow-install-ytdlp-update`\n- `allow-set-ytdlp-dir`\n- `allow-set-ffmpeg-path`\n- `allow-set-ytdlp-proxy`\n- `allow-install-deno`\n- `allow-fetch-video-info`\n- `allow-download-video`\n- `allow-cancel-download`"
         },
         {
           "description": "Allow reading yt-dlp status (installed, version, path, ffmpeg, deno).",
@@ -455,6 +455,12 @@
           "type": "string",
           "const": "allow-set-ffmpeg-path",
           "markdownDescription": "Allow setting custom ffmpeg path."
+        },
+        {
+          "description": "Allow setting a proxy for yt-dlp downloads (bypass provider blocking).",
+          "type": "string",
+          "const": "allow-set-ytdlp-proxy",
+          "markdownDescription": "Allow setting a proxy for yt-dlp downloads (bypass provider blocking)."
         },
         {
           "description": "Allow installing Deno runtime for YouTube n-sig extraction.",

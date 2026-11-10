@@ -7,6 +7,7 @@ export interface YtdlpStatus {
     ffmpeg_path?: string | null;
     deno_installed: boolean;
     deno_path?: string | null;
+    proxy?: string | null;
     message: string;
 }
 export interface VideoInfo {
@@ -23,6 +24,7 @@ export declare function checkYtdlpUpdate(): Promise<string | null>;
 export declare function installYtdlpUpdate(): Promise<YtdlpStatus>;
 export declare function setYtdlpDir(path: string): Promise<YtdlpStatus>;
 export declare function setFfmpegPath(path: string): Promise<YtdlpStatus>;
+export declare function setYtdlpProxy(proxy: string): Promise<YtdlpStatus>;
 export declare function installDeno(): Promise<YtdlpStatus>;
 export declare function fetchVideoInfo(url: string): Promise<VideoInfo>;
 export interface DownloadParams {

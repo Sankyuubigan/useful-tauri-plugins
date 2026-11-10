@@ -17,6 +17,9 @@ export function setYtdlpDir(path) {
 export function setFfmpegPath(path) {
     return invoke('plugin:ytdlp|set_ffmpeg_path', { path });
 }
+export function setYtdlpProxy(proxy) {
+    return invoke('plugin:ytdlp|set_ytdlp_proxy', { proxy });
+}
 export function installDeno() {
     return invoke('plugin:ytdlp|install_deno');
 }

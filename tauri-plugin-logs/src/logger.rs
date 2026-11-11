@@ -36,6 +36,20 @@ fn bounded_message(msg: &str) -> String {
     bounded
 }
 
+/// Контракт читаемого лога (11.11.26): одна строка сообщения = одна запись
+/// `[ts] [LEVEL] …`. Мультистрочные сообщения (отчёт анализа) разрезаются:
+/// каждое продолжение несёт полный префикс и в файле, и в live-событии, а
+/// bound (MAX_LOG_MESSAGE_CHARS) считается ПО СТРОКЕ, а не по сообщению —
+/// хвост длинного отчёта больше не теряется. Пустые строки не пишутся
+/// (в истории панели их всё равно нет: read_tail их фильтрует), отступы
+/// содержательных строк сохраняются.
+fn bounded_lines(msg: &str) -> Vec<String> {
+    msg.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| bounded_message(line))
+        .collect()
+}
+
 /// Читаемый локальный таймстамп `YYYY-MM-DD HH:MM:SS`.
 pub fn timestamp() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
@@ -66,36 +80,61 @@ fn fresh_file(path: &Path) {
         .open(path);
 }
 
-/// Запись только в файлы (без stderr и события) — для panic-hook, чтобы не
-/// рисковать вторичной паникой внутри уже паникующего потока.
-fn write_files(level: &str, msg: &str) {
-    let line = format!("[{}] [{}] {}\n", timestamp(), level, bounded_message(msg));
+/// Сборка записей из сообщения: одна строка сообщения = одна запись
+/// `[ts] [LEVEL] …` (общая для write_regular / write_files / early_log).
+/// Один timestamp на всё сообщение.
+fn entries_for(level: &str, msg: &str) -> Vec<String> {
+    let ts = timestamp();
+    bounded_lines(msg)
+        .into_iter()
+        .map(|line| format!("[{}] [{}] {}", ts, level, line))
+        .collect()
+}
+
+/// Запись готовых записей в файлы + flight под FILE_LOCK НА ВЕСЬ блок
+/// сообщения: строки одного сообщения не перемешиваются с чужими записями
+/// других потоков. stderr и событие `logs:message` — вне лока, на усмотрение
+/// вызывающего.
+fn write_entries_to_files(entries: &[String]) {
     let _guard = lock(&FILE_LOCK);
+    let text: String = entries.iter().map(|entry| format!("{entry}\n")).collect();
     if let Some(path) = LAST_LOGS.get() {
-        append_file(path, &line);
+        append_file(path, &text);
     }
     if let Some(path) = LOG_FILE.get() {
-        append_file(path, &line);
+        append_file(path, &text);
     }
-    crate::flight::push(&line);
+    for entry in entries {
+        crate::flight::push(&format!("{entry}\n"));
+    }
+}
+
+/// Запись только в файлы (без stderr и события) — для panic-hook и early-пути,
+/// чтобы не рисковать вторичной паникой внутри уже паникующего потока.
+fn write_files(level: &str, msg: &str) {
+    let entries = entries_for(level, msg);
+    if entries.is_empty() {
+        return;
+    }
+    write_entries_to_files(&entries);
 }
 
 /// Полная запись: stderr + файлы + кольцевой буфер + событие `logs:message`.
+/// Контракт читаемого лога (11.11.26): одна строка сообщения = одна запись;
+/// мультистроку режем на записи с полным префиксом (см. `bounded_lines`).
 pub fn write_regular(level: &str, msg: &str) {
-    let line = format!("[{}] [{}] {}", timestamp(), level, bounded_message(msg));
-    eprintln!("{line}");
-    {
-        let _guard = lock(&FILE_LOCK);
-        if let Some(path) = LAST_LOGS.get() {
-            append_file(path, &format!("{line}\n"));
-        }
-        if let Some(path) = LOG_FILE.get() {
-            append_file(path, &format!("{line}\n"));
-        }
-        crate::flight::push(&format!("{line}\n"));
+    let entries = entries_for(level, msg);
+    if entries.is_empty() {
+        return;
     }
+    for entry in &entries {
+        eprintln!("{entry}");
+    }
+    write_entries_to_files(&entries);
     if let Some(app) = APP_HANDLE.get() {
-        let _ = app.emit("logs:message", line);
+        for entry in &entries {
+            let _ = app.emit("logs:message", entry);
+        }
     }
 }
 
@@ -168,14 +207,30 @@ fn is_noisy_http_debug(metadata: &Metadata) -> bool {
         .any(|prefix| metadata.target().starts_with(prefix))
 }
 
+/// Таргеты headless-Chrome-крейта: INFO/DEBUG-шум lifecycle (~13 строк на
+/// каждый анализ: Launching/Started/Navigating/Dropping/Killing/transport…,
+/// инцидент 11.11.26 — лог «в кашу»). Lifecycle браузера-пробы пишет сам хост
+/// (dpi_gui analyzer.rs) одной компактной строкой на запуск и на остановку.
+/// WARN/ERROR от крейта проходят — реальный сбой запуска терять нельзя.
+const NOISY_BROWSER_TARGET_PREFIXES: [&str; 1] = ["headless_chrome"];
+
+fn is_noisy_browser_info(metadata: &Metadata) -> bool {
+    if !matches!(metadata.level(), Level::Info | Level::Debug | Level::Trace) {
+        return false;
+    }
+    NOISY_BROWSER_TARGET_PREFIXES
+        .iter()
+        .any(|prefix| metadata.target().starts_with(prefix))
+}
+
 /// Итоговое решение «пишем ли запись». Единая точка для `log()` и `enabled()`.
 fn writes(record: &Record) -> bool {
-    !is_noisy_http_debug(record.metadata())
+    !is_noisy_http_debug(record.metadata()) && !is_noisy_browser_info(record.metadata())
 }
 
 impl Log for AppLogger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        !is_noisy_http_debug(metadata)
+        !is_noisy_http_debug(metadata) && !is_noisy_browser_info(metadata)
     }
 
     fn log(&self, record: &Record) {
@@ -189,8 +244,8 @@ impl Log for AppLogger {
         if !writes(record) {
             return;
         }
-        let msg = bounded_message(&record.args().to_string());
-        write_regular(record.level().as_str(), &msg);
+        let raw = record.args().to_string();
+        write_regular(record.level().as_str(), &raw);
         if record.level() == Level::Error {
             // Дамп контекста в постоянной crash_dump.log (переживает рестарт)
             // + отправка в облако (если включено). Стек извлекаем на месте —
@@ -206,7 +261,7 @@ impl Log for AppLogger {
                 .unwrap_or_else(|| "<нет файла:строка>".to_string());
             let bt = capture_backtrace();
             crate::flight::dump_error(&format!("{} ({})", location, record.target()), &bt);
-            crate::error_reporting::report_handled(record.target(), &msg);
+            crate::error_reporting::report_handled(record.target(), &bounded_message(&raw));
         }
     }
 
@@ -253,10 +308,11 @@ pub fn early_init(log_file_name: &str) {
 
 /// Ранняя запись строки в файлы (только files + stderr, без события — GUI ещё нет).
 pub fn early_log(level: &str, msg: &str) {
-    let msg = bounded_message(msg);
-    let line = format!("[{}] [{}] {}", timestamp(), level, msg);
-    eprintln!("{line}");
-    write_files(level, &msg);
+    let entries = entries_for(level, msg);
+    for entry in &entries {
+        eprintln!("{entry}");
+    }
+    write_entries_to_files(&entries);
 }
 
 /// Установка логгера и путей в setup плагина. Повторные вызовы безвредны.
@@ -341,11 +397,36 @@ mod tests {
     }
 
     #[test]
-    fn bounded_message_limits_long_log_entries() {
-        let message = "x".repeat(MAX_LOG_MESSAGE_CHARS + 100);
-        let bounded = bounded_message(&message);
-        assert_eq!(bounded.chars().count(), MAX_LOG_MESSAGE_CHARS);
-        assert!(bounded.ends_with('…'));
+    fn bounded_lines_splits_multiline_and_drops_empty() {
+        let lines = bounded_lines("первая\n\nвторая\r\n\n\nтретья");
+        assert_eq!(lines, vec!["первая", "вторая", "третья"]);
+    }
+
+    #[test]
+    fn bounded_lines_limits_each_long_line() {
+        let long = "x".repeat(MAX_LOG_MESSAGE_CHARS + 100);
+        let lines = bounded_lines(&format!("шапка\n{long}\nхвост"));
+        assert_eq!(
+            lines.len(),
+            3,
+            "хвост отчёта не теряется: bound по строке, не по сообщению"
+        );
+        assert_eq!(lines[0], "шапка");
+        assert_eq!(lines[1].chars().count(), MAX_LOG_MESSAGE_CHARS);
+        assert!(lines[1].ends_with('…'));
+        assert_eq!(lines[2], "хвост");
+    }
+
+    #[test]
+    fn entries_for_prefixes_every_line_of_multiline_message() {
+        let entries = entries_for("INFO", "=== АНАЛИЗ ===\n\n  причина — вторая строка");
+        assert_eq!(entries.len(), 2, "пустые строки не пишутся");
+        assert!(entries[0].starts_with('['), "префикс [ts] на каждой записи");
+        assert!(entries[0].ends_with(" [INFO] === АНАЛИЗ ==="));
+        assert!(
+            entries[1].ends_with(" [INFO]   причина — вторая строка"),
+            "отступ содержательной строки отчёта сохранён"
+        );
     }
 
     #[test]
@@ -368,5 +449,23 @@ mod tests {
         assert!(logger.enabled(&make(Level::Trace, "tauri_plugin_image_engine")));
         // Префикс должен совпасть С НАЧАЛА: «superhyper» — не шум.
         assert!(logger.enabled(&make(Level::Debug, "superhyper")));
+    }
+
+    #[test]
+    fn noisy_browser_info_is_filtered_but_warn_passes() {
+        fn make(level: Level, target: &str) -> Metadata<'_> {
+            Metadata::builder().level(level).target(target).build()
+        }
+        let logger = AppLogger;
+        // Lifecycle-шум headless_chrome на INFO/DEBUG/TRACE — заглушен.
+        assert!(!logger.enabled(&make(Level::Info, "headless_chrome::browser")));
+        assert!(!logger.enabled(&make(Level::Info, "headless_chrome::browser::tab::manager")));
+        assert!(!logger.enabled(&make(Level::Debug, "headless_chrome")));
+        assert!(!logger.enabled(&make(Level::Trace, "headless_chrome::transport")));
+        // Реальные сбои запуска на WARN/ERROR — проходят (диагностику не теряем).
+        assert!(logger.enabled(&make(Level::Warn, "headless_chrome::browser")));
+        assert!(logger.enabled(&make(Level::Error, "headless_chrome")));
+        // Префикс должен совпасть С НАЧАЛА: «xheadless_chrome» — не шум.
+        assert!(logger.enabled(&make(Level::Info, "xheadless_chrome")));
     }
 }

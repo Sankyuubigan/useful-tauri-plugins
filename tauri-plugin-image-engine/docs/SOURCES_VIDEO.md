@@ -106,6 +106,73 @@ Community License). Пользователь принимает лицензию
 - **Kablex VSA-замеры** (`https://github.com/Kablex/ComfyUI-Ref2VA-VSA`) —
   справочно для качества ref-режима.
 
+## Внешняя референс-реализация: minimax-h3-workspace (добавлено 11.11.26, поручение владельца)
+
+`https://github.com/Yuliya1310/minimax-h3-workspace` (MIT, 46★) — Windows-обёртка НАД ComfyUI
+(невидимый ComfyUI + формы), тот же класс задач, что наш видео-стек. Рассматривается как
+референс подходов (НЕ переносится напрямую — у нас sd.cpp без Python/ComfyUI).
+
+- **Их стек** (`app/catalog.py`): MiniMax H3 Singularity ref2va (int8 34 ГБ / pruned int8 21 / w4a8 11.8),
+  FastH3 8-step v2 (int8 22.1 / nvfp4 13.6, FastVideo), TE `qwen3vl_32b_minimax_h3_nvfp4_awq`
+  (15.69 ГБ), video VAE int8 2.81 + audio VAE fp32 0.61, **RelayVSR x2
+  `relayvsr_x2_lightx2v_int8_convrot.safetensors` 5.16 ГБ (Comfy-Org/RelayVSR) — байт-в-байт
+  те же веса, что скачаны в нашем `models_vsr/`**, SeedVR2 3B int8 + VAE (те же, что наши
+  `models_vsr2/`), латент-апскейлер `minimax_h3_latent_upscaler_3d` 0.69 ГБ (LBH-123-AI —
+  та же роль, что наш learned `hires_upscaler`), Pika H3 Flex turbo LoRA 3.91 ГБ,
+  SelfLift action (+`h3_upscaler_lms_v0.1`), **Character Swap LoRA akatz-ai v1.5** (наш
+  кандидат `lora_swap` — у них в проде), Krea2/Qwen-Image-2.1/FLUX.2-klein для картинок.
+  Пиннутые ноды: ComfyUI-H3-NativeAudioLock (SveSop), Minimax_h3_latent_Upscaler (LBH-123-AI),
+  MelBandRoFormer (kijai), VideoHelperSuite, KJNodes; классы MiniMaxChunkFeedForward /
+  MiniMaxLowVRAMAttention (memory savers).
+- **GPU-подбор** (`choose_models`): `vram+ram >= 48 и vram >= 24` → max; `>= 40` → standard
+  (pruned int8 ~21 ГБ «suits 12–16 GB VRAM»); иначе lite. ComfyUI offload'ит в RAM
+  («uses VRAM + RAM combined») — это структурное отличие от статического плана sd.cpp.
+- **RelayVSR у них** (`relay_graph` в `app/workflows.py`): ComfyUI-нода VSRDecode, KSampler
+  1 шаг cfg 1 denoise 1, `detail`-параметр; **лимит `RELAY_PIXEL_SECONDS = 10*1376*768`
+  (~105.7 MP-сек) — клип сегментируется по пиксель-секундам**. Подтверждает: RelayVSR работает
+  на consumer-картах только при сегментации; наш sd.cpp строит план на весь клип (need-константа
+  6530.91, 16 отказов king_orch_3).
+- **SeedVR2 у них** (`upscale_graph`): lanczos 1.5–2.0 → `VAEEncodeTiled`/`VAEDecodeTiled`
+  tile 512 / overlap 128 / **temporal_size 64 / temporal_overlap 8** → KSampler 1 шаг →
+  `SeedVR2PostProcessing` (lab color correction). Временный тайлинг с overlap — то самое
+  состояние (временный контекст), которого нет в sd.cpp (наш чанк 1/5, «independent chunks»
+  без склейки; фликер чанка 1 доказан R-7/R-9 в king_orch_3 09.11.26). Готовая формулировка
+  для апстрим-issue.
+- **Персонажи/референсы** (`workflows.py`): ref2va-рефы подаются БЕЗ фиксированного размера —
+  `MiniMaxH3ReferenceToVideo` с `ref_size: "max"` (как есть, «best identity, в разы медленнее»)
+  или `"match"` (рефы масштабируются к площади видео); до 9 картинок + 3 видео (24 fps,
+  ≤360 кадров) + 3 аудио. Character sheets (qwen_sheet_graph): 4 вида = **1920×1088**,
+  6 видов = **2112×960**. Edit-рефы Qwen — `ImageScaleToTotalPixels` **1.0/2.0 МП** (шаг 32);
+  FLUX — 1.0 МП (шаг 16). Swap: видео + ≤2 картинок героя, `ref_image_size "match"`, видео-рефы
+  к (width,height) при `small_ref`. Согласуется с нашим лимитом 1–3 рефа и бюджетом площади
+  refmod-карточек (4 МП total / 2 МП main).
+- **Качества** (`QUALITY`): 608×352 / 864×480 / 1280×736 / 1920×1088 / 1824×1024, кратность 32,
+  кап 2048. Их 720p/480p = наши боевые входы. Long video: ≤12 сцен × 3–15 с, overlap 1.0 с.
+- **Кейсы для наших бенчей** (king_orch_3, отложено до заказа): ACTOR_SIGMAS кастомная сигма-сетка
+  er_sde 10 шагов (shift 12.2/3); long-режим er_sde/beta 12 шагов (shift 12/4); Pika-вариант
+  euler/simple 8; лонг-драфт lcm 4 шага (shift 12/2) — кандидаты в custom_sigmas vid_gen
+  (контракт BUNDLES §3); lowres_scale 0.6 (двухпроходный action) ≈ наш pre-shrink 0.5;
+  FastH3 DMD2 4-step и lightx2v SLA (наши давние кандидаты) — у них в проде.
+- **Дополнено 11.11.26 (вечер, глубокий разбор клона temp/minimax-h3-ws):**
+  - **Лора motion_repair** (JOKER141/MiniMax-H3-General-Motion-Continuity-Repair, 0.16 ГБ) —
+    ремонт непрерывности движения, у нас роли нет — новый кандидат.
+  - **Их боевой рецепт swap-графа** (workflows.py:266-286): er_sde, 10 manual sigmas
+    (ACTOR_SIGMAS), sigma shift 12.2/3, swap 1.0 + turbo 0.7, sol-attn, ref_image_size "match" —
+    готовый кейс для пробы Character Swap LoRA (скачана в king_orch_3
+    test/bench/video_hires/lora_swap/, 155 110 792 Б + 3 примера воркфлоу).
+  - **ref_size по графам (дословно из кода):** ref2va/lipsync = "max" (как есть), acting/swap/
+    long = "match" (к площади видео); пиксельного капа в коде НЕТ — лимит только по количеству
+    (≤9 картинок, ≤3 видео ≤360 кадров, ≤3 аудио).
+  - **Sheets:** SHEET_SIZE (1920,1088) 4 вида; SHEET6_SIZE (2112,960) 6 видов («about 2 MP
+    like the four-panel sheet»); склейка ImageStitch «exact thin line» без полей.
+  - **Сэмплеры всех графов (дословно):** turbo res_multistep/simple 8; ref2va euler/beta;
+    acting er_sde 10 manual (ACTOR_SIGMAS) или pika euler/simple 8; long er_sde/beta 12 /
+    draft lcm 4 / pika euler/simple 8; lipsync euler/beta 12; swap er_sde 10 manual;
+    Krea2 realism euler_ancestral/sgm_uniform 8 → latent enlarge → er_sde/simple 6 s0.6;
+    Qwen edit euler/simple 25; FLUX Flux2Scheduler 4.
+  - **Латент-апскейлеры:** LBH-123-AI minimax_h3_latent_upscaler_3d_conv_v1 0.69 ГБ (=
+    наш learned hires_upscaler) + action-вариант h3_upscaler_lms_v0.1 (Alissonerdx).
+
 ## Разборы юзера (ролики) — справочно
 
 Ngc6vmyGOyU (замер final 20 шагов), e3qljriQYOk, t02ttse7Qhw (Self-Lift +

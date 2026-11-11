@@ -195,6 +195,9 @@ mod tests {
             base_url: "https://api.groq.com/openai/v1".into(),
             keys: vec![AccountKey { id: "k1".into(), key: "gsk-1".into(), is_active: true, name: None }],
             models: vec![DiscoveredModel { id: "llama-3.3-70b-versatile".into(), ..Default::default() }],
+            // Фикстура — «юзер отметил всё пришедшее»: иначе allowlist пуст и
+            // per-provider комбо честно не строится (v5, 11.11.2026).
+            visible_models: vec!["llama-3.3-70b-versatile".into()],
             ..Default::default()
         });
         cloud_routers_core::save_config(dir, &cfg).expect("save");

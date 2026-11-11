@@ -312,11 +312,13 @@ fn state_for(base_url: &str, keys: Vec<AccountKey>) -> (AppState, std::path::Pat
         relay_id: None,
         keys,
         // Модели уже «обнаружены»: без них провайдер не маршрутизируем, а цель
-        // этих тестов — не опрос моделей, а прокси и ротация.
+        // этих тестов — не опрос моделей, а прокси и ротация. Allowlist — «юзер
+        // отметил всё»: иначе чат-каталог честно пуст (v5, 11.11.2026).
         models: vec![
             DiscoveredModel { id: "m1".into(), ..Default::default() },
             DiscoveredModel { id: "m2".into(), ..Default::default() },
         ],
+        visible_models: vec!["m1".into(), "m2".into()],
         ..Default::default()
     });
     std::fs::create_dir_all(&dir).expect("mkdir");
@@ -652,6 +654,7 @@ fn state_combo(
         relay_id: None,
         keys: a_keys,
         models: vec![DiscoveredModel { id: "m1".into(), ..Default::default() }],
+        visible_models: vec!["m1".into()],
         ..Default::default()
     });
     if let Some(b_base) = b_base {
@@ -668,6 +671,7 @@ fn state_combo(
             relay_id: None,
             keys: b_keys,
             models: vec![DiscoveredModel { id: "m1".into(), ..Default::default() }],
+            visible_models: vec!["m1".into()],
             ..Default::default()
         });
     }

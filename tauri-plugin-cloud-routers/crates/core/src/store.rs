@@ -119,6 +119,18 @@ pub fn load(data_dir: &Path) -> GatewayConfig {
                     path.display()
                 );
             }
+            // 11.11.2026 (v5): blocklist `hidden_models` → allowlist
+            // `visible_models`. В памяти, идемпотентно; отложенный случай
+            // (каталог пуст, hidden жив) дозасеивается в refresh_models.
+            for p in &mut cfg.providers {
+                if p.migrate_hidden_to_visible() {
+                    log::info!(
+                        "cloud-routers: {}: hidden_models провайдера «{}» перенесён в visible_models",
+                        path.display(),
+                        p.id
+                    );
+                }
+            }
             cfg
         }
         Err(e) => {

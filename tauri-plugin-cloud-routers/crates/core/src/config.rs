@@ -188,15 +188,33 @@ pub struct ProviderConfig {
     pub keys: Vec<AccountKey>,
     /// Модели, обнаруженные реальным `GET /models` (не захардкожены).
     pub models: Vec<DiscoveredModel>,
-    /// Модели, скрытые из списков моделей (`/v1/models`, `/api/combos`) выбором
-    /// пользователя в дашборде (вкладка «Модели»). Хранятся id моделей
-    /// апстрима; пусто = показывать все обнаруженные. Скрытие — кураторство
-    /// СПИСКА, не маршрутизации: `resolve_combo` этот список не читает, и
-    /// запрос с прямым id скрытой модели по-прежнему проходит (старые сессии
-    /// не ломаются ложным 404).
+    /// SSOT видимости моделей в чате — allowlist «что показывать» в списках
+    /// моделей (`/v1/models`, `/api/combos`): id моделей апстрима, отмеченных
+    /// юзером в дашборде (вкладка «Модели»). ПУСТО = НЕ ПОКАЗЫВАТЬ НИЧЕГО —
+    /// единое правило без веток (провайдер без пройденного discovery тоже
+    /// корректно даёт пустой каталог). Кураторство СПИСКА, не маршрутизации:
+    /// `resolve_combo` этот список не читает, и запрос с прямым id
+    /// неотмеченной модели по-прежнему проходит (старые сессии не ломаются
+    /// ложным 404). Вернувшаяся модель (исчезла у апстрима и вернулась)
+    /// восстанавливает видимость сама: её id остался в списке.
+    ///
+    /// Инвариант «refresh не раздаёт видимость» (баг 13→24) держится МОДЕЛЬЮ
+    /// ДАННЫХ: видимый набор — пересечение `visible_models ∩ models`, и ни
+    /// одна кодовая ветка не может его расширить; новый id апстрима
+    /// структурно неотмечен. `refresh_models` при первом обновлении засеивает
+    /// список миграцией legacy-скрытий (см. [`Self::migrate_hidden_to_visible`]).
     ///
     /// Отдельное поле, а не флаг на [`DiscoveredModel`]: `refresh_models`
     /// заменяет `models` целиком, и флаги стирались бы при каждом обновлении.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub visible_models: Vec<String>,
+    /// LEGACY (11.11.2026): blocklist «что скрыть» из старых конфигов.
+    ///
+    /// Мигрируется в [`Self::visible_models`] ([`Self::migrate_hidden_to_visible`];
+    /// deferred-случай OAuth-wipe дозасеивается в `refresh_models`) и после
+    /// миграции нигде не читается. Поле оставлено, чтобы миграция могла
+    /// прочитать скрытия из старого `gateway.json` (serde молча выбросил бы
+    /// его при удалении из структуры — и выбор юзера пропал бы безмолвно).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hidden_models: Vec<String>,
 }
@@ -214,12 +232,48 @@ impl Default for ProviderConfig {
             relay_id: None,
             keys: Vec::new(),
             models: Vec::new(),
+            visible_models: Vec::new(),
             hidden_models: Vec::new(),
         }
     }
 }
 
 impl ProviderConfig {
+    /// Одноразовая миграция legacy-скрытий в allowlist видимости (v5,
+    /// 11.11.2026): `hidden_models` («что скрыть») → `visible_models`
+    /// («что показывать»). Паттерн `migrate_relay_slots`: в памяти,
+    /// идемпотентно, файл переписывается в новом формате при следующем
+    /// сохранении.
+    ///
+    /// - каталог жив (`models` не пуст): visible = models − hidden, hidden
+    ///   очищается (источник исчерпан — SSOT теперь один);
+    /// - каталог пуст, а hidden жив (OAuth-wipe до первого обновления
+    ///   плагина): отложенный случай — hidden СОХРАНЯЕТСЯ, дозасеивание
+    ///   сделает `refresh_models` при первом же «Обновить модели» (иначе
+    ///   миграция превратила бы весь выбор юзера в «показывать ничего»);
+    /// - visible уже не пуст (мигрировано / свежий провайдер) — ничего.
+    ///
+    /// Возвращает true, если конфиг изменился.
+    pub fn migrate_hidden_to_visible(&mut self) -> bool {
+        if !self.visible_models.is_empty() || self.models.is_empty() || self.hidden_models.is_empty()
+        {
+            return false;
+        }
+        self.visible_models = self
+            .models
+            .iter()
+            .map(|m| m.id.trim().to_string())
+            .filter(|id| {
+                !self
+                    .hidden_models
+                    .iter()
+                    .any(|h| h.trim() == *id)
+            })
+            .collect();
+        self.hidden_models.clear();
+        true
+    }
+
     /// Проверить одного провайдера. Возвращает список проблем; пустой список —
     /// провайдер корректен.
     ///
@@ -794,6 +848,57 @@ mod tests {
         assert!(!c.migrate_relay_slots());
         assert!(c.relays.is_empty());
         assert_eq!(c.active_relay, None);
+    }
+
+    // ---- v5 (11.11.2026): allowlist видимости вместо blocklist'а ----
+
+    #[test]
+    fn migrate_hidden_to_visible_moves_blocklist_to_allowlist() {
+        // Договор миграции: выбор юзера переносится 1:1 (видимое = models − hidden),
+        // legacy-список после переноса пуст, идемпотентно.
+        let mut p = provider("openrouter", "https://openrouter.ai/api/v1");
+        p.models = ["m1", "m2", "m3", "m4"]
+            .iter()
+            .map(|id| DiscoveredModel { id: id.to_string(), object: None, created: None })
+            .collect();
+        p.hidden_models = vec!["m2".into(), " m4 ".into()];
+        assert!(p.migrate_hidden_to_visible(), "миграция должна сработать");
+        assert_eq!(p.visible_models, vec!["m1", "m3"]);
+        assert!(p.hidden_models.is_empty(), "источник исчерпан");
+        // Идемпотентность: второй вызов ничего не делает.
+        assert!(!p.migrate_hidden_to_visible());
+        assert_eq!(p.visible_models, vec!["m1", "m3"]);
+    }
+
+    #[test]
+    fn migrate_hidden_to_visible_is_noop_when_already_migrated() {
+        let mut p = provider("openrouter", "https://openrouter.ai/api/v1");
+        p.models = vec![DiscoveredModel { id: "m1".into(), object: None, created: None }];
+        p.visible_models = vec!["m1".into()];
+        p.hidden_models = vec!["m2".into()];
+        assert!(!p.migrate_hidden_to_visible(), "visible не пуст — уже мигрировано/новый провайдер");
+        assert_eq!(p.hidden_models, vec!["m2"], "источник не трогается");
+    }
+
+    #[test]
+    fn migrate_hidden_to_visible_defers_when_catalog_empty() {
+        // Отложенный случай (OAuth-wipe до обновления плагина): миграция НЕ имеет
+        // права превратить весь выбор юзера в «показывать ничего» — hidden
+        // сохраняется, дозасеивание сделает refresh_models при первом «Обновить
+        // модели».
+        let mut p = provider("openrouter", "https://openrouter.ai/api/v1");
+        p.models.clear();
+        p.hidden_models = vec!["m1".into(), "m2".into()];
+        assert!(!p.migrate_hidden_to_visible(), "каталог пуст — отложить");
+        assert_eq!(p.hidden_models, vec!["m1", "m2"], "hidden сохраняется до refresh");
+        assert!(p.visible_models.is_empty());
+    }
+
+    #[test]
+    fn migrate_hidden_to_visible_is_noop_without_legacy() {
+        let mut p = provider("openrouter", "https://openrouter.ai/api/v1");
+        p.visible_models.clear();
+        assert!(!p.migrate_hidden_to_visible(), "нет legacy-скрытий — ничего не делать");
     }
 
     /// 27.10.2026 — регресс: слот ищется по `kind`, а не по пустоте списка.

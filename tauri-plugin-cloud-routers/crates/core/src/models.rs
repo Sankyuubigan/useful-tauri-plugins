@@ -109,11 +109,12 @@ pub fn list_combos(providers: &[ProviderConfig]) -> Vec<ComboInfo> {
             if m.id.is_empty() {
                 continue;
             }
-            // Скрытое в дашборде (ProviderConfig::hidden_models) уходит из
-            // списка: клиент видит только то, что пользователь оставил.
-            // Маршрутизация (resolve_combo) скрытие не читает — прямой id
-            // работает как раньше.
-            if p.hidden_models.iter().any(|h| h == &m.id) {
+            // Allowlist видимости (ProviderConfig::visible_models): в списке
+            // только то, что пользователь отметил. Инвариант «refresh не
+            // раздаёт видимость» (баг 13→24) держится моделью данных — новый
+            // id апстрима структурно неотмечен. Маршрутизация (resolve_combo)
+            // видимость не читает — прямой id работает как раньше.
+            if !p.visible_models.iter().any(|v| v == &m.id) {
                 continue;
             }
             out.push(ComboInfo {
@@ -215,6 +216,9 @@ mod tests {
     use crate::config::AccountKey;
 
     fn provider(id: &str, models: &[&str]) -> ProviderConfig {
+        // Хелпер по умолчанию — «юзер отметил всё пришедшее» (аналог старого
+        // дефолта «пустой blocklist = всё видимо»): тесты видимости позволены,
+        // allowlist-специфичные кейсы переопределяют список явно.
         ProviderConfig {
             id: id.to_string(),
             name: id.to_string(),
@@ -223,6 +227,7 @@ mod tests {
             relay_id: None,
             keys: vec![AccountKey { id: "k1".into(), key: "sk-1".into(), is_active: true, name: None }],
             models: models.iter().map(|m| DiscoveredModel { id: m.to_string(), ..Default::default() }).collect(),
+            visible_models: models.iter().map(|m| m.to_string()).collect(),
             ..Default::default()
         }
     }
@@ -326,26 +331,57 @@ mod tests {
     }
 
     #[test]
-    fn list_combos_skips_hidden_models() {
-        // Отбор в дашборде: скрытое из списка уходит, остальное — в порядке
-        // конфига. Пустой hidden_models = все видны (дефолт старых конфигов).
+    fn list_combos_shows_only_allowlisted_models() {
+        // Allowlist видимости: в чат-каталоге только отмеченное, в порядке
+        // конфига. Новый id апстрима структурно неотмечен — refresh не может
+        // раздавать видимость (баг 13→24).
         let mut p = provider("groq", &["m1", "m2", "m3"]);
-        p.hidden_models = vec!["m2".into()];
+        p.visible_models = vec!["m2".into()];
         let ps = vec![p];
         let combos = list_combos(&ps);
         assert_eq!(
             combos.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
-            vec!["groq/m1", "groq/m3"],
-            "скрытая модель уходит из списка, порядок сохраняется"
+            vec!["groq/m2"],
+            "вне allowlist — в списке нет, порядок сохраняется"
         );
     }
 
     #[test]
-    fn list_all_combos_keeps_user_combo_with_hidden_member() {
-        // Связка — явное намерение пользователя; участник, скрытый из общего
-        // списка, из связки не выпадает (иначе «куда делась моя связка»).
+    fn list_combos_empty_allowlist_means_nothing_visible() {
+        // Единое правило без веток: ПУСТО = показывать ничего. Провайдер с
+        // каталогом, но без ни одной отметки — пустой чат-каталог (так же,
+        // как новый провайдер до первого discovery: models пуст).
+        let mut p = provider("groq", &["m1", "m2"]);
+        p.visible_models.clear();
+        let ps = vec![p];
+        assert!(list_combos(&ps).is_empty());
+    }
+
+    #[test]
+    fn list_combos_returning_model_restores_visibility() {
+        // «Пометить нерабочими» (формулировка владельца): выбранная модель,
+        // исчезнувшая у апстрима, остаётся отмеченной в allowlist; когда
+        // вернётся — видима снова, без действий пользователя.
         let mut p = provider("groq", &["m1"]);
-        p.hidden_models = vec!["m1".into()];
+        p.visible_models = vec!["m1".into(), "m2".into()];
+        let combos = list_combos(&[p.clone()]);
+        assert_eq!(combos.len(), 1, "m2 отмечен, но его нет у апстрима — записи нет");
+        p.models = vec![DiscoveredModel { id: "m2".into(), ..Default::default() }];
+        let combos = list_combos(&[p]);
+        assert_eq!(
+            combos.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            vec!["groq/m2"],
+            "вернувшаяся модель видима сама"
+        );
+    }
+
+    #[test]
+    fn list_all_combos_keeps_user_combo_with_unlisted_member() {
+        // Связка — явное намерение пользователя; участник, не отмеченный в
+        // allowlist провайдера, из связки не выпадает (иначе «куда делась моя
+        // связка»). Видимость кураторствует СПИСКУ, не маршрутизации.
+        let mut p = provider("groq", &["m1"]);
+        p.visible_models.clear();
         let mut cfg = GatewayConfig::default();
         cfg.providers = vec![p];
         cfg.combos.push(crate::config::ComboConfig {
@@ -357,7 +393,7 @@ mod tests {
             }],
         });
         let combos = list_all_combos(&cfg);
-        assert_eq!(combos.len(), 1, "per-provider комбо скрыто, связка осталась");
+        assert_eq!(combos.len(), 1, "per-provider комбо не отмечено, связка осталась");
         assert_eq!(combos[0].name, "fast");
     }
 
@@ -492,4 +528,5 @@ mod tests {
         let models = parse_models_response(r#"{"data":[]}"#).expect("parse");
         assert!(models.is_empty());
     }
+
 }

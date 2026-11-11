@@ -1597,6 +1597,21 @@ impl LlamaEngine {
             }
         }
 
+        // HTTP 400 «Cannot have 2 or more assistant messages at the end of the
+        // list»: докачка/сжатие оставляют два assistant подряд — Gemma-шаблон
+        // отвергает список. Слияние делает отказ структурно невозможным; одна
+        // trailing assistant сохраняется (prefill-докачка жива). До лога и
+        // до move в request — слепок ролей ниже отражает уже слитый список.
+        let before_merge = messages_val.len();
+        messages_val = merge_consecutive_assistant(messages_val);
+        if messages_val.len() != before_merge {
+            log_cb(format!(
+                "🔗 Слито подряд идущих assistant: {} → {} сообщений (llama-server отвергает ≥2 assistant в конце)",
+                before_merge,
+                messages_val.len()
+            ));
+        }
+
         // ── Диагностика причин бага грамматики: слепок того, что уйдёт на сервер ──
         // Показывает состав сообщений (роли/длины), cache_prompt, disable_reasoning
         // — вычисляется до move messages_val в request.
@@ -3049,6 +3064,48 @@ fn diagnose_cuda_fallback(log_path: &Path) -> String {
     String::new()
 }
 
+// ─── Слияние подряд идущих assistant (HTTP 400 «2+ assistant в конце») ───
+
+/// Слияние соседних assistant-сообщений со СТРОКОВЫМ content без tool-семантики.
+///
+/// Первопричина: механика докачки/сжатия в хосте может оставить в конце списка
+/// ДВА assistant (тезисы размышлений + сырой обрывок). Чат-шаблон Gemma в
+/// llama-server отвергает такой список ошибкой 400 «Cannot have 2 or more
+/// assistant messages at the end of the list» — ход терялся целиком. Слияние
+/// делает ситуацию структурно невозможной (одна trailing assistant разрешена —
+/// prefill-режим докачки жив).
+///
+/// НЕ мерджатся: assistant с `tool_calls` (семантика tool-loop), сообщения с
+/// `tool_call_id`, parts-контент (вложения — массив, только у последнего user),
+/// а также любая пара, где content не строка (null/массив).
+pub fn merge_consecutive_assistant(messages: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    let is_mergeable =
+        |m: &serde_json::Value| -> bool {
+            m.get("role").and_then(|r| r.as_str()) == Some("assistant")
+                && m.get("content").map_or(false, |c| c.is_string())
+                && m.get("tool_calls").is_none()
+                && m.get("tool_call_id").is_none()
+        };
+    let mut out: Vec<serde_json::Value> = Vec::with_capacity(messages.len());
+    for msg in messages {
+        if is_mergeable(&msg)
+            && out.last().map_or(false, is_mergeable)
+        {
+            if let Some(prev) = out.last_mut() {
+                let joined = format!(
+                    "{}\n\n{}",
+                    prev["content"].as_str().unwrap_or(""),
+                    msg["content"].as_str().unwrap_or("")
+                );
+                prev["content"] = serde_json::Value::String(joined);
+            }
+            continue;
+        }
+        out.push(msg);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3497,5 +3554,86 @@ mod tests {
         // Терминатор chunked-ответа; дальше сокеты закрывает процесс — ждать
         // EOF вручную не нужно (клиент держит соединение в пуле).
         let _ = server.write_all(b"0\r\n\r\n");
+    }
+
+    // ─── Слияние подряд идущих assistant (HTTP 400 «2+ assistant») ───
+
+    fn assistant_msg(content: &str) -> serde_json::Value {
+        json!({"role": "assistant", "content": content})
+    }
+
+    /// Регрессия потери хода (сессия 1794381122957): докачка+сжатие оставляют
+    /// assistant(тезисы) + assistant(сырой обрывок) в конце — Gemma-шаблон
+    /// llama-server отвечает 400, ход теряется целиком. Слияние делает отказ
+    /// невозможным, контент не теряется.
+    #[test]
+    fn merges_consecutive_trailing_assistants_and_keeps_content() {
+        let merged = merge_consecutive_assistant(vec![
+            json!({"role": "user", "content": "вопрос"}),
+            assistant_msg("тезисы размышлений"),
+            assistant_msg("сырой обрывок ответа"),
+        ]);
+        assert_eq!(merged.len(), 2, "два assistant слиты в один");
+        assert_eq!(merged[0]["role"], "user");
+        assert_eq!(
+            merged[1]["content"].as_str().unwrap(),
+            "тезисы размышлений\n\nсырой обрывок ответа",
+            "контент не теряется, порядок сохранён"
+        );
+    }
+
+    /// Три assistant подряд — все сливаются в один (тезисы + обрывок + докачка).
+    #[test]
+    fn merges_three_consecutive_assistants_into_one() {
+        let merged = merge_consecutive_assistant(vec![
+            assistant_msg("a"),
+            assistant_msg("b"),
+            assistant_msg("c"),
+        ]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0]["content"].as_str().unwrap(), "a\n\nb\n\nc");
+    }
+
+    /// assistant с tool_calls не сливается: семантика tool-loop (пары
+    /// assistant→tool) разрушается конкатенацией — роль tool-вызова терять нельзя.
+    #[test]
+    fn does_not_merge_assistant_with_tool_calls() {
+        let merged = merge_consecutive_assistant(vec![
+            assistant_msg("решение вызвать тул"),
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{"id": "t1", "type": "function"}]
+            }),
+            assistant_msg("сырой обрывок"),
+        ]);
+        assert_eq!(merged.len(), 3, "пара tool_calls+assistant не сливается");
+        assert!(merged[1].get("tool_calls").is_some());
+        assert_eq!(merged[2]["content"].as_str().unwrap(), "сырой обрывок");
+    }
+
+    /// assistant с tool_call_id (роль результата в некоторых шаблонах) и
+    /// parts-контент (вложения — массив) не сливаются; user/tool роли не трогаются.
+    #[test]
+    fn does_not_merge_tool_id_parts_or_non_assistant() {
+        let merged = merge_consecutive_assistant(vec![
+            json!({"role": "user", "content": "q1"}),
+            json!({"role": "assistant", "content": null, "tool_call_id": "x"}),
+            json!({"role": "user", "content": [{"type": "text", "text": "с вложением"}]}),
+            json!({"role": "user", "content": "обычный user"}),
+            json!({"role": "tool", "content": "результат тула"}),
+        ]);
+        assert_eq!(merged.len(), 5, "ни одна пара не слита");
+    }
+
+    /// Одна trailing assistant остаётся сама собой — prefill-докачка жива.
+    #[test]
+    fn single_trailing_assistant_untouched() {
+        let merged = merge_consecutive_assistant(vec![
+            json!({"role": "user", "content": "вопрос"}),
+            assistant_msg("частичный ответ (prefill)"),
+        ]);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[1]["content"].as_str().unwrap(), "частичный ответ (prefill)");
     }
 }

@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use regex::Regex;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use super::net_errors;
 use super::ytdlp_manager;
@@ -32,6 +32,18 @@ lazy_static::lazy_static! {
 }
 
 static ACTIVE_CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// Бюджет терпения сети (инцидент 12.11.26): GGC-узлы googlevideo флапают
+/// мёртвыми окнами по 10–20 с — прежние 3 ретрая укладывались в одно окно и
+/// абортнули закачку целиком. 10 ретраев растягивают попытки на минуты и
+/// переживают флап. Целостность файла это НЕ затрагивает:
+/// `--abort-on-unavailable-fragment` остаётся в сборке args — недоступный
+/// фрагмент = честный обрыв закачки, файл с дырами невозможен. Худший случай
+/// мёртвого CDN поэтому ограничен ретраями ОДНОГО фрагмента
+/// (10 × 30 c ≈ 5 мин до честной ошибки), а не всей закачкой.
+pub(crate) const SOCKET_TIMEOUT_SECS: &str = "30";
+pub(crate) const RETRIES: &str = "10";
+pub(crate) const FRAGMENT_RETRIES: &str = "10";
 
 pub fn cancel_active() {
     ACTIVE_CANCEL.store(true, Ordering::SeqCst);
@@ -192,6 +204,49 @@ fn note_error_host(
     }
 }
 
+/// Рабочая папка временных файлов yt-dlp: данные приложения, ВНЕ папки юзера.
+/// Требование владельца (13.11.26): в целевой папке не должно быть временных
+/// файлов и папок вообще — ни .part/.ytdl, ни staging-подпапок.
+fn staging_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    app.path()
+        .app_data_dir()
+        .map(|p| p.join("ytdlp-tmp"))
+        .map_err(|e| format!("Папка данных приложения недоступна: {e}"))
+}
+
+/// Хвост прошлого краха (kill процесса или приложения во время загрузки)
+/// убрать до старта новой: yt-dlp не должен доначатливать чужие обрывки.
+/// Без рабочей папки качать нельзя — ошибка честная.
+fn reset_staging(path: &Path) -> Result<(), String> {
+    if path.exists() {
+        std::fs::remove_dir_all(path).map_err(|e| {
+            format!("Не удалось удалить старую рабочую папку {}: {e}", path.display())
+        })?;
+    }
+    std::fs::create_dir_all(path)
+        .map_err(|e| format!("Не удалось создать рабочую папку {}: {e}", path.display()))
+}
+
+/// Best-effort очистка: неудача (залочено антивирусом и т.п.) — warn, не паника.
+fn drop_staging(path: &Path) {
+    if !path.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::remove_dir_all(path) {
+        log::warn!("[YTDLP] Не удалось удалить рабочую папку {}: {e}", path.display());
+    }
+}
+
+/// RAII-гард: стейджинг чистится при ЛЮБОМ выходе из start_download —
+/// успех, отмена, ошибка yt-dlp, падение spawn.
+struct StagingGuard(PathBuf);
+
+impl Drop for StagingGuard {
+    fn drop(&mut self) {
+        drop_staging(&self.0);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn start_download(
     app: AppHandle,
@@ -216,6 +271,11 @@ pub async fn start_download(
             exe.display()
         ));
     }
+
+    // Временные файлы yt-dlp (.part/.ytdl) живут в данных приложения, не у юзера.
+    let staging = staging_dir(&app)?;
+    reset_staging(&staging)?;
+    let _staging_guard = StagingGuard(staging.clone());
 
     let res_str = if quality == "max" {
         String::new()
@@ -260,6 +320,12 @@ pub async fn start_download(
     args.push("-o".to_string());
     args.push(outtmpl);
 
+    // .part/.ytdl уводим в рабочую папку приложения: готовый файл yt-dlp
+    // переносит в outtmpl сам (документированное поведение --paths temp:).
+    args.push("--paths".to_string());
+    args.push(format!("temp:{}", staging.to_string_lossy().replace('\\', "/")));
+    log::info!("[YTDLP] Временные файлы: {}", staging.display());
+
     if let Some(ffmpeg_path) = ytdlp_manager::get_ffmpeg_path() {
         if let Some(parent) = ffmpeg_path.parent() {
             args.push("--ffmpeg-location".to_string());
@@ -269,14 +335,11 @@ pub async fn start_download(
 
     args.push("--no-playlist".to_string());
     args.push("--socket-timeout".to_string());
-    args.push("20".to_string());
-    // Fail-fast: 10 ретраев на фрагмент превращали блокировку CDN в 18-минутное
-    // «зависание» (~600 попыток). 3 ретрая + нативный обрыв на первом пропущенном
-    // фрагменте — ошибка видна за минуты, домен и причина — в логе и на UI.
+    args.push(SOCKET_TIMEOUT_SECS.to_string());
     args.push("--retries".to_string());
-    args.push("3".to_string());
+    args.push(RETRIES.to_string());
     args.push("--fragment-retries".to_string());
-    args.push("3".to_string());
+    args.push(FRAGMENT_RETRIES.to_string());
     args.push("--abort-on-unavailable-fragment".to_string());
     args.push("--newline".to_string());
     args.push("--no-warnings".to_string());
@@ -597,6 +660,25 @@ mod tests {
     use super::*;
     use std::io::Read;
 
+    #[test]
+    fn reset_staging_clears_stale_and_creates_fresh() {
+        let dir = std::env::temp_dir().join(format!("ytdlp_tst_reset_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let stale = dir.join("leftover.mp4.part");
+        std::fs::write(&stale, b"x").unwrap();
+        reset_staging(&dir).unwrap();
+        assert!(dir.is_dir());
+        assert!(!stale.exists(), "хвост прошлого краха должен быть удалён");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn drop_staging_on_missing_dir_is_noop() {
+        let dir = std::env::temp_dir().join("ytdlp_tst_missing_404");
+        drop_staging(&dir); // не должно паниковать
+        assert!(!dir.exists());
+    }
+
     /// Регрессия на корневую причину падения `[Errno 22] Invalid argument`:
     /// stdout yt-dlp.exe на Windows в cp1251, строгий UTF-8-разбор обрывал
     /// цикл и закрывал pipe. Поток с невалидным UTF-8 обязан быть прочитан
@@ -680,5 +762,22 @@ mod tests {
         let mut count = 0;
         read_stream_lossy(&mut reader, &mut |_| count += 1);
         assert_eq!(count, 0);
+    }
+
+    /// Бюджет терпения обязан переживать флап GGC-узла (инцидент 12.11.26:
+    /// мёртвые окна 10–20 c, 3 ретрая уложились в окно → аборт закачки).
+    /// Тест-инвариант против случайного отката значений.
+    #[test]
+    fn download_budget_survives_ggc_flap() {
+        let timeout: u32 = SOCKET_TIMEOUT_SECS.parse().expect("socket-timeout — число");
+        let fragments: u32 = FRAGMENT_RETRIES.parse().expect("fragment-retries — число");
+        assert!(
+            timeout >= 30,
+            "socket-timeout меньше мёртвого окна флапа (10–20 c): {timeout}"
+        );
+        assert!(
+            fragments >= 10,
+            "fragment-retries не переживут флап: {fragments}"
+        );
     }
 }

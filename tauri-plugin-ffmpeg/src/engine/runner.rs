@@ -93,7 +93,7 @@ pub fn tail(s: &str, max: usize) -> String {
     s.chars().skip(s.chars().count() - max).collect()
 }
 
-fn no_window_command(cmd: &mut Command) {
+pub(crate) fn no_window_command(cmd: &mut Command) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

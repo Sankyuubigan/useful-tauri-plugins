@@ -410,7 +410,8 @@ pub async fn auto_download_default_model(app: AppHandle, save_path: String) -> R
     if !cfg.models.contains(&save_path) {
         cfg.models.push(save_path.clone());
     }
-    cfg.last_model = Some(save_path.clone());
+    // Добавление в каталог ≠ выбор: выбор модели — собственность хоста, у
+    // плагина ключа для него нет (инцидент 13.11.26, см. EngineConfig).
     cfg.models_dir = models_dir;
     if let Some(mp) = mmproj_saved {
         cfg.mmproj_files.insert(save_path.clone(), mp);
@@ -433,9 +434,10 @@ pub fn get_models_catalog(app: AppHandle) -> Vec<engine::CatalogEntry> {
     engine::load_catalog(&app)
 }
 
-/// Текущее движковое состояние конфига: список моделей, last_model, mmproj_files,
+/// Текущее движковое состояние конфига: список моделей, mmproj_files,
 /// model_meta, движковые пути. Используется самодостаточными веб-компонентами
 /// плагина (см. <llama-models-panel>) и хостами без собственного get_config.
+/// Выбранной модели здесь нет — выбор принадлежит хосту (инцидент 13.11.26).
 #[tauri::command]
 pub fn get_engine_config(app: AppHandle) -> engine::EngineConfig {
     engine::load_config(&app)
@@ -578,7 +580,7 @@ fn add_model_impl(
     if !cfg.models.contains(&path) {
         cfg.models.push(path.clone());
     }
-    cfg.last_model = Some(path.clone());
+    // Добавление в каталог ≠ выбор: у плагина нет ключа «выбранная модель».
 
     if let Some(mmp) = engine::auto_detect_mmproj(&path) {
         cfg.mmproj_files.insert(path.clone(), mmp);
@@ -599,9 +601,6 @@ fn add_model_impl(
 pub fn remove_model(app: AppHandle, path: String) -> Result<engine::EngineConfig, String> {
     let mut cfg = engine::load_config(&app);
     cfg.models.retain(|m| m != &path);
-    if cfg.last_model.as_deref() == Some(path.as_str()) {
-        cfg.last_model = None;
-    }
     cfg.model_params.remove(&path);
     cfg.mmproj_files.remove(&path);
     engine::save_config(&app, &cfg)?;
@@ -617,9 +616,6 @@ pub fn delete_model_file(app: AppHandle, path: String) -> Result<engine::EngineC
     }
     let mut cfg = engine::load_config(&app);
     cfg.models.retain(|m| m != &path);
-    if cfg.last_model.as_deref() == Some(path.as_str()) {
-        cfg.last_model = None;
-    }
     cfg.model_params.remove(&path);
     cfg.mmproj_files.remove(&path);
     cfg.model_meta.remove(&path);

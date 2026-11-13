@@ -20,7 +20,6 @@ export interface ModelParams {
 }
 export interface EngineConfig {
     models: string[];
-    last_model?: string | null;
     models_dir?: string | null;
     model_params: Record<string, ModelParams>;
     mmproj_files: Record<string, string>;
@@ -140,7 +139,8 @@ export declare function setModelParams(modelPath: string, params: ModelParams): 
 export declare function resetModelParams(modelPath: string): Promise<ModelParams>;
 /**
  * Одноразовая генерация текста через движок llama.cpp (без чата).
- * modelPath — путь к GGUF; если не указан, берётся last_model из конфига.
+ * modelPath — путь к GGUF, обязателен: выбор модели — собственность хоста,
+ * у плагина ключа «выбранная модель» нет.
  */
 export declare function generateText(req: GenerateTextRequest): Promise<string>;
 import './web-components';

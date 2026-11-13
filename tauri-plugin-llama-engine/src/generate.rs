@@ -31,7 +31,8 @@ use super::commands;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GenerateTextRequest {
-    /// Путь к GGUF-модели. `None`/пусто — взять `last_model` из конфига.
+    /// Путь к GGUF-модели. Обязателен: выбор модели — собственность хоста,
+    /// у плагина ключа «выбранная модель» нет (инцидент 13.11.26).
     #[serde(default)]
     pub model_path: Option<String>,
     /// Сообщения в OpenAI-формате (role/content).
@@ -55,7 +56,7 @@ pub async fn generate_text(
 }
 
 fn generate_text_blocking(app: &AppHandle, req: GenerateTextRequest) -> Result<String, String> {
-    let model_path = resolve_model_path(app, req.model_path.as_deref())?;
+    let model_path = resolve_model_path(req.model_path.as_deref())?;
     let mut params = commands::get_model_params(app.clone(), model_path.clone());
     if let Some(t) = req.temperature {
         params.temperature = t;
@@ -103,24 +104,20 @@ fn generate_text_blocking(app: &AppHandle, req: GenerateTextRequest) -> Result<S
     Ok(result.text)
 }
 
-fn resolve_model_path(app: &AppHandle, explicit: Option<&str>) -> Result<String, String> {
-    if let Some(p) = explicit {
-        if p.is_empty() {
-            return Err("model_path пуст".to_string());
-        }
-        if !Path::new(p).is_file() {
-            return Err(format!("Файл модели не найден: {p}"));
-        }
-        return Ok(p.to_string());
+/// Путь модели приходит ТОЛЬКО от хоста: у плагина нет ключа «выбранная
+/// модель», и фолбэка в общий конфиг больше нет (инцидент 13.11.26: чужой
+/// хост затирал выбор, и генерация молча уходила не на ту модель).
+fn resolve_model_path(explicit: Option<&str>) -> Result<String, String> {
+    let p = explicit.map(str::trim).filter(|p| !p.is_empty()).ok_or_else(
+        || {
+            "Модель не указана. Выбор модели принадлежит хосту — передайте model_path."
+                .to_string()
+        },
+    )?;
+    if !Path::new(p).is_file() {
+        return Err(format!("Файл модели не найден: {p}"));
     }
-    let cfg = engine::load_config(app);
-    match cfg.last_model {
-        Some(m) if !m.is_empty() && Path::new(&m).is_file() => Ok(m),
-        _ => Err(
-            "Модель не выбрана. Добавьте модель в настройках или укажите model_path."
-                .to_string(),
-        ),
-    }
+    Ok(p.to_string())
 }
 
 /// Эвристика контекста worst-case (desktop_rust_tauri_rules.md §6.7): ~3 символа/токен на вход,

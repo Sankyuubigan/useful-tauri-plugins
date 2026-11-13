@@ -101,7 +101,8 @@ export function resetModelParams(modelPath) {
 // ─────────────────────── Разовая текстовая генерация ───────────────────────
 /**
  * Одноразовая генерация текста через движок llama.cpp (без чата).
- * modelPath — путь к GGUF; если не указан, берётся last_model из конфига.
+ * modelPath — путь к GGUF, обязателен: выбор модели — собственность хоста,
+ * у плагина ключа «выбранная модель» нет.
  */
 export function generateText(req) {
     return invoke('plugin:llama-engine|generate_text', {

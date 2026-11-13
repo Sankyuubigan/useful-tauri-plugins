@@ -753,7 +753,7 @@
         info.style.cssText = "display:flex; flex-direction:column; gap:2px; min-width:0;";
         const name = document.createElement("div");
         name.style.cssText = "font-weight:600; color:var(--text,#eee); word-break:break-all;";
-        name.textContent = (cfg.last_model === m ? "\u25CF " : "") + fileName(m);
+        name.textContent = fileName(m);
         if (!this.isCatalogModel(m)) {
           name.appendChild(pill("\u0421\u0442\u043E\u0440\u043E\u043D\u043D\u044F\u044F \u043C\u043E\u0434\u0435\u043B\u044C", "\u0424\u0430\u0439\u043B \u043D\u0435 \u043D\u0430\u0439\u0434\u0435\u043D \u0432 \u043A\u0430\u0442\u0430\u043B\u043E\u0433\u0435 \u043C\u043E\u0434\u0435\u043B\u0435\u0439"));
         }

@@ -765,7 +765,7 @@ class LlamaModelsPanel extends HTMLElement {
       info.style.cssText = 'display:flex; flex-direction:column; gap:2px; min-width:0;'
       const name = document.createElement('div')
       name.style.cssText = 'font-weight:600; color:var(--text,#eee); word-break:break-all;'
-      name.textContent = (cfg.last_model === m ? '● ' : '') + fileName(m)
+      name.textContent = fileName(m)
       if (!this.isCatalogModel(m)) {
         name.appendChild(pill('Сторонняя модель', 'Файл не найден в каталоге моделей'))
       }

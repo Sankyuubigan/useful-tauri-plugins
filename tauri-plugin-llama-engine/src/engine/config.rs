@@ -56,14 +56,16 @@ impl Default for ModelParams {
     }
 }
 
-/// Движковый подмножество `app_config.json`. Поле за полем совпадает с ключами
-/// хостового `AppConfig`, чтобы оба участника видели один и тот же JSON.
+/// Движковое подмножество `app_config.json` — ТОЛЬКО общие данные: каталог
+/// моделей и их метаданные, путь к бинарям движка. Выбора активной модели
+/// здесь НЕТ и быть не должно: выбор — собственность хоста, у каждого проекта
+/// своё поле в своём конфиге (инцидент 13.11.26: KingOrch писал в общий ключ
+/// онлайн-модель `gateway:...`, и перевод в deedub молча умирал). Движку путь
+/// модели всегда передаёт сам хост (`LlamaEngine::new`).
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct EngineConfig {
     #[serde(default)]
     pub models: Vec<String>,
-    #[serde(default)]
-    pub last_model: Option<String>,
     #[serde(default)]
     pub models_dir: Option<String>,
     #[serde(default)]

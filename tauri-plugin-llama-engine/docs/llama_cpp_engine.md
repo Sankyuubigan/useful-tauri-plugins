@@ -621,13 +621,17 @@ loop {
 ### 7.1 Конфиг движка (`%APPDATA%/llama-engine/app_config.json`)
 Движковые ключи владеются ПЛАГИНОМ в его собственном каталоге, общем для всех
 хостов плагина (`json_store::roots::plugin_dir("llama-engine")`;
-`set_app_data_dir_name` — deprecated no-op). Хост-приложение читает их ОВЕРЛЕЕМ
-поверх своего конфига (`infra::config::load_config` → `apply_engine_keys`) тем же
-лоадером, что и панель моделей, а при сохранении хостового файла — вырезает
-(`ENGINE_KEYS`, см. инцидент 25.10.26: расхождение списков моделей чат↔панель).
-Запись движковых ключей хостом — только через `set_engine_last_model` /
-`set_engine_dirs`. См. §8 за полной схемой. Ключевое для движка:
-- `models: Vec<String>` — пути к `.gguf`; `last_model: Option<String>` — выбранная.
+`set_app_data_dir_name` — deprecated no-op). Это ТОЛЬКО каталог моделей и
+метаданные: ключа «выбранная модель» здесь НЕТ и быть не должно — выбор —
+собственность каждого хоста, хранится в ХОСТОВОМ конфиге (инцидент 13.11.26:
+KingOrch писал в общий ключ онлайн-модель `gateway:...`, и перевод в deedub
+молча умирал). Хост читает движковые ключи ОВЕРЛЕЕМ поверх своего конфига
+(`infra::config::load_config` → `apply_engine_keys`) тем же лоадером, что и
+панель моделей, а при сохранении хостового файла — вырезает (`ENGINE_KEYS`,
+см. инцидент 25.10.26: расхождение списков моделей чат↔панель).
+Запись движковых ключей хостом — только через `set_engine_dirs`.
+См. §8 за полной схемой. Ключевое для движка:
+- `models: Vec<String>` — пути к `.gguf` (каталог, НЕ выбор).
 - `model_params: HashMap<String, ModelParams>` — сэмплинг **по модели** (ключ = путь файла).
 - `model_meta: HashMap<String, ModelMeta>` (`uncen`/`vision`/`audio`).
 - `mmproj_files: HashMap<String, String>` — путь к мультимодальному проектору per-модель.
@@ -679,7 +683,7 @@ loop {
 | Поле | Тип | Default | Куда идёт |
 |------|-----|---------|-----------|
 | `models` | Vec<String> | `[]` | список моделей |
-| `last_model` | Option<String> | None | выбранная модель |
+| `last_model` | Option<String> | None | выбранная модель — владелец ХОСТ; в движковых ключах отсутствует |
 | `model_params` | HashMap<String,ModelParams> | `{}` | per-модель сэмплинг |
 | `context_size` | u32 | 24576 | верхняя граница `--ctx-size` (clamp) |
 | `max_gen_tokens` | u32 | 4096 | → `n_predict` |
@@ -698,17 +702,18 @@ loop {
 | `chat_font_scale` | f32 | 1.0 | |
 
 Два файла, один SSOT на ключ:
-- **Движковые ключи** (`models`, `last_model`, `models_dir`, `model_params`,
+- **Движковые ключи** (`models`, `models_dir`, `model_params`,
   `mmproj_files`, `model_meta`, `llamacpp_dir`, `engine_source`, `engine_variant`) —
   `%APPDATA%/llama-engine/app_config.json` (владелец — плагин, общий для всех хостов).
-- **Хостовые ключи** (`theme`, `tabs`, `context_size`, `max_gen_tokens`,
-  `reasoning_budget`, `translator_*`, `data_dir`, …) —
+- **Хостовые ключи** (`last_model` — выбор модели ХОСТА, `theme`, `tabs`,
+  `context_size`, `max_gen_tokens`, `reasoning_budget`, `translator_*`, `data_dir`, …) —
   `%APPDATA%/com.kingorch.app/app_config.json` (`APP_DATA_DIR_NAME`).
 - Стык в хосте: `load_config`/`load_config_early` накатывают движковые ключи
   оверлеем из файла плагина; `save_config_file` вырезает их из хостового файла
-  (вторая копия правды невозможна). Чтение ДО Tauri: `load_config_early()`
-  (через `APPDATA`/`XDG_CONFIG_HOME`/`HOME`); в рантайме — `load_config(app)` /
-  `save_config(app, cfg)`; движковые записи — `set_engine_last_model` /
+  (вторая копия правды невозможна). `last_model` в обоих механизмах НЕ участвует:
+  он хостовый от и до (перезапись чужим хостом = инцидент 13.11.26). Чтение ДО
+  Tauri: `load_config_early()` (через `APPDATA`/`XDG_CONFIG_HOME`/`HOME`); в
+  рантайме — `load_config(app)` / `save_config(app, cfg)`; движковые записи —
   `set_engine_dirs` (внутри — `engine::config::save_config` плагина).
 
 ---
@@ -720,7 +725,7 @@ api/  (Tauri-команды — тонкий слой, делегирует)
  ├─ chat.rs          chat_request → domain::run_chat (model_path, model_params, engine_dir, callbacks)
  ├─ models.rs        add_model, get/set/reset_model_params (GGUF-aware), get_mmproj_path, capabilities
   ├─ llamacpp.rs      engine_dir(), get_engine_status, install_llamacpp, set_engine_variant, set_engine_source, set_engine_dir
-  └─ config.rs        set_last_model …
+  └─ config.rs        set_last_model (выбор модели — в хостовый конфиг) …
 
 domain/  (бизнес-логика)
  └─ orchestrator/
